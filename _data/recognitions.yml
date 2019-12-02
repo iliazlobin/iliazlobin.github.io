@@ -1,10 +1,18 @@
 # Recognitions
-- award: Outstanding Achievement
-  organization: Springfield Young Professionals
-  year: 2010, 2014
-  summary: Awarded the Outstanding Achievement award for contributions made to the community and professional accomplishments.
+- award: AWS Certified DevOps Engineer - Professional
+  organization: Amazon Web Services (AWS)
+  year: 2019
+  summary: The AWS Certified DevOps Engineer – Professional exam validates technical expertise in provisioning, operating, and managing distributed application systems on the AWS platform.
+  credential_url: https://www.certmetrics.com/amazon/public/badge.aspx?i=5&t=c&d=2019-11-04&ci=AWS01123948
 
-- award: Most Likely To Succeed
-  organization: Springfield High School
-  year: 2004
-  summary: Voted Most Likely To Succeed by a panel of my high school peers.
+- award: "CKA: Certified Kubernetes Administrator"
+  organization: The Linux Foundation
+  year: 2019
+  summary: Earners of this designation demonstrated the skills, knowledge and competencies to perform the responsibilities of a Kubernetes Administrator. Earners demonstrated proficiency in Application Lifecycle Management, Installation, Configuration & Validation, Core Concepts, Networking, Scheduling, Security, Cluster Maintenance, Logging/Monitoring, Storage, and Troubleshooting.
+  credential_url: https://www.youracclaim.com/badges/d9d442b0-6ad1-4ce5-850e-28d8f4926e7b/linked_in_profile
+
+- award: Google Cloud Certified Professional Cloud Architect
+  organization: Google Cloud
+  year: 2019
+  summary: A Google Cloud Certified - Professional Cloud Architect enables organizations to leverage Google Cloud technologies. Through an understanding of cloud architecture and Google technology, this individual can design, develop, and manage robust, secure, scalable, highly available, and dynamic solutions to drive business objectives.
+  credential_url: https://www.credential.net/hhe0gima

@@ -1,19 +1,14 @@
-# Jobs
-# VP of Global Communications
-- company: Springfield International Human Rights Outreach
-  position: VP of Global Communications
-  duration: Oct, 2013 &mdash; Present
-  summary: Write about your core competencies in one or two sentences describing your position. If you held the position for a long time, it could be a longer section, including a couple bullet points	<ul class="resume-item-list"><li>A project you are proud of</li><li>Another awesome project</li><li>or a team or department you worked with</li></ul>
+- company: EPAM Systems, Minsk
+  position: Senior DevOps Engineer
+  duration: Oct, 2018 &mdash; Present
+  summary: <ul class="resume-item-list"><li>Designed and implemented a multi-tenant distributed container orchestration solution on Kubernetes in AWS Cloud with applying declarative GitOps approach for organizing CD system.</li><li>Worked with full stack of AWS Cloud Infrastructure from networking to containerization levels through console, cli, and code.</li><li>Develop Kustomize plugins on Go communicating with external systems to ensure a full and complete CD.</li>Setup Prometheus monitoring stack; organized integration with Grafana and internal notification service; arranged detailed Grafana dashboards.<li></li><li>Contributed to Terraform and Kubernetes SIGs (Kustomize, AWS ALB Ingress Controller) OS projects.</li></ul>
 
-# Director of Digital Stratgy
-- company: United Nations Human Rights Council
-  position: Director of Digital Strategy
-  duration:  Jun, 2010 &mdash; Sept, 2013
-  summary: If your stint was shorter, feel free to be brief and just call out the most meaningful points of your role. Be concise, and be meaninful. The person reading just needs enough to want to talk to you more about your experience.
+- company: JSC NIIAS, Saint Petersburg
+  position: Java Developer
+  duration:  Sep, 2015 &mdash; Aug, 2018
+  summary: <ul class="resume-item-list"><li>Implemented event-driven reactive backend application on Kotlin to serve train remote control operations.</li><li>Coordinated developing a front-end application on Kotlin Tornado FX.</li><li>Participated in the development of highly intense, fault-tolerant, application servers on Java serving dozens of IoT devices and communicating with corporate-level systems.</li><li>Learned and evangelized functional programming in JVM projects (Scala, Kotlin).</li><li>Organized build toolchains for JVM and C/C++ projects using Maven, Gradle, CMake; deployed/configured Git, Nexus repository and Jenkins service; wrote CI/CD pipelines.</li></ul>
 
-
-# Communications Coordinator
-- company: Springfield Women & Children's Center
-  position: Communications Coordinator
-  duration:   Jun, 2008  &mdash; May, 2010
-  summary: Led communication efforts across digital and traditional media channels for marketing and public relations, internal communication strategies, and coordinated support programs for the recipients of the center's services.
+- company: JSC NIIAS, Saint Petersburg
+  position: Embedded Software Engineer
+  duration:   Sep, 2012  &mdash; Aug, 2015
+  summary: <ul class="resume-item-list"><li>Arranged Docker workflow for developing C/C++ GPU intensive application.</li><li>Developed real-time C/C++ application for Embedded devices.</li><li>Organized build toolchain for C/C++ projects and configuration of Embedded Linux using buildroot toolset.</li><li>Helped with configuring Linux kernel and developing Linux drivers;</li><li>Administred Linux servers, corporate network/routes, VPC tunnels, embedded devices.</li></ul>
