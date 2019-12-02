@@ -1,7 +1,7 @@
 - company: EPAM Systems, Minsk
   position: Senior DevOps Engineer
   duration: Oct, 2018 &mdash; Present
-  summary: <ul class="resume-item-list"><li>Designed and implemented a multi-tenant distributed container orchestration solution on Kubernetes in AWS Cloud with applying declarative GitOps approach for organizing CD system.</li><li>Worked with full stack of AWS Cloud Infrastructure from networking to containerization levels through console, cli, and code.</li><li>Develop Kustomize plugins on Go communicating with external systems to ensure a full and complete CD.</li>Setup Prometheus monitoring stack; organized integration with Grafana and internal notification service; arranged detailed Grafana dashboards.<li></li><li>Contributed to Terraform and Kubernetes SIGs (Kustomize, AWS ALB Ingress Controller) OS projects.</li></ul>
+  summary: <ul class="resume-item-list"><li>Designed and implemented a multi-tenant distributed container orchestration solution on Kubernetes in AWS Cloud with applying declarative GitOps approach for organizing CD system.</li><li>Worked with full stack of AWS Cloud Infrastructure from networking to containerization levels through console, cli, and code.</li><li>Develop Kustomize plugins on Go communicating with external systems to ensure a full and complete CD.</li><li>Setup Prometheus monitoring stack; organized integration with Grafana and internal notification service; arranged detailed Grafana dashboards.</li><li>Contributed to Terraform and Kubernetes SIGs (Kustomize, AWS ALB Ingress Controller) OS projects.</li></ul>
 
 - company: JSC NIIAS, Saint Petersburg
   position: Java Developer
