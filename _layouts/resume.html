@@ -1,6 +1,16 @@
 <!DOCTYPE html>
 <html>
 
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-153793398-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-153793398-1');
+  </script>
+
   {% include head.html %}
 
   <body class="theme-{% if site.resume_theme %}{{ site.resume_theme }}{% endif %}">
@@ -22,7 +32,7 @@
         <!-- To display contact info here, change `display_header_contact_info` value in _config.yml to true -->
         {% if site.display_header_contact_info == 'true' %}
         <div class="header-contact-info">
-          <p>{{ site.resume_header_contact_info }}</p>
+          <p>{{ site.resume_contact_address }} • <a href="mailto:{{ site.resume_contact_email }}" itemprop="email">{{ site.resume_contact_email }}</a></p>
         </div>
         {% endif %}
 
@@ -59,34 +69,6 @@
 
       </section>
       <!-- end Experience -->
-      {% endif %}
-
-
-      {% if site.resume_section_education %}
-      <!-- begin Education -->
-      <section class="content-section">
-        <header class="section-header">
-          <h2>Education</h2>
-        </header>
-
-        {% for education in site.data.education %}
-        <div class="resume-item" itemscope itemprop="alumniOf" itemtype="http://schema.org/CollegeOrUniversity">
-          <h3 class="resume-item-title" itemprop="name">{{ education.uni }}</h3>
-          <h4 class="resume-item-details group" itemprop="description">{{ education.degree }} &bull; {{ education.year }}</h4>
-          <h5 class="resume-item-details award-title" itemprop="description">{{ education.award }}</h5>
-          <p class="resume-item-copy" itemprop="description">
-            <ul class="resume-item-list">
-              {% for award in education.awards %}
-              <li>{{ award.award }}</li>
-              {% endfor %}
-            </ul></h5>
-
-
-          <p class="resume-item-copy">{{ education.summary }}</p>
-        </div>
-        {% endfor %}
-      </section>
-      <!-- end Education -->
       {% endif %}
 
 
@@ -131,6 +113,52 @@
       <!-- end Recognition -->
       {% endif %}
 
+      {% if site.resume_section_skills %}
+      <!-- begin Hard Skills -->
+      <section class="content-section">
+
+        <header class="section-header">
+          <h2>Hard Skills</h2>
+        </header>
+        {% for skill in site.data.hard-skills %}
+        <div class="resume-item">
+          <h4 class="resume-item-details">{{ skill.skill }}</h4>
+          <ul class="resume-item-list">
+            {% for component in skill.components %}
+            <li>{{ component }}</li>
+            {% endfor %}
+          </ul>
+          <p class="resume-item-copy">{{ skill.description }}</p>
+        </div>
+        {% endfor %}
+
+      </section>
+      <!-- end Hard Skills -->
+      {% endif %}
+
+      {% if site.resume_section_skills %}
+      <!-- begin Soft Skills -->
+      <section class="content-section">
+
+        <header class="section-header">
+          <h2>Soft Skills</h2>
+        </header>
+        {% for skill in site.data.soft-skills %}
+        <div class="resume-item">
+          <h4 class="resume-item-details">{{ skill.skill }}</h4>
+          <ul class="resume-item-list">
+            {% for component in skill.components %}
+            <li>{{ component }}</li>
+            {% endfor %}
+          </ul>
+          <p class="resume-item-copy">{{ skill.description }}</p>
+        </div>
+        {% endfor %}
+
+      </section>
+      <!-- end Soft Skills -->
+      {% endif %}
+
       {% if site.resume_section_associations %}
       <!-- begin Associations -->
       <section class="content-section">
@@ -150,6 +178,34 @@
       </section>
       <!-- end Associations -->
       {% endif %}
+
+      {% if site.resume_section_education %}
+      <!-- begin Education -->
+      <section class="content-section">
+        <header class="section-header">
+          <h2>Education</h2>
+        </header>
+
+        {% for education in site.data.education %}
+        <div class="resume-item" itemscope itemprop="alumniOf" itemtype="http://schema.org/CollegeOrUniversity">
+          <h3 class="resume-item-title" itemprop="name">{{ education.uni }}</h3>
+          <h4 class="resume-item-details group" itemprop="description">{{ education.degree }} &bull; {{ education.year }}</h4>
+          <h5 class="resume-item-details award-title" itemprop="description">{{ education.award }}</h5>
+          <p class="resume-item-copy" itemprop="description">
+          <ul class="resume-item-list">
+            {% for award in education.awards %}
+            <li>{{ award.award }}</li>
+            {% endfor %}
+          </ul></h5>
+
+
+          <p class="resume-item-copy">{{ education.summary }}</p>
+        </div>
+        {% endfor %}
+      </section>
+      <!-- end Education -->
+      {% endif %}
+
 
       {% if site.resume_section_interests %}
       <!-- begin Interests -->

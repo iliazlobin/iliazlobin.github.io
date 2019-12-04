@@ -1,0 +1,40 @@
+- skill: AWS Cloud
+  components:
+    - Networking, Compute, Containers, Serverless
+    - CI/CD, Deployments B/G, D/R
+    - Storage, Databases
+    - IM / Security, Logging / Monitoring / Audit
+
+- skill: GCP Cloud
+  components:
+    - Networking, Compute, Containers, Serverless
+    - Storage, Databases
+    - IM / Security, Logging / Monitoring / Audit
+
+- skill: Cloud Native
+  components:
+    - 12 Factor Design Methodology
+    - Microservice Architecture
+    - CNCF Landscape / Kubernets / Docker
+    - Observability (Prometheus / Grafana / ELK)
+
+- skill: DevOps
+  components:
+    - CI/CD Pipelines (Jenkins / JenkinsX / Tekton)
+    - IaaC (Terraform / CloudFormation)
+    - Security (IAM / Vault / OpenID)
+    - B/G
+    - D/R
+
+- skill: Software Development
+  components:
+    - "Fundamentals: Algorithms, Data Structures"
+    - "Paradigms: OOP, FP, Procedural"
+    - "Design: SOLID, KISS, DRY, TDD"
+    - "Languages: Go, Java, Python, C++"
+
+- skill: Configuration Management
+  components:
+    - Ansible
+    - Helm
+    - Kustomize

@@ -1,9 +1,16 @@
 # Site settings
-title: "Ilia Zlobin Resume"
+title: "Ilia Zlobin Online Resume"
 description: "Ilia Zlobin Online Resume on GitHub Pages"
 
 # Build settings
 markdown: kramdown
+kramdown:
+  # use Github Flavored Markdown
+  input: GFM
+  # do not replace newlines by <br>s
+  hard_wrap: false
+  # parse markdown inside block-level HTML tag
+  parse_block_html: true
 sass:
   sass_dir: _sass
   style: compressed
@@ -17,10 +24,10 @@ resume_title:                   "Senior DevOps Engineer"
 resume_contact_email:           "iliazlobin91@gmail.com"
 
 # the next two items are used for schema itemprops in _layouts/resume.html
-resume_contact_telephone:       "+7-911-122-39-54"
+resume_contact_telephone:       ""
 resume_contact_address:         "Minsk, Belarus, 220114"
 
-resume_header_contact_info:     "Minsk, Belarus, 220114 • +7-911-122-39-54 • iliazlobin91@gmail.com"
+resume_header_contact_info:     "Minsk, Belarus, 220114 • iliazlobin91@gmail.com"
 display_header_contact_info:    "true"
 
 resume_header_intro: "<p>Extremely skilled, industry-recognized, immensely experienced software engineer with a focus on designing and engineering highly reliable cloud-native systems.<br>The current goal is to grow as a professional through acquiring practical knowledge, continuous learning and perfecting communication, solving industry's efficiency problems thought applying recognized automation practices and promoting the best progressive methods, as well as mentoring and educating others to effectively achieve professional results.
@@ -49,7 +56,7 @@ resume_social_links:
 resume_print_social_links:      true
 
 # Design settings
-resume_theme:                   default
+resume_theme:                   cayman
 
 # Note: when editing locally, remember to restart
 # your Jekyll server when you edit this file. Changes

@@ -1,16 +1,24 @@
 <!DOCTYPE html>
 <html>
 
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-153793398-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-153793398-1');
+  </script>
+
   <head>
   <meta charset="utf-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
-  <title>Ilia Zlobin Resume</title>
+  <title>Ilia Zlobin Online Resume</title>
 
   <!-- Google font typography settings - defined in _config.yml -->
-  
-  <link href='https://fonts.googleapis.com/css?family=Lora:400,700|Open+Sans:400,300,800,700' rel='stylesheet' type='text/css'>
   
 
   <meta name="description" content="Ilia Zlobin Online Resume on GitHub Pages">
@@ -21,7 +29,7 @@
 </head>
 
 
-  <body class="theme-default">
+  <body class="theme-cayman">
 
     <div class="wrapper" itemscope itemtype="http://schema.org/Person">
       <meta itemprop="telephone" content="+7-911-122-39-54"/>
@@ -40,7 +48,7 @@
         <!-- To display contact info here, change `display_header_contact_info` value in _config.yml to true -->
         
         <div class="header-contact-info">
-          <p>Minsk, Belarus, 220114 • +7-911-122-39-54 • iliazlobin91@gmail.com</p>
+          <p>Minsk, Belarus, 220114 • <a href="mailto:iliazlobin91@gmail.com" itemprop="email">iliazlobin91@gmail.com</a></p>
         </div>
         
 
@@ -148,7 +156,7 @@
         <div class="executive-summary" itemprop="description">
           <p>Extremely skilled, industry-recognized, immensely experienced software engineer with a focus on designing and engineering highly reliable cloud-native systems.<br>The current goal is to grow as a professional through acquiring practical knowledge, continuous learning and perfecting communication, solving industry's efficiency problems thought applying recognized automation practices and promoting the best progressive methods, as well as mentoring and educating others to effectively achieve professional results. </p>
         </div>
-
+        
       </header>
 
       
@@ -181,32 +189,6 @@
 
       </section>
       <!-- end Experience -->
-      
-
-
-      
-      <!-- begin Education -->
-      <section class="content-section">
-        <header class="section-header">
-          <h2>Education</h2>
-        </header>
-
-        
-        <div class="resume-item" itemscope itemprop="alumniOf" itemtype="http://schema.org/CollegeOrUniversity">
-          <h3 class="resume-item-title" itemprop="name">Emperor Alexander I St. Petersburg State Transport University</h3>
-          <h4 class="resume-item-details group" itemprop="description">Specialist Degree Diploma with Honor &bull; 2008 &mdash; 2013</h4>
-          <h5 class="resume-item-details award-title" itemprop="description"></h5>
-          <p class="resume-item-copy" itemprop="description">
-            <ul class="resume-item-list">
-              
-            </ul></h5>
-
-
-          <p class="resume-item-copy"></p>
-        </div>
-        
-      </section>
-      <!-- end Education -->
       
 
 
@@ -248,6 +230,222 @@
       
 
       
+      <!-- begin Hard Skills -->
+      <section class="content-section">
+
+        <header class="section-header">
+          <h2>Hard Skills</h2>
+        </header>
+        
+        <div class="resume-item">
+          <h4 class="resume-item-details">AWS Cloud</h4>
+          <ul class="resume-item-list">
+            
+            <li>Networking, Compute, Containers, Serverless</li>
+            
+            <li>CI/CD, Deployments B/G, D/R</li>
+            
+            <li>Storage, Databases</li>
+            
+            <li>IM / Security, Logging / Monitoring / Audit</li>
+            
+          </ul>
+          <p class="resume-item-copy"></p>
+        </div>
+        
+        <div class="resume-item">
+          <h4 class="resume-item-details">GCP Cloud</h4>
+          <ul class="resume-item-list">
+            
+            <li>Networking, Compute, Containers, Serverless</li>
+            
+            <li>Storage, Databases</li>
+            
+            <li>IM / Security, Logging / Monitoring / Audit</li>
+            
+          </ul>
+          <p class="resume-item-copy"></p>
+        </div>
+        
+        <div class="resume-item">
+          <h4 class="resume-item-details">Cloud Native</h4>
+          <ul class="resume-item-list">
+            
+            <li>12 Factor Design Methodology</li>
+            
+            <li>Microservice Architecture</li>
+            
+            <li>CNCF Landscape / Kubernets / Docker</li>
+            
+            <li>Observability (Prometheus / Grafana / ELK)</li>
+            
+          </ul>
+          <p class="resume-item-copy"></p>
+        </div>
+        
+        <div class="resume-item">
+          <h4 class="resume-item-details">DevOps</h4>
+          <ul class="resume-item-list">
+            
+            <li>CI/CD Pipelines (Jenkins / JenkinsX / Tekton)</li>
+            
+            <li>IaaC (Terraform / CloudFormation)</li>
+            
+            <li>Security (IAM / Vault / OpenID)</li>
+            
+            <li>B/G</li>
+            
+            <li>D/R</li>
+            
+          </ul>
+          <p class="resume-item-copy"></p>
+        </div>
+        
+        <div class="resume-item">
+          <h4 class="resume-item-details">Software Development</h4>
+          <ul class="resume-item-list">
+            
+            <li>Fundamentals: Algorithms, Data Structures</li>
+            
+            <li>Paradigms: OOP, FP, Procedural</li>
+            
+            <li>Design: SOLID, KISS, DRY, TDD</li>
+            
+            <li>Languages: Go, Java, Python, C++</li>
+            
+          </ul>
+          <p class="resume-item-copy"></p>
+        </div>
+        
+        <div class="resume-item">
+          <h4 class="resume-item-details">Configuration Management</h4>
+          <ul class="resume-item-list">
+            
+            <li>Ansible</li>
+            
+            <li>Helm</li>
+            
+            <li>Kustomize</li>
+            
+          </ul>
+          <p class="resume-item-copy"></p>
+        </div>
+        
+
+      </section>
+      <!-- end Hard Skills -->
+      
+
+      
+      <!-- begin Soft Skills -->
+      <section class="content-section">
+
+        <header class="section-header">
+          <h2>Soft Skills</h2>
+        </header>
+        
+        <div class="resume-item">
+          <h4 class="resume-item-details">Self-efficiency</h4>
+          <ul class="resume-item-list">
+            
+            <li>3 certifications for 9 months</li>
+            
+            <li>Deep expertize in Kubernets ecosystem</li>
+            
+            <li>Productivity habits / Concentration on a task</li>
+            
+            <li>Advanced English level</li>
+            
+          </ul>
+          <p class="resume-item-copy"></p>
+        </div>
+        
+        <div class="resume-item">
+          <h4 class="resume-item-details">Communication</h4>
+          <ul class="resume-item-list">
+            
+            <li>Building a relationship</li>
+            
+            <li>Leading conversation</li>
+            
+            <li>Group discussion</li>
+            
+            <li>Effective negotiation</li>
+            
+          </ul>
+          <p class="resume-item-copy"></p>
+        </div>
+        
+        <div class="resume-item">
+          <h4 class="resume-item-details">Presentation</h4>
+          <ul class="resume-item-list">
+            
+            <li>Internal presentations (team/department level)</li>
+            
+            <li>Preparing high-quality slides/speech</li>
+            
+          </ul>
+          <p class="resume-item-copy"></p>
+        </div>
+        
+        <div class="resume-item">
+          <h4 class="resume-item-details">General Management</h4>
+          <ul class="resume-item-list">
+            
+            <li>Planning and organizing</li>
+            
+            <li>Delegation / Coordination</li>
+            
+          </ul>
+          <p class="resume-item-copy"></p>
+        </div>
+        
+        <div class="resume-item">
+          <h4 class="resume-item-details">Mentoring</h4>
+          <ul class="resume-item-list">
+            
+            <li>Offering knowledge, expertise, advice to mentees</li>
+            
+            <li>Active listening, support, encouraging</li>
+            
+            <li>Coaching specific technical skills</li>
+            
+          </ul>
+          <p class="resume-item-copy"></p>
+        </div>
+        
+
+      </section>
+      <!-- end Soft Skills -->
+      
+
+      
+
+      
+      <!-- begin Education -->
+      <section class="content-section">
+        <header class="section-header">
+          <h2>Education</h2>
+        </header>
+
+        
+        <div class="resume-item" itemscope itemprop="alumniOf" itemtype="http://schema.org/CollegeOrUniversity">
+          <h3 class="resume-item-title" itemprop="name">Emperor Alexander I St. Petersburg State Transport University</h3>
+          <h4 class="resume-item-details group" itemprop="description">Specialist Degree Diploma with Honor &bull; 2008 &mdash; 2013</h4>
+          <h5 class="resume-item-details award-title" itemprop="description"></h5>
+          <p class="resume-item-copy" itemprop="description">
+          <ul class="resume-item-list">
+            
+          </ul></h5>
+
+
+          <p class="resume-item-copy"></p>
+        </div>
+        
+      </section>
+      <!-- end Education -->
+      
+
 
       
 
