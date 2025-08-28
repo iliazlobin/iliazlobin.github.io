@@ -1,0 +1,42 @@
+/* Portfolio Grid Layout CSS */
+.portfolio-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2.5rem;
+  margin-top: 2rem;
+  width: 100vw;
+  margin-left: calc(-50vw + 50%);
+  margin-right: calc(-50vw + 50%);
+}
+
+@media (max-width: 600px) {
+  .portfolio-grid {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+}
+.portfolio-item {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.portfolio-item img {
+  max-width: 100%;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+}
+.portfolio-item h3 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+.portfolio-item p {
+  margin-bottom: 0.5rem;
+}
+.portfolio-item a {
+  color: #007acc;
+  text-decoration: underline;
+}
