@@ -97,5 +97,3 @@ permalink: /portfolio/
 </div>
 
 <hr />
-
-<p><a href="/">Back to Home</a></p>

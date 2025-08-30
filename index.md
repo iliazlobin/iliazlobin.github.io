@@ -16,6 +16,8 @@ permalink: /
 - **Cloud-Native Infrastructure** — extensive experience with AWS, GCP, and Azure; led organizational migrations of 200+ services across 2,000+ Kubernetes nodes, establishing standardized infrastructure patterns.
 - **Distributed Systems** — designing and scaling data pipelines, observability platforms, and developer productivity solutions for organization-wide adoption.
 
+*(For a detailed work history, see my* [**Resume**](/resume/) *page.)*
+
 ---
 
 ## Professional Interests
@@ -43,12 +45,3 @@ I try to balance all the tech with a few passions:
 - **Sports & Fitness** — I love working out, running, and keeping active.  
 - **Travel & Exploration** — whether it’s conferences, local events, or hopping on a plane to a new city, I enjoy being around ideas and smart people.  
 - **Events & Communities** — I often attend (and sometimes speak at) tech conferences and meetups.  
-
----
-
-## Let’s Connect
-- [Resume](/resume/)  
-- [Portfolio](/portfolio/)  
-- [LinkedIn](https://www.linkedin.com/in/iliazlobin)  
-- [GitHub](https://github.com/iliazlobin)  
-- [YouTube](https://www.youtube.com/@iliazlobin)  
