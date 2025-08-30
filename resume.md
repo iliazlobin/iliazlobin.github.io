@@ -12,7 +12,7 @@ permalink: /resume/
 **Work Authorization:** Green Card
 
 **Email:** [iliazlobin91@gmail.com](mailto:iliazlobin91@gmail.com)  
-**Professional Portfolio:** [iliazlobin.github.io/portfolio](/portfolio)  
+**Professional Portfolio:** [iliazlobin.com/portfolio](/portfolio)  
 **LinkedIn:** [linkedin.com/in/iliazlobin](https://www.linkedin.com/in/iliazlobin)  
 **GitHub:** [github.com/iliazlobin](https://github.com/iliazlobin)  
 **YouTube:** [youtube.com/@iliazlobin](https://www.youtube.com/@iliazlobin)
