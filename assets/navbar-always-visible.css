@@ -1,0 +1,26 @@
+/* Force navbar to always show all buttons, no dropdown */
+@media screen and (max-width: 600px) {
+  .site-nav {
+    position: static !important;
+    background: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    text-align: right !important;
+  }
+  .site-nav label[for="nav-trigger"],
+  .site-nav .menu-icon,
+  .site-nav .nav-trigger {
+    display: none !important;
+  }
+  .site-nav .trigger {
+    display: block !important;
+    padding-bottom: 0 !important;
+    position: static !important;
+  }
+  .site-nav .page-link {
+    display: inline-block !important;
+    padding: 0 10px !important;
+    margin-left: 0 !important;
+    margin-right: 20px !important;
+  }
+}
