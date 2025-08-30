@@ -4,11 +4,9 @@ title: About
 permalink: /
 ---
 
-<div style="display:flex; align-items:center; gap:2rem; margin-bottom:2rem;">
-	<div style="flex:1;">
-		I’m a <strong>Principal Software Engineer</strong> based in New York City with over 12 years of experience designing and operating <strong>large-scale distributed systems</strong> and <strong>cloud-native platforms</strong> across AWS, GCP, and Azure. My focus is on building <strong>infrastructure platforms</strong> and <strong>automation frameworks</strong> that improve developer productivity, ensure reliability, and scale to enterprise demands.
-	</div>
-	<img src="/images/profile-photo.jpg" alt="Ilia Zlobin Profile Photo" style="width:160px; height:160px; object-fit:cover; border-radius:50%; box-shadow:0 2px 8px rgba(0,0,0,0.10);" />
+<div style="width: 100%; margin-bottom: 2rem; position: relative;">
+  <img src="/images/profile-photo.jpg" alt="Ilia Zlobin Profile Photo" style="width:160px; height:160px; object-fit:cover; border-radius:50%; box-shadow:0 2px 8px rgba(0,0,0,0.10); float: right; margin-left:2rem; margin-bottom:1rem; margin-top:-4rem;" />
+  I’m a <strong>Principal Software Engineer</strong> based in New York City with over 12 years of experience designing and operating <strong>large-scale distributed systems</strong> and <strong>cloud-native platforms</strong> across AWS, GCP, and Azure. My focus is on building <strong>infrastructure platforms</strong> and <strong>automation frameworks</strong> that improve developer productivity, ensure reliability, and scale to enterprise demands.
 </div>
 
 ---
