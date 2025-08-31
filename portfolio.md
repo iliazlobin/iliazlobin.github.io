@@ -33,6 +33,16 @@ permalink: /portfolio/
   <a href="https://www.youtube.com/watch?v=NXI2l0wJNBY&ab_channel=IliaZlobin">YouTube Walkthrough</a>
 </div>
 
+
+<div class="portfolio-item">
+  <h3>Transformers Fine-Tuning (LLM Research)</h3>
+  <p>Comprehensive exploration of transformer model fine-tuning, focusing on grammar tasks and optimization strategies. Covers theoretical foundations, architectural considerations, and practical techniques for customizing models like <a href="https://huggingface.co/docs/transformers/model_doc/t5" target="_blank">T5</a>, <a href="https://huggingface.co/docs/transformers/model_doc/gpt2" target="_blank">GPT-2</a>, and <a href="https://huggingface.co/meta-llama" target="_blank">Llama-2</a>. Demonstrates evaluation frameworks, metrics (perplexity), and hardware-efficient methods (<a href="https://github.com/huggingface/peft" target="_blank">PEFT</a>, <a href="https://github.com/microsoft/LoRA" target="_blank">LoRA</a>, <a href="https://github.com/TimDettmers/bitsandbytes" target="_blank">BitsAndBytes</a>, soft prompts). Includes hands-on walkthroughs using <a href="https://jupyter.org/" target="_blank">Jupyter</a> notebooks and <a href="https://github.com/OpenAccess-AI-Collective/axolotl" target="_blank">Axolotl</a>, with source code for evaluation, fine-tuning, and infrastructure.</p>
+  <em>Technologies: Python, <a href="https://pytorch.org/" target="_blank">PyTorch</a>, <a href="https://huggingface.co/docs/transformers/index" target="_blank">Hugging Face Transformers</a>, <a href="https://github.com/microsoft/LoRA" target="_blank">LoRA</a>, <a href="https://github.com/TimDettmers/bitsandbytes" target="_blank">BitsAndBytes</a>, <a href="https://github.com/OpenAccess-AI-Collective/axolotl" target="_blank">Axolotl</a>, <a href="https://jupyter.org/" target="_blank">Jupyter</a>, Model Evaluation, Cloud Infrastructure</em>
+  <a href="https://www.youtube.com/watch?v=rY0f1GRK0h8&ab_channel=IliaZlobin">Transformer Research Video</a>
+  <a href="https://www.youtube.com/watch?v=k8XlLoGFIh0&t=2s&ab_channel=IliaZlobin">Fine Tuning Video</a>
+  <a href="https://github.com/iliazlobin/transformers-labs">GitHub Repository</a>
+</div>
+
 <div class="portfolio-item">
   <h3>Cloud Service Providers Blogs Summarizator (Full-Stack Project)</h3>
   <a href="/images/blog-summarizer-system-design.png" target="_blank"><img src="/images/blog-summarizer-system-design.png" alt="Blog Summarizer System Design"></a>
@@ -50,27 +60,11 @@ permalink: /portfolio/
 </div>
 
 <div class="portfolio-item">
-  <h3>Transformers Fine-Tuning (LLM Research)</h3>
-  <p>Comprehensive exploration of transformer model fine-tuning, focusing on grammar tasks and optimization strategies. Covers theoretical foundations, architectural considerations, and practical techniques for customizing models like <a href="https://huggingface.co/docs/transformers/model_doc/t5" target="_blank">T5</a>, <a href="https://huggingface.co/docs/transformers/model_doc/gpt2" target="_blank">GPT-2</a>, and <a href="https://huggingface.co/meta-llama" target="_blank">Llama-2</a>. Demonstrates evaluation frameworks, metrics (perplexity), and hardware-efficient methods (<a href="https://github.com/huggingface/peft" target="_blank">PEFT</a>, <a href="https://github.com/microsoft/LoRA" target="_blank">LoRA</a>, <a href="https://github.com/TimDettmers/bitsandbytes" target="_blank">BitsAndBytes</a>, soft prompts). Includes hands-on walkthroughs using <a href="https://jupyter.org/" target="_blank">Jupyter</a> notebooks and <a href="https://github.com/OpenAccess-AI-Collective/axolotl" target="_blank">Axolotl</a>, with source code for evaluation, fine-tuning, and infrastructure.</p>
-  <em>Technologies: Python, <a href="https://pytorch.org/" target="_blank">PyTorch</a>, <a href="https://huggingface.co/docs/transformers/index" target="_blank">Hugging Face Transformers</a>, <a href="https://github.com/microsoft/LoRA" target="_blank">LoRA</a>, <a href="https://github.com/TimDettmers/bitsandbytes" target="_blank">BitsAndBytes</a>, <a href="https://github.com/OpenAccess-AI-Collective/axolotl" target="_blank">Axolotl</a>, <a href="https://jupyter.org/" target="_blank">Jupyter</a>, Model Evaluation, Cloud Infrastructure</em>
-  <a href="https://www.youtube.com/watch?v=rY0f1GRK0h8&ab_channel=IliaZlobin">Transformer Research Video</a>
-  <a href="https://www.youtube.com/watch?v=k8XlLoGFIh0&t=2s&ab_channel=IliaZlobin">Fine Tuning Video</a>
-  <a href="https://github.com/iliazlobin/transformers-labs">GitHub Repository</a>
-</div>
-
-<div class="portfolio-item">
   <h3>Twitter Recommendation System (ML Research)</h3>
   <a href="/images/twitter-recommendation-system-system-design.png" target="_blank"><img src="/images/twitter-recommendation-system-system-design.png" alt="Twitter Recommendation System Design"></a>
   <p>In-depth analysis of Twitter's open-sourced recommendation algorithm, exploring its system design, technical documentation, and key scientific papers. The video covers how Twitter ranks and recommends tweets, the role of user engagement prediction (RealGraph), feature-wise multiplication in ranking models (MaskNet), community-based representations (SimClusters), and multimodal interaction graphs (TwHIN). Includes walkthroughs of official source code, technical docs, and practical insights for users and content creators. See <a href="https://github.com/twitter/the-algorithm" target="_blank">Twitter's open-source algorithm</a>.</p>
   <em>Technologies: Python, Scala, Machine Learning, Graph Algorithms, Recommendation Systems, <a href="https://developer.twitter.com/en/docs/twitter-api" target="_blank">Twitter API</a></em>
   <a href="https://www.youtube.com/watch?v=F-bvRXIQemg&t=418s&ab_channel=IliaZlobin">YouTube Video</a>
-</div>
-
-<div class="portfolio-item">
-  <h3>Atmos Landing Zones (IaC Project)</h3>
-  <p>Comprehensive implementation of AWS Landing Zones using <a href="https://github.com/cloudposse/atmos" target="_blank">Cloud Posse Atmos</a>, <a href="https://www.terraform.io/" target="_blank">Terraform</a>, and <a href="https://github.com/helmfile/helmfile" target="_blank">Helmfile</a>. Enables secure, scalable, and automated provisioning of multi-account, multi-region AWS environments with modular infrastructure as code. Features include automated account creation, IAM role delegation (SSO/SAML), centralized networking, security guardrails, audit logging, and Kubernetes orchestration. Supports CI/CD automation, reproducible developer environments (<a href="https://github.com/cloudposse/geodesic" target="_blank">Geodesic shell</a>), and extensible configuration for business units and future cloud providers.</p>
-  <em>Technologies: <a href="https://github.com/cloudposse/atmos" target="_blank">Atmos</a>, <a href="https://www.terraform.io/" target="_blank">Terraform</a>, <a href="https://github.com/helmfile/helmfile" target="_blank">Helmfile</a>, <a href="https://aws.amazon.com/" target="_blank">AWS</a>, SSO, SAML, <a href="https://github.com/cloudposse/geodesic" target="_blank">Geodesic</a>, CI/CD, <a href="https://www.docker.com/" target="_blank">Docker</a></em>
-  <a href="https://github.com/iliazlobin/atmos-landing-zones">GitHub Repository</a>
 </div>
 
 <div class="portfolio-item">
@@ -83,15 +77,20 @@ permalink: /portfolio/
 
 <div class="portfolio-item">
   <h3>VoiceMatch: AI-Powered English Pronunciation Practice Platform (Full-Stack Project)</h3>
-  <a href="/images/voicematch-labs-system-design.png" target="_blank">
-    <img src="/images/voicematch-labs-system-design.png" alt="VoiceMatch System Design">
-  </a>
-  <p>Designed and implemented a full-stack, cloud-native application enabling users to improve English pronunciation through advanced speech analysis and interactive feedback. Architected scalable backend APIs, developed modern <a href="https://vuejs.org/" target="_blank">Vue.js</a> and <a href="https://react.dev/" target="_blank">React</a> frontends, and integrated machine learning models (<a href="https://pytorch.org/" target="_blank">PyTorch</a>, <a href="https://www.tensorflow.org/" target="_blank">TensorFlow</a>) for phoneme and pitch detection. Leveraged <a href="https://aws.amazon.com/s3/" target="_blank">AWS S3</a>, <a href="https://www.docker.com/" target="_blank">Docker</a>, and serverless technologies for robust cloud video/audio processing. Delivered real-time, data-driven insights and visualizations, supporting both individual learners and educational institutions.</p>
   <a href="/images/voicematch-labs-demo.png" target="_blank">
     <img src="/images/voicematch-labs-demo.png" alt="VoiceMatch Demo">
   </a>
+  <p>Designed and implemented a full-stack, cloud-native application enabling users to improve English pronunciation through advanced speech analysis and interactive feedback. Architected scalable backend APIs, developed modern <a href="https://vuejs.org/" target="_blank">Vue.js</a> and <a href="https://react.dev/" target="_blank">React</a> frontends, and integrated machine learning models (<a href="https://pytorch.org/" target="_blank">PyTorch</a>, <a href="https://www.tensorflow.org/" target="_blank">TensorFlow</a>) for phoneme and pitch detection. Leveraged <a href="https://aws.amazon.com/s3/" target="_blank">AWS S3</a>, <a href="https://www.docker.com/" target="_blank">Docker</a>, and serverless technologies for robust cloud video/audio processing. Delivered real-time, data-driven insights and visualizations, supporting both individual learners and educational institutions.</p>
   <em>Technologies: Python, TypeScript, <a href="https://vuejs.org/" target="_blank">Vue.js</a>, <a href="https://react.dev/" target="_blank">React</a>, <a href="https://aws.amazon.com/" target="_blank">AWS</a>, <a href="https://www.docker.com/" target="_blank">Docker</a>, <a href="https://pytorch.org/" target="_blank">PyTorch</a>, <a href="https://www.tensorflow.org/" target="_blank">TensorFlow</a>, Serverless.</em>
   <a href="https://github.com/iliazlobin/voicematch-labs">GitHub Repository</a>
+</div>
+
+
+<div class="portfolio-item">
+  <h3>Atmos Landing Zones (IaC Project)</h3>
+  <p>Comprehensive implementation of AWS Landing Zones using <a href="https://github.com/cloudposse/atmos" target="_blank">Cloud Posse Atmos</a>, <a href="https://www.terraform.io/" target="_blank">Terraform</a>, and <a href="https://github.com/helmfile/helmfile" target="_blank">Helmfile</a>. Enables secure, scalable, and automated provisioning of multi-account, multi-region AWS environments with modular infrastructure as code. Features include automated account creation, IAM role delegation (SSO/SAML), centralized networking, security guardrails, audit logging, and Kubernetes orchestration. Supports CI/CD automation, reproducible developer environments (<a href="https://github.com/cloudposse/geodesic" target="_blank">Geodesic shell</a>), and extensible configuration for business units and future cloud providers.</p>
+  <em>Technologies: <a href="https://github.com/cloudposse/atmos" target="_blank">Atmos</a>, <a href="https://www.terraform.io/" target="_blank">Terraform</a>, <a href="https://github.com/helmfile/helmfile" target="_blank">Helmfile</a>, <a href="https://aws.amazon.com/" target="_blank">AWS</a>, SSO, SAML, <a href="https://github.com/cloudposse/geodesic" target="_blank">Geodesic</a>, CI/CD, <a href="https://www.docker.com/" target="_blank">Docker</a></em>
+  <a href="https://github.com/iliazlobin/atmos-landing-zones">GitHub Repository</a>
 </div>
 
 </div>
