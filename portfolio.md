@@ -9,6 +9,22 @@ permalink: /portfolio/
 <div class="portfolio-grid">
 
 <div class="portfolio-item">
+  <h3>Agentic Enterprise - High-Level Design (AWS + Pulumi + LangGraph)</h3>
+  <a href="/images/agentic-enterprise-design.png" target="_blank"><img src="/images/agentic-enterprise-design.png" alt="Agentic Enterprise System Design"></a>
+  <p>Enterprise-scale, AWS-native, code-first system that integrates Open-SWE style GitHub interactions, <a href="https://www.pulumi.com/" target="_blank">Pulumi</a> Infrastructure as Code, and <a href="https://langchain-ai.github.io/langgraph/" target="_blank">LangGraph</a>-driven domain assistants. Addresses fragmented codebases, operational toil, and security risks by introducing specialized domain assistants that collaborate with teams through deterministic code changes via PRs. Features multi-account AWS landing zone with clear trust boundaries, everything-as-code approach, and comprehensive security guardrails including IAM Identity Center SSO, SCPs, and audit trails.</p>
+  <em>Technologies: <a href="https://www.pulumi.com/" target="_blank">Pulumi</a>, <a href="https://aws.amazon.com/" target="_blank">AWS</a>, <a href="https://langchain-ai.github.io/langgraph/" target="_blank">LangGraph</a>, TypeScript, <a href="https://github.com/" target="_blank">GitHub API</a>, AWS Organizations, EKS, Lambda, Multi-Account Architecture, Infrastructure as Code</em>
+  <a href="https://github.com/iliazlobin/agentic-enterprise">GitHub Repository</a>
+</div>
+
+<div class="portfolio-item">
+  <h3>Software Engineer Agent for Enterprise Development</h3>
+  <a href="/images/open-swe-agent-ext-langgraph.png" target="_blank"><img src="/images/open-swe-agent-ext-langgraph.png" alt="Software Engineer Agent System Design"></a>
+  <p>An AI software engineer that automates the complete software development lifecycle—from requirements analysis and architecture design to implementation and testing. Built as an extension of <a href="https://github.com/langchain-ai/open-swe" target="_blank">LangChain's Open SWE</a> project, it acts as an autonomous development team member, creating production-ready code, comprehensive test suites, and maintaining high software quality standards for enterprise organizations. Features specialized agents for planning, programming, reviewing, and testing, with seamless <a href="https://github.com/" target="_blank">GitHub</a> integration for issue-to-PR workflows, automated code reviews, and enterprise compliance checking.</p>
+  <em>Technologies: TypeScript, <a href="https://langchain-ai.github.io/langgraph/" target="_blank">LangGraph</a>, <a href="https://nextjs.org/" target="_blank">Next.js</a>, <a href="https://github.com/" target="_blank">GitHub API</a>, <a href="https://playwright.dev/" target="_blank">Playwright</a>, <a href="https://www.docker.com/" target="_blank">Docker</a>, Enterprise Architecture, Automated Testing</em>
+  <a href="https://github.com/iliazlobin/software-developer-agent">GitHub Repository</a>
+</div>
+
+<div class="portfolio-item">
   <h3>AI Events concierge (Full-Stack Agentic System)</h3>
   <a href="/images/events-planner-agent-system-design.png" target="_blank"><img src="/images/events-planner-agent-system-design.png" alt="Event Concierge System Design"></a>
   <p>End-to-end automation for event discovery, registration, and calendar scheduling. Powered by <a href="https://langchain-ai.github.io/langgraph/" target="_blank">LangGraph</a>, <a href="https://microsoft.github.io/autogen/" target="_blank">AutoGen</a>, and browser automation, it acts as a personal concierge—searching, ranking, registering, and scheduling events from platforms like Meetup and Luma. The system orchestrates multiple AI agents and browser automation (<a href="https://playwright.dev/" target="_blank">Playwright</a>, AutoGen) to handle form filling, event registration, and <a href="https://developers.google.com/calendar/api" target="_blank">Google Calendar API</a> integration. State management ensures user info and event status are tracked throughout the workflow, keeping your schedule up to date automatically.</p>
