@@ -2,11 +2,12 @@
 layout: page
 title: About
 permalink: /
+description: "Ilia Zlobin — Principal/Staff Software Engineer in the San Francisco Bay Area. 14+ years building large-scale distributed systems, cloud-native platforms, and AI/ML infrastructure across AWS, GCP, and Azure."
 ---
 
 <div style="width: 100%; margin-bottom: 2rem; position: relative;">
   <img src="/images/profile-photo.jpg" alt="Ilia Zlobin Profile Photo" style="width:160px; height:160px; object-fit:cover; border-radius:50%; box-shadow:0 2px 8px rgba(0,0,0,0.10); float: right; margin-left:2rem; margin-bottom:1rem; margin-top:-4rem;" />
-  I’m a <strong>Principal Software Engineer</strong> in New York City with 12+ years building and operating large-scale distributed systems and cloud-native platforms across AWS, GCP, and Azure. My focus is on architecting infrastructure platforms and automation frameworks that improve developer productivity, ensure reliability, and scale to enterprise demands. I bring deep expertise in AI/ML, integrating AI-driven automation and robust MLOps to accelerate innovation at organizational scale.
+  I’m a <strong>Principal Software Engineer</strong> in the San Francisco Bay Area with 14+ years building and operating large-scale distributed systems and cloud-native platforms across AWS, GCP, and Azure. My focus is on architecting infrastructure platforms and automation frameworks that improve developer productivity, ensure reliability, and scale to enterprise demands. I bring deep expertise in AI/ML, integrating AI-driven automation and robust MLOps to accelerate innovation at organizational scale.
 </div>
 
 ---

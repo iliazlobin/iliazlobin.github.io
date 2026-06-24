@@ -2,6 +2,7 @@
 layout: page
 title: Blog
 permalink: /blog/
+description: "System design write-ups, platform & AI engineering notes, and deep dives by Ilia Zlobin — with architecture diagrams and code throughout."
 ---
 
 <link rel="stylesheet" href="{{ '/assets/css/blog.css' | relative_url }}">
