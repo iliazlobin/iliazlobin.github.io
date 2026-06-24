@@ -1,0 +1,88 @@
+/* =========================================================================
+   blog.css — blog index, post layout, Notion-style callouts, mermaid, code
+   ========================================================================= */
+
+/* ---------- Blog index list ---------- */
+.blog-intro { color: var(--ink-faint); font-size: 1.02rem; max-width: 640px; margin: .2rem 0 2rem; }
+
+.post-feed { list-style: none; margin: 0; padding: 0; }
+.post-card {
+  display: block; background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 1.4rem 1.5rem; margin-bottom: 1.1rem;
+  box-shadow: var(--shadow); transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+}
+.post-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: #d4dbe6; text-decoration: none; }
+.post-card .meta { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; font-size: .8rem; color: var(--ink-faint); margin-bottom: .5rem; }
+.post-card .meta time { font-weight: 600; }
+.post-card h3 { margin: 0 0 .4rem; font-size: 1.28rem; color: var(--ink); }
+.post-card p { margin: 0; color: var(--ink-soft); font-size: .95rem; }
+.post-card .read { display: inline-block; margin-top: .7rem; color: var(--accent); font-weight: 600; font-size: .88rem; }
+
+.post-tags { display: inline-flex; flex-wrap: wrap; gap: .35rem; }
+.post-tags .tag { font-size: .72rem; }
+
+/* ---------- Single post ---------- */
+.post { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+        box-shadow: var(--shadow); padding: 2.4rem clamp(1.2rem, 4vw, 3rem) 2.8rem; max-width: 800px; margin: 0 auto; }
+.post-header { margin-bottom: 1.8rem; padding-bottom: 1.4rem; border-bottom: 1px solid var(--line); }
+.post-header .meta { display: flex; flex-wrap: wrap; gap: .7rem; align-items: center; font-size: .85rem; color: var(--ink-faint); margin-bottom: .7rem; }
+.post-header h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); margin: 0; }
+.post-header .reading-time::before { content: "·"; margin-right: .7rem; }
+
+.post-content { font-size: 1.02rem; line-height: 1.75; color: #2b3445; }
+.post-content h2 { font-size: 1.5rem; margin: 2.2rem 0 .9rem; }
+.post-content h3 { font-size: 1.2rem; margin: 1.8rem 0 .7rem; }
+.post-content p { margin: 0 0 1.1rem; }
+.post-content ul, .post-content ol { margin: 0 0 1.1rem; padding-left: 1.4rem; }
+.post-content li { margin: .3rem 0; }
+.post-content img { max-width: 100%; border-radius: var(--radius-sm); border: 1px solid var(--line); margin: 1rem 0; }
+.post-content a { text-decoration: underline; text-underline-offset: 2px; }
+.post-content blockquote {
+  margin: 1.2rem 0; padding: .2rem 1.2rem; border-left: 3px solid var(--accent);
+  color: var(--ink-faint); font-style: italic; background: #fafbfd;
+}
+
+/* Inline + block code */
+.post-content code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: .88em; background: #f3f4f7; color: #b4225b; padding: .12em .4em; border-radius: 5px; }
+.post-content pre { background: #0f172a; color: #e2e8f0; border-radius: var(--radius-sm);
+  padding: 1.1rem 1.2rem; overflow-x: auto; margin: 1.2rem 0; border: 1px solid #1e293b; font-size: .88rem; line-height: 1.55; }
+.post-content pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+
+/* ---------- Notion-style callouts ----------
+   Authored as GitHub alert blockquotes:  > [!NOTE] / [!TIP] / [!IMPORTANT] / [!WARNING] / [!CAUTION]
+   Transformed into .callout by site.js                                            */
+.callout {
+  display: flex; gap: .85rem; margin: 1.4rem 0; padding: 1rem 1.15rem;
+  border: 1px solid var(--line); border-left-width: 4px; border-radius: var(--radius-sm);
+  background: #fafbfd; font-style: normal;
+}
+.callout .callout-icon { flex: 0 0 auto; font-size: 1.15rem; line-height: 1.5; }
+.callout .callout-body { flex: 1; min-width: 0; }
+.callout .callout-title { font-weight: 700; font-size: .85rem; letter-spacing: .03em; text-transform: uppercase; margin-bottom: .25rem; }
+.callout .callout-body :last-child { margin-bottom: 0; }
+.callout p { margin: 0 0 .5rem; color: var(--ink-soft); font-style: normal; }
+
+.callout-note      { border-left-color: #2563eb; background: #eff5ff; }
+.callout-note      .callout-title { color: #1d4ed8; }
+.callout-tip       { border-left-color: #16a34a; background: #effaf1; }
+.callout-tip       .callout-title { color: #15803d; }
+.callout-important { border-left-color: #7c3aed; background: #f5f1fe; }
+.callout-important .callout-title { color: #6d28d9; }
+.callout-warning   { border-left-color: #d97706; background: #fff8ec; }
+.callout-warning   .callout-title { color: #b45309; }
+.callout-caution   { border-left-color: #dc2626; background: #fef2f2; }
+.callout-caution   .callout-title { color: #b91c1c; }
+
+/* ---------- Mermaid ---------- */
+.post-content .mermaid {
+  display: flex; justify-content: center; margin: 1.6rem 0; padding: 1.2rem;
+  background: #fff; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow-x: auto;
+}
+.post-content .mermaid svg { max-width: 100%; height: auto; }
+/* Hide raw fenced mermaid source until rendered, to avoid a flash of code */
+.post-content .language-mermaid { display: none; }
+
+/* ---------- Post footer / nav ---------- */
+.post-footer { max-width: 800px; margin: 1.6rem auto 0; display: flex; justify-content: space-between; gap: 1rem; }
+.post-footer a { font-weight: 600; font-size: .9rem; }
