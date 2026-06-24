@@ -116,10 +116,43 @@
     });
   }
 
+  /* ---------------------------------------------------------------------
+     4) Scrollspy: highlight the portfolio rail link for the project
+        currently in view.
+     --------------------------------------------------------------------- */
+  function setupScrollspy() {
+    var links = Array.prototype.slice.call(document.querySelectorAll(".portfolio-rail [data-spy]"));
+    if (!links.length || !("IntersectionObserver" in window)) return;
+    var map = {};
+    links.forEach(function (l) { map[l.getAttribute("href").slice(1)] = l; });
+
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) {
+          links.forEach(function (l) { l.classList.remove("active"); });
+          var link = map[e.target.id];
+          if (link) {
+            link.classList.add("active");
+            // keep the active item visible in a horizontal (mobile) rail
+            if (link.scrollIntoView) {
+              var nav = link.parentNode;
+              if (nav && nav.scrollWidth > nav.clientWidth) {
+                link.scrollIntoView({ block: "nearest", inline: "center" });
+              }
+            }
+          }
+        }
+      });
+    }, { rootMargin: "-15% 0px -75% 0px", threshold: 0 });
+
+    document.querySelectorAll(".portfolio-feed .portfolio-item").forEach(function (s) { io.observe(s); });
+  }
+
   function init() {
     setupCallouts();   // before reveal, so callouts can also animate
     setupInfinite();
     setupReveal();
+    setupScrollspy();
   }
 
   if (document.readyState === "loading") {
