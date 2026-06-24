@@ -1,0 +1,94 @@
+/* =========================================================================
+   site.css — professional theme layer on top of Minima
+   Owns: design tokens, typography, nav, footer, buttons, shared UI.
+   Page-specific styling lives in portfolio.css and blog.css.
+   ========================================================================= */
+
+:root {
+  --accent:        #2563eb;
+  --accent-dark:   #1d4ed8;
+  --accent-soft:   #eff4ff;
+  --ink:           #1a2233;
+  --ink-soft:      #4a5568;
+  --ink-faint:     #6b7280;
+  --line:          #e6e8ec;
+  --bg:            #f7f8fa;
+  --card:          #ffffff;
+  --radius:        12px;
+  --radius-sm:     8px;
+  --shadow:        0 1px 2px rgba(16,24,40,.04), 0 4px 16px rgba(16,24,40,.06);
+  --shadow-lg:     0 8px 30px rgba(16,24,40,.12);
+  --maxw:          820px;
+  --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+html { -webkit-text-size-adjust: 100%; }
+body {
+  font-family: var(--font);
+  color: var(--ink);
+  background: var(--bg);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---- Typography ---- */
+h1, h2, h3, h4 { color: var(--ink); font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; }
+h1 { font-size: 2.1rem; margin: 0 0 .6rem; }
+h2 { font-size: 1.5rem; margin: 2.4rem 0 1rem; }
+h3 { font-size: 1.18rem; }
+p, li { color: var(--ink-soft); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-dark); text-decoration: underline; }
+
+/* Section divider used between resume/home sections */
+.page-content hr,
+.post-content hr { border: 0; border-top: 1px solid var(--line); margin: 2.2rem 0; }
+
+/* ---- Header / nav ---- */
+.site-header { border-top: none; border-bottom: 1px solid var(--line); background: #fff; }
+.site-title, .site-title:visited { color: var(--ink) !important; font-weight: 800; letter-spacing: -0.02em; }
+.site-nav .page-link { color: var(--ink-soft); font-weight: 500; }
+.site-nav .page-link:hover { color: var(--accent); text-decoration: none; }
+.site-nav .page-link.active { color: var(--accent); font-weight: 600; }
+
+/* ---- Footer ---- */
+.site-footer { border-top: 1px solid var(--line); background: #fff; color: var(--ink-faint); }
+.site-footer a { color: var(--ink-soft); }
+
+/* ---- Buttons / CTA row ---- */
+.cta-row { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1.4rem 0 .4rem; }
+.btn {
+  display: inline-flex; align-items: center; gap: .45rem;
+  padding: .55rem 1rem; border-radius: 999px; font-weight: 600; font-size: .92rem;
+  border: 1px solid var(--line); background: #fff; color: var(--ink) !important;
+  transition: all .15s ease; text-decoration: none !important;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent) !important; transform: translateY(-1px); box-shadow: var(--shadow); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff !important; }
+.btn-primary:hover { background: var(--accent-dark); border-color: var(--accent-dark); color: #fff !important; }
+
+/* ---- Lead / headline block (home + resume top) ---- */
+.lead-headline { font-size: 1.05rem; color: var(--ink-faint); font-weight: 500; margin: 0 0 .2rem; }
+
+/* ---- Tech pill tags ---- */
+.tags { display: flex; flex-wrap: wrap; gap: .4rem; margin: .8rem 0 0; padding: 0; list-style: none; }
+.tags li, .tag {
+  font-size: .76rem; font-weight: 600; color: var(--ink-soft);
+  background: var(--accent-soft); border: 1px solid #dbe4ff;
+  padding: .2rem .6rem; border-radius: 999px; letter-spacing: .01em;
+}
+
+/* ---- Reveal animation (progressive / infinite scroll) ----
+   Scoped under .js so content is never hidden when JavaScript is disabled. */
+.js .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s ease, transform .5s ease; }
+.js .reveal.is-visible { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .js .reveal { opacity: 1; transform: none; transition: none; }
+}
+
+.load-sentinel { height: 1px; }
+
+/* Slightly wider, more readable content column than minima default */
+.wrapper { max-width: 1080px; }
+.page-content { padding: 2.2rem 0 3rem; }

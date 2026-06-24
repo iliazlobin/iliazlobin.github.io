@@ -35,7 +35,29 @@ plugins:
 header_pages:
   - resume.md
   - portfolio.md
+  - blog.md
   - index.md
+
+# --- Author & social (used by jekyll-seo-tag for meta + JSON-LD) ---
+author: Ilia Zlobin
+twitter:
+  username: iliazlobin
+  card: summary_large_image
+social:
+  name: Ilia Zlobin
+  links:
+    - https://www.linkedin.com/in/iliazlobin
+    - https://github.com/iliazlobin
+    - https://twitter.com/iliazlobin
+    - https://www.youtube.com/@iliazlobin
+
+# Default Open Graph / Twitter share image for every page (per-page `image:`
+# front matter overrides this).
+defaults:
+  - scope:
+      path: ""
+    values:
+      image: /images/og-default.png
 
 
 # Exclude from processing.
