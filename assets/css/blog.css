@@ -8,7 +8,7 @@
 /* Controls: tag autocomplete filter (sticky) */
 .blog-controls {
   position: sticky; top: 0; z-index: 30; background: var(--bg);
-  padding: .8rem 0; margin-bottom: .2rem; border-bottom: 1px solid var(--line);
+  padding: .8rem 1.1rem; margin-bottom: .2rem; border-bottom: 1px solid var(--line);
   display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; justify-content: space-between;
 }
 .tag-input {
@@ -75,15 +75,16 @@
 .post-card.is-filtered { opacity: 0; transform: translateY(-8px) scale(.98); pointer-events: none; }
 
 .pc-thumb {
-  flex: 0 0 180px; width: 180px; aspect-ratio: 4 / 3; align-self: center; overflow: hidden;
-  border: 0; border-radius: var(--radius-sm); background: #f0f2f6;
+  flex: 0 0 240px; width: 240px; aspect-ratio: 16 / 10; align-self: center; overflow: hidden;
+  border: 1px solid var(--line); border-radius: var(--radius-sm); background: #f0f2f6;
 }
-.pc-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: center; margin: 0; border: 0; border-radius: 0; display: block; }
+.pc-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: center; margin: 0; border: 0; border-radius: 0; display: block; transition: transform .35s ease; }
+.post-card:hover .pc-thumb img { transform: scale(1.05); }
 
 /* Gradient "cover" with the post title — replaces image thumbnails, auto for every post */
 .pc-thumb.cover {
   display: flex; flex-direction: column; justify-content: flex-end; gap: .25rem;
-  padding: .75rem .85rem; color: #fff; text-decoration: none;
+  padding: .75rem .85rem; color: #fff; text-decoration: none; border: 0;
 }
 .pc-cover-title {
   font-weight: 700; font-size: .84rem; line-height: 1.25; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.28);
@@ -171,17 +172,23 @@
 
 /* Inline + block code */
 .post-content code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: .88em; background: #f3f4f7; color: #b4225b; padding: .12em .4em; border-radius: 5px; }
-.post-content pre { background: #0f172a; color: #e2e8f0; border-radius: var(--radius-sm);
-  padding: 1.1rem 1.2rem; overflow-x: auto; margin: 1.2rem 0; border: 1px solid #1e293b; font-size: .88rem; line-height: 1.55; }
-.post-content pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+  font-size: .86em; background: #f3f4f7; color: #b4225b; padding: .12em .4em; border-radius: 5px; }
+/* Code blocks — readable light theme; override minima/rouge default bg + faint text */
+.post-content .highlighter-rouge .highlight,
+.post-content .highlight,
+.post-content pre { background: #f6f8fa; }
+.post-content pre {
+  color: #1f2937; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: .9rem 1.05rem; overflow-x: auto; margin: 1rem 0; font-size: .85rem; line-height: 1.55;
+}
+.post-content pre code, .post-content .highlight code { background: none; color: #1f2937; padding: 0; font-size: inherit; }
 
 /* ---------- Notion-style callouts ----------
    Authored as GitHub alert blockquotes:  > [!NOTE] / [!TIP] / [!IMPORTANT] / [!WARNING] / [!CAUTION]
    Transformed into .callout by site.js                                            */
 .callout {
-  display: flex; gap: .55rem; margin: 1rem 0; padding: .6rem .8rem;
-  border: 1px solid var(--line); border-left-width: 3px; border-radius: 8px;
+  display: flex; gap: .5rem; margin: .8rem 0; padding: .35rem .7rem .35rem .75rem;
+  border: 0; border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0;
   background: #fafbfd; font-style: normal;
 }
 .callout .callout-icon { flex: 0 0 auto; font-size: .95rem; line-height: 1.5; }
