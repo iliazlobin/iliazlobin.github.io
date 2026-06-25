@@ -19,7 +19,10 @@ description: "System design write-ups, platform & AI engineering notes, and deep
     <input type="text" class="ti-field" placeholder="Filter by topic…" aria-label="Filter posts by topic" autocomplete="off" spellcheck="false">
     <div class="ti-suggest" hidden role="listbox"></div>
   </div>
-  <span class="result-count" data-result-count></span>
+  <div class="bc-right">
+    <span class="result-count" data-result-count></span>
+    <button class="ti-clear" data-tag-clear type="button" hidden>Clear all</button>
+  </div>
 </div>
 <script type="application/json" data-blog-tags>[{% for t in site.tags %}{"name": {{ t[0] | jsonify }}, "count": {{ t[1].size }}}{% unless forloop.last %},{% endunless %}{% endfor %}]</script>
 
@@ -45,8 +48,8 @@ description: "System design write-ups, platform & AI engineering notes, and deep
       </div>
       {%- endif %}
     </div>
-    {%- if post.image %}
-    <a class="pc-thumb" href="{{ post.url | relative_url }}" tabindex="-1" aria-hidden="true"><img src="{{ post.image | relative_url }}" alt="" loading="lazy"></a>
+    {%- if post.thumbnail %}
+    <a class="pc-thumb" href="{{ post.url | relative_url }}" tabindex="-1" aria-hidden="true"><img src="{{ post.thumbnail | relative_url }}" alt="" loading="lazy"></a>
     {%- else %}
     <a class="pc-thumb placeholder g{{ seed }}" href="{{ post.url | relative_url }}" tabindex="-1" aria-hidden="true"><span>{{ primary }}</span></a>
     {%- endif %}

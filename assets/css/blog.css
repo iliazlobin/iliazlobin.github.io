@@ -41,7 +41,14 @@
 .ti-opt:hover, .ti-opt.active { background: var(--accent-soft); color: var(--accent); }
 .ti-opt strong { color: var(--accent); font-weight: 800; }
 .ti-opt .ti-c { font-size: .72rem; font-weight: 700; color: var(--ink-faint); }
+.bc-right { display: flex; align-items: center; gap: .7rem; }
 .result-count { font-size: .82rem; color: var(--ink-faint); font-weight: 600; white-space: nowrap; }
+.ti-clear {
+  font-family: inherit; font-size: .82rem; font-weight: 600; color: var(--ink-soft);
+  background: #fff; border: 1px solid var(--line); border-radius: 999px; padding: .3rem .75rem; cursor: pointer;
+  transition: all .15s ease; white-space: nowrap;
+}
+.ti-clear:hover { border-color: var(--accent); color: var(--accent); }
 
 /* Vertical timeline + feed */
 .post-feed { position: relative; list-style: none; margin: .5rem 0 0; padding: 0 0 0 1.9rem; border-left: 2px solid var(--line); }
@@ -53,9 +60,10 @@
   width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 3px solid var(--bg); box-sizing: border-box; z-index: 2;
 }
 
-/* Cards — small thumbnail on the RIGHT, content on the left */
+/* Cards — small LANDSCAPE thumbnail on the top-right, content on the left */
 .post-card {
-  position: relative; display: grid; grid-template-columns: minmax(0,1fr) 116px; gap: 1.1rem;
+  position: relative; display: grid; grid-template-columns: minmax(0,1fr) 150px; gap: 1.1rem;
+  align-items: start;
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 1.1rem 1.3rem; margin-bottom: 1rem; box-shadow: var(--shadow);
   transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease, opacity .22s ease;
@@ -68,7 +76,7 @@
 .post-card.is-filtered { opacity: 0; transform: translateY(-8px) scale(.98); pointer-events: none; }
 
 .pc-thumb {
-  display: block; align-self: stretch; min-height: 92px; border-radius: var(--radius-sm); overflow: hidden;
+  display: block; width: 100%; aspect-ratio: 16 / 9; align-self: start; border-radius: var(--radius-sm); overflow: hidden;
   border: 1px solid var(--line); background: #f0f2f6;
 }
 .pc-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top center; margin: 0; border: 0; border-radius: 0; display: block; }

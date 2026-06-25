@@ -164,6 +164,7 @@
     var tokensWrap = box.querySelector(".ti-tokens");
     var suggest = box.querySelector(".ti-suggest");
     var countEl = root.querySelector("[data-result-count]");
+    var clearBtn = root.querySelector("[data-tag-clear]");
     var cards = Array.prototype.slice.call(feed.querySelectorAll(".post-card"));
     var dividers = Array.prototype.slice.call(feed.querySelectorAll(".year-divider"));
     var noRes = document.querySelector(".no-results");
@@ -218,6 +219,7 @@
       });
       if (noRes) noRes.hidden = visible > 0;
       if (countEl) countEl.textContent = visible + (visible === 1 ? " post" : " posts");
+      if (clearBtn) clearBtn.hidden = selected.length === 0;
       var url = new URL(window.location);
       if (selected.length) url.searchParams.set("tag", selected.join(",")); else url.searchParams.delete("tag");
       history.replaceState(null, "", url);
@@ -283,6 +285,12 @@
     });
     box.addEventListener("click", function () { field.focus(); });
     document.addEventListener("click", function (e) { if (!box.contains(e.target)) closeSuggest(); });
+    if (clearBtn) clearBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (!selected.length) return;
+      selected = [];
+      renderTokens(); applyFilter(); field.focus();
+    });
 
     // in-card tag chips add to the filter instead of navigating away
     Array.prototype.slice.call(feed.querySelectorAll(".pc-tags .tag")).forEach(function (a) {
