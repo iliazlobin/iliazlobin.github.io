@@ -60,35 +60,34 @@
   width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 3px solid var(--bg); box-sizing: border-box; z-index: 2;
 }
 
-/* Cards — full-height gradient cover flush to the right edge, content on the left */
+/* Cards — content on the left, a fixed gradient cover tile on the right (flexbox) */
 .post-card {
-  position: relative; display: grid; grid-template-columns: minmax(0,1fr) 200px; gap: 0;
-  align-items: stretch; overflow: visible;
+  position: relative; display: flex; align-items: center; gap: 1.2rem;
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-  margin-bottom: 1rem; box-shadow: var(--shadow);
+  padding: 1.1rem 1.2rem; margin-bottom: 1rem; box-shadow: var(--shadow);
   transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease, opacity .22s ease;
 }
 .post-card::before {
-  content: ""; position: absolute; top: 1.5rem; left: calc(-1.9rem - 7px);
+  content: ""; position: absolute; top: 1.4rem; left: calc(-1.9rem - 7px);
   width: 12px; height: 12px; border-radius: 50%; background: #fff; border: 2px solid var(--accent); box-sizing: border-box; z-index: 2;
 }
 .post-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: #d4dbe6; }
 .post-card.is-filtered { opacity: 0; transform: translateY(-8px) scale(.98); pointer-events: none; }
 
 .pc-thumb {
-  align-self: stretch; width: 100%; height: 100%; min-height: 116px; overflow: hidden;
-  border: 0; border-radius: 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0; background: #f0f2f6;
+  flex: 0 0 180px; width: 180px; aspect-ratio: 4 / 3; align-self: center; overflow: hidden;
+  border: 0; border-radius: var(--radius-sm); background: #f0f2f6;
 }
 .pc-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: center; margin: 0; border: 0; border-radius: 0; display: block; }
 
 /* Gradient "cover" with the post title — replaces image thumbnails, auto for every post */
 .pc-thumb.cover {
-  display: flex; flex-direction: column; justify-content: flex-end; gap: .3rem;
-  padding: 1rem 1.1rem; color: #fff; text-decoration: none;
+  display: flex; flex-direction: column; justify-content: flex-end; gap: .25rem;
+  padding: .75rem .85rem; color: #fff; text-decoration: none;
 }
 .pc-cover-title {
-  font-weight: 700; font-size: .92rem; line-height: 1.25; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.28);
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  font-weight: 700; font-size: .84rem; line-height: 1.25; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.28);
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
 }
 .pc-cover-topic { font-size: .64rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: rgba(255,255,255,.85); }
 .pc-thumb.g0 { background: linear-gradient(135deg,#1e3a8a,#2563eb); }
@@ -98,7 +97,7 @@
 .pc-thumb.g4 { background: linear-gradient(135deg,#9d174d,#db2777); }
 .pc-thumb.g5 { background: linear-gradient(135deg,#374151,#6b7280); }
 
-.pc-body { display: flex; flex-direction: column; min-width: 0; padding: 1.2rem 1.35rem; }
+.pc-body { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
 .pc-body .meta { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; font-size: .8rem; color: var(--ink-faint); margin-bottom: .35rem; }
 .pc-body .meta time { font-weight: 600; }
 .pc-body .meta .dot { color: var(--line); }
@@ -125,14 +124,13 @@
 
 /* Mobile: stack with a short banner thumbnail on top; slim timeline */
 @media (max-width: 560px) {
-  .post-card { grid-template-columns: 1fr; }
-  .pc-thumb { order: -1; aspect-ratio: 2 / 1; height: auto; min-height: 0; border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
-  .pc-body { padding: 1.1rem 1.2rem; }
+  .post-card { flex-direction: column; align-items: stretch; gap: .9rem; }
+  .pc-thumb { order: -1; flex: none; width: 100%; aspect-ratio: 2 / 1; }
   .blog-controls { position: static; }
   .tag-input { flex-basis: 100%; max-width: none; }
   .post-feed { padding-left: 1.4rem; }
   .year-divider::before { left: calc(-1.4rem - 9px); }
-  .post-card::before { top: 1rem; left: calc(-1.4rem - 7px); }
+  .post-card::before { top: 1.1rem; left: calc(-1.4rem - 7px); }
 }
 
 /* ---------- Single post ---------- */
@@ -182,15 +180,15 @@
    Authored as GitHub alert blockquotes:  > [!NOTE] / [!TIP] / [!IMPORTANT] / [!WARNING] / [!CAUTION]
    Transformed into .callout by site.js                                            */
 .callout {
-  display: flex; gap: .85rem; margin: 1.4rem 0; padding: 1rem 1.15rem;
-  border: 1px solid var(--line); border-left-width: 4px; border-radius: var(--radius-sm);
+  display: flex; gap: .55rem; margin: 1rem 0; padding: .6rem .8rem;
+  border: 1px solid var(--line); border-left-width: 3px; border-radius: 8px;
   background: #fafbfd; font-style: normal;
 }
-.callout .callout-icon { flex: 0 0 auto; font-size: 1.15rem; line-height: 1.5; }
+.callout .callout-icon { flex: 0 0 auto; font-size: .95rem; line-height: 1.5; }
 .callout .callout-body { flex: 1; min-width: 0; }
-.callout .callout-title { font-weight: 700; font-size: .85rem; letter-spacing: .03em; text-transform: uppercase; margin-bottom: .25rem; }
+.callout .callout-title { font-weight: 700; font-size: .7rem; letter-spacing: .05em; text-transform: uppercase; margin-bottom: .1rem; }
 .callout .callout-body :last-child { margin-bottom: 0; }
-.callout p { margin: 0 0 .5rem; color: var(--ink-soft); font-style: normal; }
+.callout p { margin: 0 0 .35rem; color: var(--ink-soft); font-style: normal; font-size: .93rem; line-height: 1.55; }
 
 .callout-note      { border-left-color: #2563eb; background: #eff5ff; }
 .callout-note      .callout-title { color: #1d4ed8; }
