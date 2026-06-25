@@ -48,11 +48,10 @@ description: "System design write-ups, platform & AI engineering notes, and deep
       </div>
       {%- endif %}
     </div>
-    {%- if post.thumbnail %}
-    <a class="pc-thumb" href="{{ post.url | relative_url }}" tabindex="-1" aria-hidden="true"><img src="{{ post.thumbnail | relative_url }}" alt="" loading="lazy"></a>
-    {%- else %}
-    <a class="pc-thumb placeholder g{{ seed }}" href="{{ post.url | relative_url }}" tabindex="-1" aria-hidden="true"><span>{{ primary }}</span></a>
-    {%- endif %}
+    <a class="pc-thumb cover g{{ seed }}" href="{{ post.url | relative_url }}" tabindex="-1" aria-hidden="true">
+      <span class="pc-cover-title">{{ post.title | escape }}</span>
+      <span class="pc-cover-topic">{{ primary }}</span>
+    </a>
   </article>
   {%- endfor %}
   {%- endfor %}
