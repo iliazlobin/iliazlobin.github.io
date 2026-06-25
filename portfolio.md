@@ -5,7 +5,7 @@ permalink: /portfolio/
 description: "Selected work by Ilia Zlobin across AI/agentic systems, cloud platform engineering, and applied ML — each with source code, architecture diagrams, and walkthrough videos."
 ---
 
-<link rel="stylesheet" href="{{ '/assets/css/portfolio.css' | relative_url }}">
+<link rel="stylesheet" href="{{ '/assets/css/portfolio.css' | relative_url }}?v={{ site.time | date: '%s' }}">
 
 <p class="portfolio-intro">Selected work across AI/agentic systems, cloud platform engineering, and applied ML — each with source code, architecture diagrams, and walkthrough videos.</p>
 

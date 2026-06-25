@@ -1,6 +1,7 @@
 ---
 layout: default
 ---
+<link rel="stylesheet" href="{{ '/assets/css/blog.css' | relative_url }}?v={{ site.time | date: '%s' }}">
 {%- assign words = content | number_of_words -%}
 {%- assign minutes = words | divided_by: 200 | plus: 1 -%}
 <article class="post" itemscope itemtype="https://schema.org/BlogPosting">
