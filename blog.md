@@ -34,7 +34,8 @@ description: "System design write-ups, platform & AI engineering notes, and deep
   {%- assign minutes = words | divided_by: 200 | plus: 1 %}
   {%- assign seed = post.title | size | modulo: 6 %}
   {%- assign primary = post.tags | first | default: "Post" %}
-  <article class="post-card" data-tags="{{ post.tags | join: '|' | escape }}">
+  <div class="tl-item" data-tags="{{ post.tags | join: '|' | escape }}">
+  <article class="post-card">
     <div class="pc-body">
       <div class="meta">
         <time datetime="{{ post.date | date_to_xmlschema }}">{{ post.date | date: "%b %-d, %Y" }}</time>
@@ -57,6 +58,7 @@ description: "System design write-ups, platform & AI engineering notes, and deep
     </a>
     {%- endif %}
   </article>
+  </div>
   {%- endfor %}
   {%- endfor %}
 </div>

@@ -60,27 +60,31 @@
   width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 3px solid var(--bg); box-sizing: border-box; z-index: 2;
 }
 
-/* Cards — borderless (shadow only), full-height cover image flush to the right edge */
-.post-card {
-  position: relative; display: grid; grid-template-columns: minmax(0,1fr) 240px;
-  background: var(--card); border: 0; border-radius: var(--radius);
-  margin-bottom: 1rem; overflow: visible;
-  box-shadow: 0 1px 2px rgba(16,24,40,.05), 0 6px 22px rgba(16,24,40,.08);
-  transition: transform .2s ease, box-shadow .2s ease, opacity .22s ease;
-}
-.post-card::before {
+/* Timeline item wraps the card so the card can use overflow:hidden (exactly
+   like the portfolio) while the timeline dot stays outside it. */
+.tl-item { position: relative; margin-bottom: 1rem; }
+.tl-item::before {
   content: ""; position: absolute; top: 1.4rem; left: calc(-1.9rem - 7px);
   width: 12px; height: 12px; border-radius: 50%; background: #fff; border: 2px solid var(--accent); box-sizing: border-box; z-index: 2;
 }
+.tl-item.is-filtered { opacity: 0; transform: translateY(-8px) scale(.98); pointer-events: none; transition: opacity .22s ease, transform .22s ease; }
+
+/* Card — same technique as the portfolio: overflow:hidden clips the full-height
+   cover image to the rounded corners (no borders peeking, no overflow). */
+.post-card {
+  position: relative; display: grid; grid-template-columns: minmax(0,1fr) 240px;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  overflow: hidden; box-shadow: var(--shadow);
+  transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+}
 .post-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: #d4dbe6; }
-.post-card.is-filtered { opacity: 0; transform: translateY(-8px) scale(.98); pointer-events: none; }
 
 .pc-thumb {
-  position: relative; align-self: stretch; overflow: hidden; background: #0b1220;
-  border: 0; border-radius: 0 var(--radius) var(--radius) 0;
+  align-self: stretch; min-height: 100%; overflow: hidden; background: #0b1220;
+  border-left: 1px solid var(--line);
 }
 .pc-thumb img {
-  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: top center;
+  width: 100%; height: 100%; object-fit: cover; object-position: top center;
   margin: 0; border: 0; border-radius: 0; display: block; transition: transform .4s ease;
 }
 .post-card:hover .pc-thumb img { transform: scale(1.05); }
@@ -130,13 +134,13 @@
 /* Mobile: stack with a short banner thumbnail on top; slim timeline */
 @media (max-width: 560px) {
   .post-card { grid-template-columns: 1fr; }
-  .pc-thumb { order: -1; min-height: 0; aspect-ratio: 2 / 1; border-radius: var(--radius) var(--radius) 0 0; }
+  .pc-thumb { order: -1; min-height: 0; aspect-ratio: 2 / 1; border-left: 0; border-bottom: 1px solid var(--line); }
   .pc-body { padding: 1.1rem 1.2rem; }
   .blog-controls { position: static; }
   .tag-input { flex-basis: 100%; max-width: none; }
   .post-feed { padding-left: 1.4rem; }
   .year-divider::before { left: calc(-1.4rem - 9px); }
-  .post-card::before { top: 1.1rem; left: calc(-1.4rem - 7px); }
+  .tl-item::before { top: 1.1rem; left: calc(-1.4rem - 7px); }
 }
 
 /* ---------- Single post ---------- */

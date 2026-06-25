@@ -165,7 +165,7 @@
     var suggest = box.querySelector(".ti-suggest");
     var countEl = root.querySelector("[data-result-count]");
     var clearBtn = root.querySelector("[data-tag-clear]");
-    var cards = Array.prototype.slice.call(feed.querySelectorAll(".post-card"));
+    var cards = Array.prototype.slice.call(feed.querySelectorAll(".tl-item"));
     var dividers = Array.prototype.slice.call(feed.querySelectorAll(".year-divider"));
     var noRes = document.querySelector(".no-results");
 
@@ -212,7 +212,7 @@
       dividers.forEach(function (d) {
         var n = d.nextElementSibling, has = false;
         while (n && !n.classList.contains("year-divider")) {
-          if (n.classList.contains("post-card") && matches(n)) { has = true; break; }
+          if (n.classList.contains("tl-item") && matches(n)) { has = true; break; }
           n = n.nextElementSibling;
         }
         d.style.display = has ? "" : "none";
