@@ -148,11 +148,74 @@
     document.querySelectorAll(".portfolio-feed .portfolio-item").forEach(function (s) { io.observe(s); });
   }
 
+  /* ---------------------------------------------------------------------
+     5) Blog tag filtering: filter the post feed by topic in place, sync
+        the chosen tag to the URL (?tag=), and hide empty year dividers.
+     --------------------------------------------------------------------- */
+  function setupBlogFilter() {
+    var root = document.querySelector("[data-blog-filter]");
+    var feed = document.querySelector("[data-blog-feed]");
+    if (!root || !feed) return;
+
+    var chips = Array.prototype.slice.call(root.querySelectorAll(".chip-filter"));
+    var cards = Array.prototype.slice.call(feed.querySelectorAll(".post-card"));
+    var dividers = Array.prototype.slice.call(feed.querySelectorAll(".year-divider"));
+    var inCardTags = Array.prototype.slice.call(feed.querySelectorAll(".pc-tags .tag"));
+    var noRes = document.querySelector(".no-results");
+    var clearBtn = document.querySelector("[data-filter-clear]");
+
+    function apply(filter, scroll) {
+      filter = filter || "*";
+      var anyVisible = false;
+      cards.forEach(function (c) {
+        var tags = (c.getAttribute("data-tags") || "").split("|");
+        var show = filter === "*" || tags.indexOf(filter) > -1;
+        c.style.display = show ? "" : "none";
+        if (show) anyVisible = true;
+      });
+      // hide a year divider when none of the cards under it are visible
+      dividers.forEach(function (d) {
+        var n = d.nextElementSibling, has = false;
+        while (n && !n.classList.contains("year-divider")) {
+          if (n.classList.contains("post-card") && n.style.display !== "none") { has = true; break; }
+          n = n.nextElementSibling;
+        }
+        d.style.display = has ? "" : "none";
+      });
+      chips.forEach(function (ch) {
+        ch.classList.toggle("is-active", (ch.getAttribute("data-filter") || "*") === filter);
+      });
+      if (noRes) noRes.hidden = anyVisible;
+
+      var url = new URL(window.location);
+      if (filter === "*") url.searchParams.delete("tag"); else url.searchParams.set("tag", filter);
+      history.replaceState(null, "", url);
+
+      if (scroll && root.scrollIntoView) root.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    chips.forEach(function (ch) {
+      ch.addEventListener("click", function () { apply(ch.getAttribute("data-filter")); });
+    });
+    inCardTags.forEach(function (a) {
+      a.addEventListener("click", function (e) { e.preventDefault(); apply(a.getAttribute("data-tag"), true); });
+    });
+    if (clearBtn) clearBtn.addEventListener("click", function () { apply("*"); });
+
+    // initial filter from ?tag= (e.g. arriving from a single post's tag link)
+    var initial = new URL(window.location).searchParams.get("tag");
+    if (initial) {
+      var match = chips.some(function (ch) { return ch.getAttribute("data-filter") === initial; });
+      if (match) apply(initial);
+    }
+  }
+
   function init() {
     setupCallouts();   // before reveal, so callouts can also animate
     setupInfinite();
     setupReveal();
     setupScrollspy();
+    setupBlogFilter();
   }
 
   if (document.readyState === "loading") {
