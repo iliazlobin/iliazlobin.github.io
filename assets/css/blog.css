@@ -80,10 +80,10 @@
   border: 0; border-radius: 0 var(--radius) var(--radius) 0;
 }
 .pc-thumb img {
-  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center;
-  margin: 0; border: 0; border-radius: 0; display: block; transform: scale(1.04); transition: transform .4s ease;
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: top center;
+  margin: 0; border: 0; border-radius: 0; display: block; transition: transform .4s ease;
 }
-.post-card:hover .pc-thumb img { transform: scale(1.09); }
+.post-card:hover .pc-thumb img { transform: scale(1.05); }
 
 /* Gradient "cover" with the post title — replaces image thumbnails, auto for every post */
 .pc-thumb.cover {

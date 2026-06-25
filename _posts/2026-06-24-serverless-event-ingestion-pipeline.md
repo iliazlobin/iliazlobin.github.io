@@ -5,7 +5,7 @@ date: 2026-06-24
 tags: [System Design, Serverless, AWS]
 description: "A walkthrough of an event-driven, fully serverless pipeline that crawls, enriches, ranks, and publishes social events on AWS — and the design trade-offs behind it."
 image: /images/events-planner-ingest-system-design.png
-thumbnail: /images/events-planner-ingest-system-design.png
+thumbnail: /images/serverless-pipeline.png
 ---
 
 Discovering interesting events shouldn't require ten open tabs. This post walks
