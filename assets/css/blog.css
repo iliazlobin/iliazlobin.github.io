@@ -76,8 +76,9 @@
 
 .pc-thumb {
   position: relative; align-self: stretch; overflow: hidden; background: #0b1220;
+  margin: -1px -1px -1px 0;            /* bleed over the card's top/right/bottom border */
   border: 0; border-left: 1px solid var(--line);
-  border-radius: 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0;
+  border-radius: 0 var(--radius) var(--radius) 0;
 }
 .pc-thumb img {
   position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center;
@@ -130,7 +131,7 @@
 /* Mobile: stack with a short banner thumbnail on top; slim timeline */
 @media (max-width: 560px) {
   .post-card { grid-template-columns: 1fr; }
-  .pc-thumb { order: -1; min-height: 0; aspect-ratio: 2 / 1; border-left: 0; border-bottom: 1px solid var(--line); border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
+  .pc-thumb { order: -1; min-height: 0; aspect-ratio: 2 / 1; margin: -1px -1px 0 -1px; border-left: 0; border-bottom: 1px solid var(--line); border-radius: var(--radius) var(--radius) 0 0; }
   .pc-body { padding: 1.1rem 1.2rem; }
   .blog-controls { position: static; }
   .tag-input { flex-basis: 100%; max-width: none; }
