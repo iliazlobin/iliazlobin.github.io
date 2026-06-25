@@ -149,64 +149,160 @@
   }
 
   /* ---------------------------------------------------------------------
-     5) Blog tag filtering: filter the post feed by topic in place, sync
-        the chosen tag to the URL (?tag=), and hide empty year dividers.
+     5) Blog tag filtering: a token/autocomplete input. Type to search tags,
+        Enter/click to add a token, Backspace to remove. Filtering is applied
+        in place with a fade animation; selection syncs to the URL (?tag=a,b).
+        Semantics: OR — a post shows if it has ANY selected tag.
      --------------------------------------------------------------------- */
   function setupBlogFilter() {
     var root = document.querySelector("[data-blog-filter]");
     var feed = document.querySelector("[data-blog-feed]");
     if (!root || !feed) return;
-
-    var chips = Array.prototype.slice.call(root.querySelectorAll(".chip-filter"));
+    var box = root.querySelector("[data-tag-input]");
+    if (!box) return;
+    var field = box.querySelector(".ti-field");
+    var tokensWrap = box.querySelector(".ti-tokens");
+    var suggest = box.querySelector(".ti-suggest");
+    var countEl = root.querySelector("[data-result-count]");
     var cards = Array.prototype.slice.call(feed.querySelectorAll(".post-card"));
     var dividers = Array.prototype.slice.call(feed.querySelectorAll(".year-divider"));
-    var inCardTags = Array.prototype.slice.call(feed.querySelectorAll(".pc-tags .tag"));
     var noRes = document.querySelector(".no-results");
-    var clearBtn = document.querySelector("[data-filter-clear]");
 
-    function apply(filter, scroll) {
-      filter = filter || "*";
-      var anyVisible = false;
-      cards.forEach(function (c) {
-        var tags = (c.getAttribute("data-tags") || "").split("|");
-        var show = filter === "*" || tags.indexOf(filter) > -1;
-        c.style.display = show ? "" : "none";
-        if (show) anyVisible = true;
+    var allTags = [];
+    var dataEl = document.querySelector("[data-blog-tags]");
+    if (dataEl) { try { allTags = JSON.parse(dataEl.textContent); } catch (e) {} }
+    allTags.sort(function (a, b) { return a.name.localeCompare(b.name); });
+    var selected = [];
+
+    function esc(s) {
+      return String(s).replace(/[&<>"]/g, function (c) {
+        return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c];
       });
-      // hide a year divider when none of the cards under it are visible
+    }
+    function isTag(name) {
+      for (var i = 0; i < allTags.length; i++) { if (allTags[i].name === name) return true; }
+      return false;
+    }
+    function matches(card) {
+      if (!selected.length) return true;
+      var tags = (card.getAttribute("data-tags") || "").split("|");
+      for (var i = 0; i < selected.length; i++) { if (tags.indexOf(selected[i]) > -1) return true; }
+      return false;
+    }
+
+    function applyFilter() {
+      var visible = 0;
+      cards.forEach(function (card) {
+        var show = matches(card);
+        if (show) visible++;
+        var hidden = card.style.display === "none";
+        if (show && hidden) {
+          card.style.display = "";
+          requestAnimationFrame(function () {
+            requestAnimationFrame(function () { card.classList.remove("is-filtered"); });
+          });
+        } else if (show) {
+          card.classList.remove("is-filtered");
+        } else if (!card.classList.contains("is-filtered")) {
+          card.classList.add("is-filtered");
+          setTimeout(function () { if (!matches(card)) card.style.display = "none"; }, 240);
+        }
+      });
       dividers.forEach(function (d) {
         var n = d.nextElementSibling, has = false;
         while (n && !n.classList.contains("year-divider")) {
-          if (n.classList.contains("post-card") && n.style.display !== "none") { has = true; break; }
+          if (n.classList.contains("post-card") && matches(n)) { has = true; break; }
           n = n.nextElementSibling;
         }
         d.style.display = has ? "" : "none";
       });
-      chips.forEach(function (ch) {
-        ch.classList.toggle("is-active", (ch.getAttribute("data-filter") || "*") === filter);
-      });
-      if (noRes) noRes.hidden = anyVisible;
-
+      if (noRes) noRes.hidden = visible > 0;
+      if (countEl) countEl.textContent = visible + (visible === 1 ? " post" : " posts");
       var url = new URL(window.location);
-      if (filter === "*") url.searchParams.delete("tag"); else url.searchParams.set("tag", filter);
+      if (selected.length) url.searchParams.set("tag", selected.join(",")); else url.searchParams.delete("tag");
       history.replaceState(null, "", url);
-
-      if (scroll && root.scrollIntoView) root.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
-    chips.forEach(function (ch) {
-      ch.addEventListener("click", function () { apply(ch.getAttribute("data-filter")); });
-    });
-    inCardTags.forEach(function (a) {
-      a.addEventListener("click", function (e) { e.preventDefault(); apply(a.getAttribute("data-tag"), true); });
-    });
-    if (clearBtn) clearBtn.addEventListener("click", function () { apply("*"); });
+    function renderTokens() {
+      tokensWrap.innerHTML = "";
+      selected.forEach(function (name) {
+        var tok = document.createElement("span");
+        tok.className = "ti-token";
+        tok.innerHTML = "<span>" + esc(name) + "</span><button type=\"button\" aria-label=\"Remove " + esc(name) + "\">×</button>";
+        tok.querySelector("button").addEventListener("click", function (e) { e.stopPropagation(); removeTag(name); });
+        tokensWrap.appendChild(tok);
+      });
+    }
+    function addTag(name) {
+      if (!name || selected.indexOf(name) > -1 || !isTag(name)) return;
+      selected.push(name);
+      renderTokens(); field.value = ""; closeSuggest(); applyFilter(); field.focus();
+    }
+    function removeTag(name) {
+      selected = selected.filter(function (s) { return s !== name; });
+      renderTokens(); applyFilter(); field.focus();
+    }
 
-    // initial filter from ?tag= (e.g. arriving from a single post's tag link)
+    function highlight(name, q) {
+      if (!q) return esc(name);
+      var idx = name.toLowerCase().indexOf(q);
+      if (idx < 0) return esc(name);
+      return esc(name.slice(0, idx)) + "<strong>" + esc(name.slice(idx, idx + q.length)) + "</strong>" + esc(name.slice(idx + q.length));
+    }
+    function openSuggest() {
+      var q = (field.value || "").toLowerCase().trim();
+      var avail = allTags.filter(function (t) { return selected.indexOf(t.name) < 0 && t.name.toLowerCase().indexOf(q) > -1; });
+      if (!avail.length) { closeSuggest(); return; }
+      suggest.innerHTML = avail.map(function (t, i) {
+        return "<button type=\"button\" class=\"ti-opt" + (i === 0 ? " active" : "") + "\" role=\"option\" data-name=\"" + esc(t.name) + "\">" +
+               highlight(t.name, q) + " <span class=\"ti-c\">" + t.count + "</span></button>";
+      }).join("");
+      suggest.hidden = false;
+      Array.prototype.slice.call(suggest.querySelectorAll(".ti-opt")).forEach(function (o) {
+        o.addEventListener("mousedown", function (e) { e.preventDefault(); addTag(o.getAttribute("data-name")); });
+      });
+    }
+    function closeSuggest() { suggest.hidden = true; suggest.innerHTML = ""; }
+    function moveActive(dir) {
+      var opts = Array.prototype.slice.call(suggest.querySelectorAll(".ti-opt"));
+      if (!opts.length) return;
+      var i = -1; opts.forEach(function (o, idx) { if (o.classList.contains("active")) i = idx; });
+      if (i > -1) opts[i].classList.remove("active");
+      i = (i + dir + opts.length) % opts.length;
+      opts[i].classList.add("active"); opts[i].scrollIntoView({ block: "nearest" });
+    }
+
+    field.addEventListener("input", openSuggest);
+    field.addEventListener("focus", openSuggest);
+    field.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); var a = suggest.querySelector(".ti-opt.active"); if (a) addTag(a.getAttribute("data-name")); }
+      else if (e.key === "Backspace" && field.value === "" && selected.length) { removeTag(selected[selected.length - 1]); }
+      else if (e.key === "ArrowDown") { e.preventDefault(); moveActive(1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); moveActive(-1); }
+      else if (e.key === "Escape") { closeSuggest(); }
+    });
+    box.addEventListener("click", function () { field.focus(); });
+    document.addEventListener("click", function (e) { if (!box.contains(e.target)) closeSuggest(); });
+
+    // in-card tag chips add to the filter instead of navigating away
+    Array.prototype.slice.call(feed.querySelectorAll(".pc-tags .tag")).forEach(function (a) {
+      a.addEventListener("click", function (e) {
+        e.preventDefault();
+        addTag(a.getAttribute("data-tag"));
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    });
+
+    if (countEl) countEl.textContent = cards.length + (cards.length === 1 ? " post" : " posts");
+
+    // initial selection from ?tag=a,b (e.g. arriving from a single post's tag link)
     var initial = new URL(window.location).searchParams.get("tag");
     if (initial) {
-      var match = chips.some(function (ch) { return ch.getAttribute("data-filter") === initial; });
-      if (match) apply(initial);
+      initial.split(",").forEach(function (n) {
+        n = n.trim();
+        if (isTag(n) && selected.indexOf(n) < 0) selected.push(n);
+      });
+      if (selected.length) { renderTokens(); applyFilter(); }
     }
   }
 
