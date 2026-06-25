@@ -324,13 +324,8 @@
     var heads = Array.prototype.slice.call(content.querySelectorAll("h2[id], h3[id], h4[id]"));
     heads.forEach(function (h) {
       h.classList.add("anchored-heading");
-      var a = document.createElement("a");
-      a.className = "heading-anchor";
-      a.href = "#" + h.id;
-      a.setAttribute("aria-label", "Copy link to this section");
-      a.textContent = "#";
-      a.addEventListener("click", function (e) {
-        e.preventDefault();
+      h.setAttribute("title", "Click to copy link to this section");
+      h.addEventListener("click", function () {
         var url = window.location.origin + window.location.pathname + "#" + h.id;
         if (history.replaceState) history.replaceState(null, "", "#" + h.id);
         var done = function () { h.classList.add("copied"); setTimeout(function () { h.classList.remove("copied"); }, 1300); };
@@ -338,7 +333,6 @@
           navigator.clipboard.writeText(url).then(done, done);
         } else { done(); }
       });
-      h.appendChild(a);
     });
   }
 
