@@ -50,7 +50,7 @@ description: "System design write-ups, platform & AI engineering notes, and deep
       {%- endif %}
     </div>
     {%- if post.thumbnail %}
-    <a class="pc-thumb" href="{{ post.url | relative_url }}" tabindex="-1" aria-hidden="true"><img src="{{ post.thumbnail | relative_url }}" alt="" loading="lazy"></a>
+    <a class="pc-thumb" href="{{ post.thumbnail | relative_url }}" target="_blank" rel="noopener" aria-label="Open the {{ post.title | escape }} diagram"><img src="{{ post.thumbnail | relative_url }}" alt="{{ post.title | escape }} diagram" loading="lazy"></a>
     {%- else %}
     <a class="pc-thumb cover g{{ seed }}" href="{{ post.url | relative_url }}" tabindex="-1" aria-hidden="true">
       <span class="pc-cover-title">{{ post.title | escape }}</span>

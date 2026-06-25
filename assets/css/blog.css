@@ -80,6 +80,7 @@
 .post-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: #d4dbe6; }
 
 .pc-thumb {
+  position: relative; z-index: 2;        /* sit above the card's stretched title link so the image opens full */
   align-self: stretch; min-height: 100%; overflow: hidden; background: #0b1220;
   border-left: 1px solid var(--line);
 }
