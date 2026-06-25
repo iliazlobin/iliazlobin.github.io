@@ -75,7 +75,7 @@
 .post-card.is-filtered { opacity: 0; transform: translateY(-8px) scale(.98); pointer-events: none; }
 
 .pc-thumb {
-  align-self: stretch; min-height: 100%; overflow: hidden; background: #f0f2f6;
+  align-self: stretch; overflow: hidden; background: #f0f2f6;
   border: 0; border-left: 1px solid var(--line);
   border-radius: 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0;
 }
