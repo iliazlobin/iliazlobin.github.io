@@ -12,7 +12,7 @@ layout: default
       <span class="reading-time">{{ minutes }} min read</span>
       {%- if page.tags and page.tags.size > 0 %}
       <span class="post-tags">
-        {%- for tag in page.tags %}<span class="tag">{{ tag }}</span>{% endfor -%}
+        {%- for tag in page.tags %}<a class="tag" href="{{ '/blog/' | relative_url }}?tag={{ tag | url_encode }}">{{ tag }}</a>{% endfor -%}
       </span>
       {%- endif %}
     </div>
