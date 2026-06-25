@@ -60,12 +60,12 @@
   width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 3px solid var(--bg); box-sizing: border-box; z-index: 2;
 }
 
-/* Cards — small LANDSCAPE thumbnail on the top-right, content on the left */
+/* Cards — full-height gradient cover flush to the right edge, content on the left */
 .post-card {
-  position: relative; display: grid; grid-template-columns: minmax(0,1fr) 190px; gap: 1.2rem;
-  align-items: start;
+  position: relative; display: grid; grid-template-columns: minmax(0,1fr) 200px; gap: 0;
+  align-items: stretch; overflow: visible;
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 1.1rem 1.3rem; margin-bottom: 1rem; box-shadow: var(--shadow);
+  margin-bottom: 1rem; box-shadow: var(--shadow);
   transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease, opacity .22s ease;
 }
 .post-card::before {
@@ -76,15 +76,15 @@
 .post-card.is-filtered { opacity: 0; transform: translateY(-8px) scale(.98); pointer-events: none; }
 
 .pc-thumb {
-  display: block; width: 100%; aspect-ratio: 16 / 10; align-self: start; border-radius: var(--radius-sm); overflow: hidden;
-  border: 0; background: #f0f2f6;
+  align-self: stretch; width: 100%; height: 100%; min-height: 116px; overflow: hidden;
+  border: 0; border-radius: 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0; background: #f0f2f6;
 }
 .pc-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: center; margin: 0; border: 0; border-radius: 0; display: block; }
 
 /* Gradient "cover" with the post title — replaces image thumbnails, auto for every post */
 .pc-thumb.cover {
   display: flex; flex-direction: column; justify-content: flex-end; gap: .3rem;
-  padding: .75rem .85rem; color: #fff; text-decoration: none;
+  padding: 1rem 1.1rem; color: #fff; text-decoration: none;
 }
 .pc-cover-title {
   font-weight: 700; font-size: .92rem; line-height: 1.25; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.28);
@@ -98,7 +98,7 @@
 .pc-thumb.g4 { background: linear-gradient(135deg,#9d174d,#db2777); }
 .pc-thumb.g5 { background: linear-gradient(135deg,#374151,#6b7280); }
 
-.pc-body { display: flex; flex-direction: column; min-width: 0; }
+.pc-body { display: flex; flex-direction: column; min-width: 0; padding: 1.2rem 1.35rem; }
 .pc-body .meta { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; font-size: .8rem; color: var(--ink-faint); margin-bottom: .35rem; }
 .pc-body .meta time { font-weight: 600; }
 .pc-body .meta .dot { color: var(--line); }
@@ -125,8 +125,9 @@
 
 /* Mobile: stack with a short banner thumbnail on top; slim timeline */
 @media (max-width: 560px) {
-  .post-card { grid-template-columns: 1fr; gap: .85rem; }
-  .pc-thumb { order: -1; aspect-ratio: 2 / 1; max-height: 150px; min-height: 0; }
+  .post-card { grid-template-columns: 1fr; }
+  .pc-thumb { order: -1; aspect-ratio: 2 / 1; height: auto; min-height: 0; border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
+  .pc-body { padding: 1.1rem 1.2rem; }
   .blog-controls { position: static; }
   .tag-input { flex-basis: 100%; max-width: none; }
   .post-feed { padding-left: 1.4rem; }
@@ -145,6 +146,21 @@
 .post-content { font-size: 1.02rem; line-height: 1.75; color: #2b3445; }
 .post-content h2 { font-size: 1.5rem; margin: 2.2rem 0 .9rem; }
 .post-content h3 { font-size: 1.2rem; margin: 1.8rem 0 .7rem; }
+
+/* Clickable heading anchors (hover to reveal #, click to copy a deep link) */
+.post-content .anchored-heading { position: relative; scroll-margin-top: 1.5rem; }
+.heading-anchor {
+  position: absolute; left: -1.15rem; top: 0; width: 1.15rem; line-height: inherit;
+  color: var(--ink-faint); opacity: 0; text-decoration: none; font-weight: 700; cursor: pointer;
+  transition: opacity .15s ease;
+}
+.anchored-heading:hover .heading-anchor, .heading-anchor:focus { opacity: 1; color: var(--accent); }
+.anchored-heading.copied::after {
+  content: "Link copied"; position: absolute; left: 0; top: -1.5rem; white-space: nowrap;
+  font-size: .68rem; font-weight: 700; color: var(--accent); background: var(--accent-soft);
+  padding: .12rem .5rem; border-radius: 999px; border: 1px solid #dbe4ff;
+}
+@media (max-width: 560px) { .heading-anchor { left: -1rem; } }
 .post-content p { margin: 0 0 1.1rem; }
 .post-content ul, .post-content ol { margin: 0 0 1.1rem; padding-left: 1.4rem; }
 .post-content li { margin: .3rem 0; }

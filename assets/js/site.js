@@ -314,12 +314,41 @@
     }
   }
 
+  /* ---------------------------------------------------------------------
+     6) Heading anchors: hover a post heading to reveal a # link; click it to
+        copy a deep link to that section to the clipboard.
+     --------------------------------------------------------------------- */
+  function setupHeadingAnchors() {
+    var content = document.querySelector(".post-content");
+    if (!content) return;
+    var heads = Array.prototype.slice.call(content.querySelectorAll("h2[id], h3[id], h4[id]"));
+    heads.forEach(function (h) {
+      h.classList.add("anchored-heading");
+      var a = document.createElement("a");
+      a.className = "heading-anchor";
+      a.href = "#" + h.id;
+      a.setAttribute("aria-label", "Copy link to this section");
+      a.textContent = "#";
+      a.addEventListener("click", function (e) {
+        e.preventDefault();
+        var url = window.location.origin + window.location.pathname + "#" + h.id;
+        if (history.replaceState) history.replaceState(null, "", "#" + h.id);
+        var done = function () { h.classList.add("copied"); setTimeout(function () { h.classList.remove("copied"); }, 1300); };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(url).then(done, done);
+        } else { done(); }
+      });
+      h.appendChild(a);
+    });
+  }
+
   function init() {
     setupCallouts();   // before reveal, so callouts can also animate
     setupInfinite();
     setupReveal();
     setupScrollspy();
     setupBlogFilter();
+    setupHeadingAnchors();
   }
 
   if (document.readyState === "loading") {
