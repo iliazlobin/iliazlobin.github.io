@@ -17,14 +17,14 @@ description: "System design write-ups, platform & AI engineering notes, and deep
     <svg class="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path></svg>
     <span class="ti-tokens"></span>
     <input type="text" class="ti-field" placeholder="Filter by topic…" aria-label="Filter posts by topic" autocomplete="off" spellcheck="false">
-    <div class="ti-suggest" hidden role="listbox"></div>
+    <div class="ti-suggest" hidden role="listbox" aria-label="Tag suggestions"></div>
   </div>
   <div class="bc-right">
     <span class="result-count" data-result-count></span>
     <button class="ti-clear" data-tag-clear type="button" hidden>Clear all</button>
   </div>
 </div>
-<script type="application/json" data-blog-tags>[{% for t in site.tags %}{"name": {{ t[0] | jsonify }}, "count": {{ t[1].size }}}{% unless forloop.last %},{% endunless %}{% endfor %}]</script>
+<script type="application/json" data-blog-tags>[{% for t in site.tags %}{"name": {{ t[0] | jsonify | replace: '</', '<\/' }}, "count": {{ t[1].size }}}{% unless forloop.last %},{% endunless %}{% endfor %}]</script>
 
 <div class="post-feed" data-blog-feed>
   {%- for yg in by_year %}

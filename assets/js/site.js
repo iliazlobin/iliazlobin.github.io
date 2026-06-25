@@ -292,12 +292,21 @@
       renderTokens(); applyFilter(); field.focus();
     });
 
+    // "Clear filter" button inside the no-results message — wire it to the same clear action
+    var filterClearBtn = document.querySelector("[data-filter-clear]");
+    if (filterClearBtn) filterClearBtn.addEventListener("click", function (e) {
+      e.preventDefault();
+      if (!selected.length) return;
+      selected = [];
+      renderTokens(); applyFilter(); field.focus();
+    });
+
     // in-card tag chips add to the filter instead of navigating away
     Array.prototype.slice.call(feed.querySelectorAll(".pc-tags .tag")).forEach(function (a) {
       a.addEventListener("click", function (e) {
         e.preventDefault();
         addTag(a.getAttribute("data-tag"));
-        window.scrollTo({ top: 0, behavior: "smooth" });
+        window.scrollTo({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
       });
     });
 
