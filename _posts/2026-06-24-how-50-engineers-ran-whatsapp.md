@@ -4,6 +4,7 @@ title: "How 50 Engineers Ran WhatsApp for 2 Billion People"
 date: 2026-06-24
 tags: [System Design, Distributed Systems, Messaging]
 description: "A walk through WhatsApp's architecture — Erlang density, the inbox pattern, Sender Keys, and why losing a message is the only unforgivable sin."
+thumbnail: /images/whatsapp-architecture.png
 ---
 
 WhatsApp once served 2.5 billion people on roughly 550 servers, with a team of
