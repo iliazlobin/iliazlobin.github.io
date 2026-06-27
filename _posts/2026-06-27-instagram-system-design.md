@@ -6,7 +6,6 @@ tags: [System Design, Instagram, Social Media, Scalability]
 description: "A comprehensive system design for Instagram: 2B DAU, 100M daily posts, ML-ranked feeds, and 7M privacy checks per second against a 600B-edge social graph."
 ---
 
-# Instagram System Design
 
 ## 1. Problem Frame
 
@@ -41,6 +40,12 @@ Instagram is a photo and video sharing platform where ~2B daily active users upl
 **Out of scope:** Direct messaging (MQTT gateways, E2EE, inbox sync), Reels short-form video (dedicated ranking surface, music licensing), advertising and shopping, live streaming, notifications infrastructure.
 
 ## 3. Back of the Envelope
+
+**Feed read throughput.** 2B DAU × 5 feed loads/day ÷ 86,400 s ≈ 115K avg QPS; peak (US evening) ≈ 3× avg → **~350K feed reads/s**. Each read must merge up to 150 followees' posts and return 20 ML-ranked results in <500ms. Pure pull-on-read at 350K QPS × 150 partitions = 52.5M scatter-gathers/s — untenable. **Decision: pre-materialize timelines (push fan-out) for 99% of users; pull-on-read only for celebrities.**
+
+**Celebrity write amplification.** A single post from an account with 50M followers fans out to 50M timeline writes. At 3,500 uploads/s peak, if even 1% are celebrity posts: 35 × 50M = **1.75B writes/s** — saturates any push pipeline. **Decision: push for <10K followers (covers 99% of accounts), pull-on-read with 60s cache for celebrities.**
+
+**Media ingest volume.** 100M posts/day × 2 MB avg photo = **~200 TB/day** of new raw media. Each photo generates 3 resolution variants (150px, 640px, 1080px); each video generates 4 HLS renditions. Synchronous transcoding at 3,500 concurrent uploads would require thousands of GPU workers. **Decision: presigned S3 upload (API tier never touches media bytes), async transcode pipeline, media-ready gate before fan-out.**
 
 ## 4. Entities & API
 
@@ -114,6 +119,57 @@ AccountEmbedding
 - `GET /explore` — personalized Explore grid; returns ranked posts from unfollowed accounts
 
 ## 5. High-Level Design
+```mermaid
+flowchart TB
+    subgraph Clients
+        Mobile["Mobile App<br/>presigned upload<br/>feed + explore"]
+    end
+
+    subgraph Edge
+        CDN["CDN<br/>media edge cache<br/>global POPs"]
+        GW["API Gateway<br/>auth, rate-limit<br/>TLS termination"]
+    end
+
+    subgraph "Core Services"
+        PostSvc["Post Service<br/>metadata + presigned<br/>URLs + dedup"]
+        FeedSvc["Feed Service<br/>hybrid fan-out<br/>ML ranking"]
+        StorySvc["Story Service<br/>TTL-aware CRUD<br/>viewership tracking"]
+        ExploreSvc["Explore Service<br/>three-stage cascade<br/>candidate generation"]
+        GraphSvc["Graph Service<br/>social graph edges<br/>fan-out orchestration"]
+        SocialSvc["Social Service<br/>likes + comments<br/>counter updates"]
+    end
+
+    subgraph "Async Processing"
+        Kafka["Kafka<br/>post-events<br/>social-events"]
+        MediaWkr["Media Worker<br/>transcode + thumbnails<br/>moderation + dedup"]
+        FanoutWkr["Fanout Worker<br/>hybrid push/pull<br/>timeline materialization"]
+        SweepWkr["Story Sweep Worker<br/>expiry processing<br/>time-bucketed queue"]
+    end
+
+    subgraph "Storage"
+        TAO[("TAO Graph DB<br/>social graph edges<br/>feed timelines")]
+        Haystack[("Haystack / f4<br/>hot + warm BLOB<br/>photo + video")]
+        PG[("PostgreSQL<br/>post/user/comment<br/>metadata")]
+        Cassandra[("Cassandra<br/>story metadata<br/>append-heavy writes")]
+        FAISS[("FAISS<br/>account embedding<br/>vector index")]
+    end
+
+    Mobile -->|"presigned PUT"| CDN
+    Mobile -->|"HTTPS"| GW
+
+    GW --> PostSvc
+    GW --> FeedSvc
+    GW --> StorySvc
+    GW --> ExploreSvc
+    GW --> GraphSvc
+    GW --> SocialSvc
+
+    PostSvc -->|"metadata"| PG
+    PostSvc -->|"post-created"| Kafka
+    Kafka --> MediaWkr
+    MediaWkr -->|"transcode
+... (truncated)
+```
 
 ### FR1: Upload a post
 
@@ -262,6 +318,12 @@ The fan-out decision is per-post, based on the author's follower count at post t
 
 Active = logged in within 7 days. The atomic push-and-trim uses a Lua script:
 
+```lua
+-- Called by Fanout Worker for each active follower
+redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])
+redis.call('ZREMRANGEBYRANK', KEYS[1], 0, -(ARGV[3] + 1))
+```
+
 At feed read time, the Feed Service assembles candidates from three sources:
 
 1. **Pre-built timeline** (normal users, active followers) — `ZREVRANGE feed:{user} 0 199`
@@ -273,6 +335,16 @@ At feed read time, the Feed Service assembles candidates from three sources:
 The three candidate sets are merged and sent through the ML re-ranker. The re-ranker is a two-tower network: the post tower encodes content features (type, author affinity, engagement velocity, media features) at upload time; the user tower encodes personalization features (user_id embedding, device, time-of-day, language, recent engagements) updated hourly. The dot product between user and post embeddings runs in <5ms for ~200 candidates.
 
 The two-tower architecture decouples content understanding (post embedding computed once at upload) from personalization (user embedding updated hourly). This mirrors Instagram's production ranking system, which runs a multi-task neural network predicting P(like), P(comment), P(save), P(share), and P(dwell) simultaneously, with diversity constraints applied in a final contextual pass.
+
+```mermaid
+flowchart LR
+    A["Post Tower<br/>content type, author<br/>engagement velocity<br/>media features"] --> C["Dot Product<br/>Scorer<br/><5ms for ~200 candidates"]
+    B["User Tower<br/>user_id, device<br/>time-of-day, language<br/>recent engagements"] --> C
+    C --> D["Ranked Scores<br/>Top 20 returned"]
+
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    class A,B,C,D svc
+```
 
 **Decision.** Hybrid fan-out: push for <10K followers (to active followers only, skip 7-day inactive), pull-on-read for celebrities (60s cache), two-tower ML re-ranker at read time.
 
@@ -329,6 +401,26 @@ The pipeline uses four stages separated by events:
 - Cold · Glacier · Indefinite · Slow retrieval · Lowest
 
 Haystack stores photos as append-only volumes with an in-memory needle index: `Map<(key, alt_key) → (volume, offset, size)>`. At ~10 bytes per photo, 200B photos require only ~2 TB of RAM across the fleet for the index. A single `pread()` reads one photo — no directory traversal, no inode overhead. f4 uses Reed-Solomon RS(10,4): 10 data shards + 4 parity shards, effective replication factor = 1.4 — ~30% storage savings versus triple replication. Cross-DC XOR coding protects against one full region failure.
+
+```mermaid
+flowchart LR
+    A["Client<br/>upload"] -->|"presigned PUT"| B["S3 Ingest<br/>raw upload"]
+    B --> C["Post Service<br/>SHA-256 hash<br/>dedup check"]
+    C --> D{"hash exists<br/>in last 24h?"}
+    D -->|"yes, ~30%"| E["Reuse existing<br/>variants"]
+    D -->|"no"| F["Kafka<br/>post-created"]
+    F --> G["Media Worker<br/>transcode + moderate<br/>perceptual hash"]
+    G --> H["Haystack<br/>resolution pyramid"]
+    G --> I["Kafka<br/>media-ready"]
+    I --> J["Fanout Worker<br/>materialize to<br/>followers' timelines"]
+
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
+    classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a
+    class C svc
+    class B,H store
+    class G,J async
+```
 
 **Decision.** Async pipeline with presigned S3 upload, SHA-256 content hash dedup (24h Redis set), progressive JPEG encoding, HLS adaptive bitrate, perceptual hash moderation, media-ready gating event, and three-tier storage (Haystack → f4 → Glacier).
 
@@ -387,6 +479,32 @@ A two-tower model (same architecture as the feed ranker but trained on Explore e
 A multi-task deep neural network with 1000+ features predicts engagement probabilities simultaneously:
 
 Weights are tuned via Bayesian optimization from A/B test results. Diversity constraints applied: max 3 posts per author, penalty for consecutive same-category posts — the Explore grid must show variety.
+
+```mermaid
+flowchart TB
+    subgraph "Stage 1: Candidate Generation<br/>billions → ~1,500, <30ms"
+        C1["Co-engagement Walk<br/>TAO: user→post→user→post<br/>2-hop graph traversal"]
+        C2["Account Embedding<br/>FAISS ANN on ig2vec<br/>256-dim account vectors"]
+        C3["Trending Velocity<br/>Redis Sorted Set<br/>likes/min last 1h"]
+    end
+
+    subgraph "Stage 2: Lightweight Ranking<br/>1,500 → 150, ~10ms"
+        R1["Two-Tower Scorer<br/>dot product: user_emb · post_emb"]
+    end
+
+    subgraph "Stage 3: Heavy Re-ranking<br/>150 → 25, ~50ms"
+        R2["MTML Deep NN<br/>1000+ features<br/>multi-objective scoring"]
+    end
+
+    C1 --> R1
+    C2 --> R1
+    C3 --> R1
+    R1 --> R2
+    R2 --> A["Explore Grid<br/>25 posts"]
+
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    class C1,C2,C3,R1,R2 svc
+```
 
 **Decision.** Three-stage cascade: co-engagement TAO walks + FAISS account embeddings + trending velocity for candidate generation, two-tower lightweight scorer, MTML deep re-ranker with diversity constraints.
 
@@ -534,161 +652,3 @@ CREATE TABLE stories (
 1. [Notification Quality Ranking Framework (Meta Engineering, Sep 2025)](https://engineering.fb.com/2025/09/02/ml-applications/a-new-ranking-framework-for-better-notification-quality-on-instagram/) — Diversity-aware notification ranking
 
 1. [Deep Neural Networks for YouTube Recommendations (RecSys 2016)](https://static.googleusercontent.com/media/research.google.com/en//pubs/archive/45530.pdf) — Two-stage cascade, candidate generation + ranking paradigm
-
-```text
-flowchart TB
-    subgraph "Stage 1: Candidate Generation<br/>billions → ~1,500, <30ms"
-        C1["Co-engagement Walk<br/>TAO: user→post→user→post<br/>2-hop graph traversal"]
-        C2["Account Embedding<br/>FAISS ANN on ig2vec<br/>256-dim account vectors"]
-        C3["Trending Velocity<br/>Redis Sorted Set<br/>likes/min last 1h"]
-    end
-
-    subgraph "Stage 2: Lightweight Ranking<br/>1,500 → 150, ~10ms"
-        R1["Two-Tower Scorer<br/>dot product: user_emb · post_emb"]
-    end
-
-    subgraph "Stage 3: Heavy Re-ranking<br/>150 → 25, ~50ms"
-        R2["MTML Deep NN<br/>1000+ features<br/>multi-objective scoring"]
-    end
-
-    C1 --> R1
-    C2 --> R1
-    C3 --> R1
-    R1 --> R2
-    R2 --> A["Explore Grid<br/>25 posts"]
-
-    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
-    class C1,C2,C3,R1,R2 svc
-```
-
-```text
-flowchart LR
-    Client["Client<br/>iOS / Android / Web"] --> Edge["CDN + API Gateway<br/>TLS termination, auth,<br/>rate limiting"]
-    Edge --> Feed["Feed Service<br/>hybrid fan-out<br/>ML ranking"]
-    Edge --> Upload["Media Pipeline<br/>presigned upload<br/>transcode + moderate"]
-    Edge --> Graph["Graph Service<br/>TAO graph cache<br/>follow/privacy checks"]
-    Feed --> TAO[("TAO<br/>social graph +<br/>feed timelines")]
-    Upload --> Haystack[("Haystack / f4<br/>photo + video<br/>BLOB storage")]
-    Graph --> TAO
-
-    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a
-    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
-    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
-    class Client,Feed,Upload,Graph svc
-    class Edge edge
-    class TAO,Haystack store
-```
-
-```text
-flowchart TB
-    subgraph Clients
-        Mobile["Mobile App<br/>presigned upload<br/>feed + explore"]
-    end
-
-    subgraph Edge
-        CDN["CDN<br/>media edge cache<br/>global POPs"]
-        GW["API Gateway<br/>auth, rate-limit<br/>TLS termination"]
-    end
-
-    subgraph "Core Services"
-        PostSvc["Post Service<br/>metadata + presigned<br/>URLs + dedup"]
-        FeedSvc["Feed Service<br/>hybrid fan-out<br/>ML ranking"]
-        StorySvc["Story Service<br/>TTL-aware CRUD<br/>viewership tracking"]
-        ExploreSvc["Explore Service<br/>three-stage cascade<br/>candidate generation"]
-        GraphSvc["Graph Service<br/>social graph edges<br/>fan-out orchestration"]
-        SocialSvc["Social Service<br/>likes + comments<br/>counter updates"]
-    end
-
-    subgraph "Async Processing"
-        Kafka["Kafka<br/>post-events<br/>social-events"]
-        MediaWkr["Media Worker<br/>transcode + thumbnails<br/>moderation + dedup"]
-        FanoutWkr["Fanout Worker<br/>hybrid push/pull<br/>timeline materialization"]
-        SweepWkr["Story Sweep Worker<br/>expiry processing<br/>time-bucketed queue"]
-    end
-
-    subgraph "Storage"
-        TAO[("TAO Graph DB<br/>social graph edges<br/>feed timelines")]
-        Haystack[("Haystack / f4<br/>hot + warm BLOB<br/>photo + video")]
-        PG[("PostgreSQL<br/>post/user/comment<br/>metadata")]
-        Cassandra[("Cassandra<br/>story metadata<br/>append-heavy writes")]
-        FAISS[("FAISS<br/>account embedding<br/>vector index")]
-    end
-
-    Mobile -->|"presigned PUT"| CDN
-    Mobile -->|"HTTPS"| GW
-
-    GW --> PostSvc
-    GW --> FeedSvc
-    GW --> StorySvc
-    GW --> ExploreSvc
-    GW --> GraphSvc
-    GW --> SocialSvc
-
-    PostSvc -->|"metadata"| PG
-    PostSvc -->|"post-created"| Kafka
-    Kafka --> MediaWkr
-    MediaWkr -->|"transcode
-... (truncated)
-```
-
-```text
--- Called by Fanout Worker for each active follower
-redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])
-redis.call('ZREMRANGEBYRANK', KEYS[1], 0, -(ARGV[3] + 1))
-```
-
-```text
-flowchart LR
-    A["Post Tower<br/>content type, author<br/>engagement velocity<br/>media features"] --> C["Dot Product<br/>Scorer<br/><5ms for ~200 candidates"]
-    B["User Tower<br/>user_id, device<br/>time-of-day, language<br/>recent engagements"] --> C
-    C --> D["Ranked Scores<br/>Top 20 returned"]
-
-    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
-    class A,B,C,D svc
-```
-
-```text
-flowchart LR
-    A["Client<br/>upload"] -->|"presigned PUT"| B["S3 Ingest<br/>raw upload"]
-    B --> C["Post Service<br/>SHA-256 hash<br/>dedup check"]
-    C --> D{"hash exists<br/>in last 24h?"}
-    D -->|"yes, ~30%"| E["Reuse existing<br/>variants"]
-    D -->|"no"| F["Kafka<br/>post-created"]
-    F --> G["Media Worker<br/>transcode + moderate<br/>perceptual hash"]
-    G --> H["Haystack<br/>resolution pyramid"]
-    G --> I["Kafka<br/>media-ready"]
-    I --> J["Fanout Worker<br/>materialize to<br/>followers' timelines"]
-
-    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
-    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
-    classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a
-    class C svc
-    class B,H store
-    class G,J async
-```
-
-```text
-flowchart TB
-    subgraph "Stage 1: Candidate Generation<br/>billions → ~1,500, <30ms"
-        C1["Co-engagement Walk<br/>TAO: user→post→user→post<br/>2-hop graph traversal"]
-        C2["Account Embedding<br/>FAISS ANN on ig2vec<br/>256-dim account vectors"]
-        C3["Trending Velocity<br/>Redis Sorted Set<br/>likes/min last 1h"]
-    end
-
-    subgraph "Stage 2: Lightweight Ranking<br/>1,500 → 150, ~10ms"
-        R1["Two-Tower Scorer<br/>dot product: user_emb · post_emb"]
-    end
-
-    subgraph "Stage 3: Heavy Re-ranking<br/>150 → 25, ~50ms"
-        R2["MTML Deep NN<br/>1000+ features<br/>multi-objective scoring"]
-    end
-
-    C1 --> R1
-    C2 --> R1
-    C3 --> R1
-    R1 --> R2
-    R2 --> A["Explore Grid<br/>25 posts"]
-
-    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
-    class C1,C2,C3,R1,R2 svc
-```
