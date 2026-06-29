@@ -528,40 +528,40 @@ Edge cases:
 
 ### Primary Sources
 
-1. Cormode, G., & Muthukrishnan, S. (2005). "An Improved Data Stream Summary: The Count-Min Sketch and its Applications." Journal of Computer and System Sciences. https://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf
+1. Cormode, G., & Muthukrishnan, S. (2005). ["An Improved Data Stream Summary: The Count-Min Sketch and its Applications"](https://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf). Journal of Computer and System Sciences.
 
-1. Metwally, A., Agrawal, D., & El Abbadi, A. (2005). "Efficient Computation of Frequent and Top-k Elements in Data Streams." ICDT 2005. https://www.cs.ucsb.edu/sites/default/files/documents/2005-23.pdf
+1. Metwally, A., Agrawal, D., & El Abbadi, A. (2005). ["Efficient Computation of Frequent and Top-k Elements in Data Streams"](https://www.cs.ucsb.edu/sites/default/files/documents/2005-23.pdf). ICDT 2005.
 
-1. Manku, G. S., & Motwani, R. (2002). "Approximate Frequency Counts over Data Streams." VLDB 2002. https://www.vldb.org/conf/2002/S10P03.pdf
+1. Manku, G. S., & Motwani, R. (2002). ["Approximate Frequency Counts over Data Streams"](https://www.vldb.org/conf/2002/S10P03.pdf). VLDB 2002.
 
-1. Akidau, T., et al. (2013). "MillWheel: Fault-Tolerant Stream Processing at Internet Scale." VLDB 2013. https://static.googleusercontent.com/media/research.google.com/en//pubs/archive/41378.pdf
+1. Akidau, T., et al. (2013). ["MillWheel: Fault-Tolerant Stream Processing at Internet Scale"](https://static.googleusercontent.com/media/research.google.com/en//pubs/archive/41378.pdf). VLDB 2013.
 
-1. Kulkarni, S., et al. (2015). "Twitter Heron: Stream Processing at Scale." SIGMOD 2015. https://dl.acm.org/doi/10.1145/2723372.2742788
+1. Kulkarni, S., et al. (2015). ["Twitter Heron: Stream Processing at Scale"](https://dl.acm.org/doi/10.1145/2723372.2742788). SIGMOD 2015.
 
-1. Covington, P., Adams, J., & Sargin, E. (2016). "Deep Neural Networks for YouTube Recommendations." RecSys 2016. https://research.google/pubs/pub45530/
+1. Covington, P., Adams, J., & Sargin, E. (2016). ["Deep Neural Networks for YouTube Recommendations"](https://research.google/pubs/pub45530/). RecSys 2016.
 
-1. Ting, D. (2018). "Count-Min: Optimal Estimation and Tight Error Bounds." KDD 2018. https://dl.acm.org/doi/10.1145/3219819.3219975
+1. Ting, D. (2018). ["Count-Min: Optimal Estimation and Tight Error Bounds"](https://dl.acm.org/doi/10.1145/3219819.3219975). KDD 2018.
 
-1. Dean, J., & Ghemawat, S. (2004). "MapReduce: Simplified Data Processing on Large Clusters." OSDI 2004. https://static.googleusercontent.com/media/research.google.com/en/us/archive/mapreduce-osdi04.pdf
+1. Dean, J., & Ghemawat, S. (2004). ["MapReduce: Simplified Data Processing on Large Clusters"](https://static.googleusercontent.com/media/research.google.com/en/us/archive/mapreduce-osdi04.pdf). OSDI 2004.
 
-1. Redis Ltd. "Count-Min Sketch: The Art and Science of Estimating Stuff." Redis Blog. https://redis.io/blog/count-min-sketch-the-art-and-science-of-estimating-stuff/
+1. Redis Ltd. ["Count-Min Sketch: The Art and Science of Estimating Stuff"](https://redis.io/blog/count-min-sketch-the-art-and-science-of-estimating-stuff/). Redis Blog.
 
-1. Google Research. "Streaming Trends: A Low-Latency Platform for Dynamic Video Grouping and Trending Corpora Building." (2025). https://research.google/pubs/streaming-trends-a-low-latency-platform-for-dynamic-video-grouping-and-trending-corpora-building/
+1. Google Research. ["Streaming Trends: A Low-Latency Platform for Dynamic Video Grouping and Trending Corpora Building"](https://research.google/pubs/streaming-trends-a-low-latency-platform-for-dynamic-video-grouping-and-trending-corpora-building/). (2025).
 
 ### Production Code & Engineering Blogs
 
-1. Twitter Algebird — CMS with TopCMS. https://github.com/twitter/algebird/blob/develop/algebird-core/src/main/scala/com/twitter/algebird/CountMinSketch.scala
+1. [Twitter Algebird — CMS with TopCMS](https://github.com/twitter/algebird/blob/develop/algebird-core/src/main/scala/com/twitter/algebird/CountMinSketch.scala).
 
-1. addthis/stream-lib — Java StreamSummary (Space-Saving). https://github.com/addthis/stream-lib/blob/master/src/main/java/com/clearspring/analytics/stream/StreamSummary.java
+1. [addthis/stream-lib — Java StreamSummary (Space-Saving)](https://github.com/addthis/stream-lib/blob/master/src/main/java/com/clearspring/analytics/stream/StreamSummary.java).
 
-1. ClickHouse — Filtered Space-Saving. https://github.com/ClickHouse/ClickHouse/blob/master/src/Common/SpaceSaving.h
+1. [ClickHouse — Filtered Space-Saving](https://github.com/ClickHouse/ClickHouse/blob/master/src/Common/SpaceSaving.h).
 
-1. Michael Noll — "Implementing Real-Time Trending Topics in Storm." https://www.michael-noll.com/blog/2013/01/18/implementing-real-time-trending-topics-in-storm/
+1. [Michael Noll — "Implementing Real-Time Trending Topics in Storm"](https://www.michael-noll.com/blog/2013/01/18/implementing-real-time-trending-topics-in-storm/).
 
-1. Reddit source — Hot/Best/Controversy sorts. https://github.com/reddit/reddit/blob/master/r2/r2/lib/db/_sorts.pyx
+1. [Reddit source — Hot/Best/Controversy sorts](https://github.com/reddit/reddit/blob/master/r2/r2/lib/db/_sorts.pyx).
 
-1. Hacker News source — Ranking algorithm (Arc). https://github.com/wting/hackernews/blob/master/news.arc
+1. [Hacker News source — Ranking algorithm (Arc)](https://github.com/wting/hackernews/blob/master/news.arc).
 
-1. Eventbrite Engineering — "Heavy Hitters in Redis." https://www.eventbrite.com/engineering/heavy-hitters-in-redis/
+1. [Eventbrite Engineering — "Heavy Hitters in Redis"](https://www.eventbrite.com/engineering/heavy-hitters-in-redis/).
 
-1. Google Cloud Blog — "How Cloud Batch and Stream Data Processing Works." https://cloud.google.com/blog/products/data-analytics/how-cloud-batch-and-stream-data-processing-works
+1. [Google Cloud Blog — "How Cloud Batch and Stream Data Processing Works"](https://cloud.google.com/blog/products/data-analytics/how-cloud-batch-and-stream-data-processing-works).

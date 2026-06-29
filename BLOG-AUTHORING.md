@@ -97,3 +97,27 @@ over screenshots for architecture (smaller, crisper, themeable).
 
 The first paragraph (up to `<!--more-->` if present) becomes the card preview.
 Lead with a strong first sentence.
+
+## 8. References & links (HARD — must be clickable)
+
+Every external reference, citation, or source URL **MUST be a clickable markdown
+link `[title](url)`** — **NEVER a bare/plain-text URL.** Kramdown (Jekyll/GitHub
+Pages) does **not** auto-linkify a naked `https://…`; it renders as dead grey,
+unclickable text. This applies to a `## References` section, inline source links,
+and anywhere a URL appears.
+
+For an academic-style citation, **hyperlink the quoted title and DROP the trailing
+bare URL** — keep authors/year/venue as plain text around the link:
+
+```markdown
+<!-- BAD — bare URL, renders unclickable -->
+1. Cormode, G., & Muthukrishnan, S. (2005). "An Improved Data Stream Summary." Journal of CSS. https://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf
+
+<!-- GOOD — title is the link, no naked URL -->
+1. Cormode, G., & Muthukrishnan, S. (2005). ["An Improved Data Stream Summary"](https://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf). Journal of CSS.
+```
+
+For an engineering-blog / source-code entry, hyperlink the whole label:
+`[Twitter Algebird — CMS with TopCMS](https://github.com/twitter/algebird/…).`
+
+Never fabricate a link — drop a source you can't verify. Use real, resolvable URLs.
