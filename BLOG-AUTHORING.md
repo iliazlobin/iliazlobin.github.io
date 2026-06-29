@@ -49,6 +49,22 @@ graph LR
 Supported: `graph`, `flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram`,
 `erDiagram`, `gantt`, etc. (Mermaid v11). Keep node labels short.
 
+**Every Mermaid block MUST be COMPLETE and VALID — a broken block renders as a red
+"Syntax error in text" box on the live page (HARD):**
+- **NEVER ship a truncated diagram or any `... (truncated)` / placeholder text** inside a
+  fenced block. If a diagram is long, write it out in full — do not cut it off. (This is
+  the exact bug that broke the Instagram post's §5: the edges were cut mid-definition with
+  a literal `... (truncated)` marker.)
+- **Edge labels stay on ONE line:** `A -->|"label"| B` — a label that wraps to the next
+  source line (`A -->|"trans` ⏎ `code"| B`) is a parse error. For multi-word labels keep
+  them short; use `<br/>` for an intentional break inside a **node** label, never a raw newline.
+- **Every edge must land on a declared node**, and every declared node should be reachable —
+  no dangling `A -->` with no target, no reference to an undeclared id.
+- **No raw `\n` in any label** (renders literally) and **no emoji/icon glyphs** in node labels
+  (render as broken tofu boxes) — labels are plain text; use `classDef` fills for visual grouping.
+- After writing a diagram, re-read the whole fenced block start-to-finish and confirm it is
+  complete and parses before publishing. A diagram that doesn't render is worse than none.
+
 ## 4. Callouts — Notion-style (info / warning / etc.)
 
 Authored as **GitHub alert blockquotes**. Five types map to colored callouts:
