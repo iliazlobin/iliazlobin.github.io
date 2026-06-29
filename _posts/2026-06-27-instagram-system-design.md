@@ -6,7 +6,6 @@ tags: [System Design, Instagram, Social Media, Scalability]
 description: "A comprehensive system design for Instagram: 2B DAU, 100M daily posts, ML-ranked feeds, and 7M privacy checks per second against a 600B-edge social graph."
 ---
 
-
 ## 1. Problem Frame
 
 Instagram is a photo and video sharing platform where ~2B daily active users upload ~100M posts and ~500M stories per day, browse an ML-ranked feed, and discover new content through Explore. The social graph is power-law: median users have ~150 followers while celebrities have 50M+. Three engineering tensions define the architecture: (1) assembling a personalized, ML-ranked feed for 350K read QPS under 500ms while celebrity write amplification explodes to 50M+ writes per post, (2) ingesting and transcoding 200+ TB of new media daily without making uploads feel slow or serving broken thumbnails, and (3) running 7M+ privacy checks per second against a 600B-edge social graph with sub-millisecond latency.
@@ -119,6 +118,7 @@ AccountEmbedding
 - `GET /explore` — personalized Explore grid; returns ranked posts from unfollowed accounts
 
 ## 5. High-Level Design
+
 ```mermaid
 flowchart TB
     subgraph Clients

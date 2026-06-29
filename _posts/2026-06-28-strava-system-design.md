@@ -11,14 +11,13 @@ description: "A deep-dive into Strava's architecture: ingesting 10M daily activi
 Strava ingests 10M activities daily from 180M+ athletes — each with up to 100K GPS points — and matches them against 35M+ user-generated segments to power real-time leaderboards and social feeds, all while recording reliably in remote areas with zero connectivity.
 
 ```mermaid
-
 graph LR
-    Mobile["📱 Mobile Client<br/>offline GPS + SQLite"]
-    Gateway["⚡ API Gateway<br/>REST + WebSocket"]
-    ActivitySvc["🏃 Activity Service<br/>lifecycle + state machine"]
-    SegmentSvc["🏔 Segment Service<br/>H3 match + leaderboard"]
-    FeedSvc["📰 Feed Service<br/>fan-out + real-time push"]
-    Stores[("🗄 Storage Tier<br/>PG + ScyllaDB + Redis + S3")]
+    Mobile["Mobile Client<br/>offline GPS + SQLite"]
+    Gateway["API Gateway<br/>REST + WebSocket"]
+    ActivitySvc["Activity Service<br/>lifecycle + state machine"]
+    SegmentSvc["Segment Service<br/>H3 match + leaderboard"]
+    FeedSvc["Feed Service<br/>fan-out + real-time push"]
+    Stores[(" Storage Tier<br/>PG + ScyllaDB + Redis + S3")]
 
     Mobile --> Gateway
     Gateway --> ActivitySvc
@@ -32,7 +31,6 @@ graph LR
     classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
     class Mobile,Gateway,ActivitySvc,SegmentSvc,FeedSvc svc;
     class Stores store;
-
 ```
 
 ## 2. Requirements
@@ -56,7 +54,6 @@ Out of scope: friend management, authentication, comments/likes, route planning,
 ## 3. Back of the Envelope
 
 ```javascript
-
 Write peak:   10M/day ÷ 86.4k s × 5 (Sunday AM spike) ≈ 600 uploads/s
               → Kafka buffer absorbs burst; per-point writes are absurd.
 
@@ -65,7 +62,6 @@ GPS volume:   10M × 15K pts × 100 B ≈ 15 TB/day
 
 Segment QPS:  10M × ~100 candidates ≈ 1B match attempts/day ≈ 12K/s
               → H3 pre-filter (res 11) reduces actual DTW ops to ~100 per activity.
-
 ```
 
 ## 4. Entities & API
@@ -73,7 +69,6 @@ Segment QPS:  10M × ~100 candidates ≈ 1B match attempts/day ≈ 12K/s
 ### Data Model
 
 ```javascript
-
 Activity
   activity_id: UUID (PK)
   user_id: UUID (CK)           ← partitions activity list by user
@@ -113,7 +108,6 @@ User
 Follow
   follower_id: UUID (CK)       ← partitions "who I follow"
   followee_id: UUID
-
 ```
 
 ### API
@@ -128,10 +122,9 @@ Follow
 ## 5. High-Level Design
 
 ```mermaid
-
 graph TB
     subgraph Client
-        Mobile["📱 Mobile App<br/>GPS collector<br/>SQLite buffer"]
+        Mobile["Mobile App<br/>GPS collector<br/>SQLite buffer"]
     end
 
     subgraph Ingestion
@@ -178,7 +171,6 @@ graph TB
     class Mobile,GW,Ingest,ActivitySvc,SegmentSvc,LeaderboardSvc,FeedSvc,WS svc;
     class PG,Scylla,Redis,S3 store;
     class Kafka async;
-
 ```
 
 ### 1) Record an activity (start, pause, resume, stop, save)
@@ -190,14 +182,12 @@ Flow. The athlete taps "Start." The client generates a deterministic activity UU
 Design consideration — elapsed time across pauses. A naive stop_time - start_time inflates elapsed time with pauses. The client appends a status-log on save:
 
 ```json
-
 [
   {"status": "STARTED",  "t": "2026-06-25T07:00:00Z"},
   {"status": "PAUSED",   "t": "2026-06-25T07:15:30Z"},
   {"status": "RESUMED",  "t": "2026-06-25T07:18:00Z"},
   {"status": "STOPPED",  "t": "2026-06-25T07:45:00Z"}
 ]
-
 ```
 
 The server sums active spans (STARTED→PAUSED = 15m 30s + RESUMED→STOPPED = 27m = 42m 30s) to compute elapsed_time. This unlocks "moving time vs. elapsed time" without schema changes.
@@ -245,14 +235,14 @@ Option B — three-tier storage with polyline encoding. Split GPS data by age:
 - Hot (0–30 days, ScyllaDB): Full-resolution points, < 10 ms reads. TTL deletes old partitions automatically.
 - Warm (30–90 days, PostgreSQL column): Downsampled to ~1 point per 100m and encoded with Google Encoded Polyline. A single 500-byte string replaces ~1.5 MB of raw points — a ~3,000:1 compression ratio. Sufficient for route rendering; insufficient for segment re-matching.
 - Cold (> 90 days, S3 + Parquet): Raw points archived with snappy compression (~10:1). Queried via Athena/Spark for analytics, or fetched in full on rare old-activity detail views.
-```mermaid
 
+```mermaid
 graph LR
-    Upload["🏁 Activity<br/>Completed"]
+    Upload["Activity<br/>Completed"]
     Scylla["ScyllaDB<br/>full-res<br/>0–30 days"]
     PG["PostgreSQL<br/>polyline column<br/>30–90 days"]
     S3["S3 / Parquet<br/>raw archive<br/>> 90 days"]
-    Archiver["⏰ TTL Archiver<br/>daily cron"]
+    Archiver["TTL Archiver<br/>daily cron"]
 
     Upload -->|full stream| Scylla
     Scylla -->|TTL: 30d<br/>encode polyline| PG
@@ -264,7 +254,6 @@ graph LR
     classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
     class Scylla,PG,S3 store;
     class Archiver svc;
-
 ```
 
 The polyline encoding uses Google's Encoded Polyline Algorithm: delta-encode consecutive lat/lng as base64 signed integers. A 15K-point stream becomes ~500 bytes — small enough to store directly in the Activity.polyline PostgreSQL column, always hot.
@@ -272,7 +261,6 @@ The polyline encoding uses Google's Encoded Polyline Algorithm: delta-encode con
 Decision. Three-tier storage with polyline encoding.
 
 Rationale. The 30-day hot window covers > 90% of stream reads. The polyline column serves route rendering for all activities forever at negligible storage cost. The cost differential is dramatic: a 1.4 PB all-hot cluster becomes a ~50 TB hot tier (~$5K/month) plus ~$3K/month for S3 — roughly a 40× cost reduction. ScyllaDB's per-partition TTL eliminates manual cleanup jobs. This pattern mirrors Netflix's video encoding tiering (hot cache → S3 cold archive) applied to geospatial data.
-
 
 > [!TIP]
 > **Key insight:** Polyline encoding is the secret weapon — it compresses 15K lat/lng pairs from ~1.5 MB to ~500 bytes while preserving enough fidelity for route rendering. The encoding is lossy at ~1m precision, but that's within consumer GPS noise anyway. It serializes trivially into a single DB column.
@@ -290,12 +278,10 @@ Problem. Every completed activity must be matched against segments, and each mat
 Option A — SQL with indexes. A SegmentEffort table with a composite index on (segment_id, elapsed_time).
 
 ```sql
-
 SELECT user_id, elapsed_time, effort_id
 FROM segment_efforts
 WHERE segment_id = $1
 ORDER BY elapsed_time ASC LIMIT 10;
-
 ```
 
 Challenges. With 1B new rows/day, the B-tree index grows enormous and write throughput degrades as the tree rebalances. For popular segments with millions of efforts, LIMIT 10 still scans an index range proportional to total efforts — the planner can't know how deep to scan. At 6,000 peak QPS, a single PostgreSQL instance cannot keep up.
@@ -309,8 +295,8 @@ Option C — Kafka event stream + ScyllaDB with Redis as read cache. The 2019 re
 1. Every SegmentEffort write goes to PostgreSQL (source of truth) and publishes to Kafka partitioned by segment_id.
 1. A stream consumer writes efforts to ScyllaDB keyed by (segment_id, elapsed_time) — the clustering key handles ordering naturally.
 1. Redis caches leaderboard top-N. On query: hit Redis → return. On miss/staleness → query ScyllaDB, recompute top-N, backfill Redis.
-```javascript
 
+```javascript
 -- ScyllaDB schema (wide-column, ordered by elapsed_time)
 CREATE TABLE segment_efforts (
     segment_id UUID,
@@ -319,7 +305,6 @@ CREATE TABLE segment_efforts (
     user_id UUID,
     PRIMARY KEY (segment_id, elapsed_time, effort_id)
 ) WITH CLUSTERING ORDER BY (elapsed_time ASC);
-
 ```
 
 Challenges. The Kafka→ScyllaDB→Redis pipeline introduces eventual consistency (1–3s lag). For a fitness app, this is acceptable — athletes understand rankings take a moment to update. Popular segments (e.g., Alpe d'Huez with 500K+ efforts) create hot partitions; ScyllaDB's shard-per-core architecture handles these better than Cassandra's GC-pause-prone design.
@@ -327,7 +312,6 @@ Challenges. The Kafka→ScyllaDB→Redis pipeline introduces eventual consistenc
 Decision. Kafka event stream → ScyllaDB (durable) → Redis (read cache). PostgreSQL is source of truth for metadata; leaderboard queries bypass it entirely.
 
 Rationale. Partitioning writes by segment_id serializes only writes for the same segment — everything else is fully parallel. The pipeline handles 2,500 leaderboard writes/sec and 6,000 reads/sec at peak. Redis-as-cache reduced memory from 2 TB to ~200 GB (only popular segments stay cached; long-tail serves from ScyllaDB). Recovery improved dramatically: Redis repopulates from ScyllaDB in minutes, not hours. This architecture echoes LinkedIn's feed pipeline (Kafka → Samza → cache) applied to sorted rankings instead of timelines.
-
 
 > [!TIP]
 > **Key insight:** Redis is a cache, not a primary store. The recovery story alone justifies the pipeline: when Redis loses data (crash, failover, maintenance), it repopulates from the durable ScyllaDB layer in minutes rather than requiring an hour-long RDB restore. The eventual consistency window (1–3s) is invisible to users refreshing a leaderboard.
@@ -349,7 +333,6 @@ Challenges. Loses entire activities on crash or extended offline periods. Not vi
 Option B — local SQLite buffer with batch upload. All GPS points and status transitions are written to a local SQLite database. A background sync worker checks connectivity and uploads un-synced rows in batches.
 
 ```javascript
-
 -- Client-side SQLite schema
 CREATE TABLE gps_buffer (
     activity_id TEXT NOT NULL,
@@ -360,7 +343,6 @@ CREATE TABLE gps_buffer (
     uploaded INTEGER DEFAULT 0,
     PRIMARY KEY (activity_id, seq)
 );
-
 ```
 
 Challenges. If the upload is interrupted mid-transfer, the server may have partially ingested the activity. Re-uploading creates duplicates. Network interruptions during a large GPS buffer (14,400 points, ~1.5 MB for a 4-hour ride) are common on spotty cellular.
@@ -368,7 +350,6 @@ Challenges. If the upload is interrupted mid-transfer, the server may have parti
 Option C — deterministic UUID + idempotent chunked upload. Generate activity_id on the client at start: UUIDv5(namespace=user_id, name=start_time + device_id). The server treats POST /activities as an upsert — same ID on retry, merge new points, return success. For large uploads, chunk the GPS buffer into 500-point segments (~50 KB each):
 
 ```javascript
-
 Client upload loop (pseudo):
   chunks = partition(gps_buffer, 500)
   for i, chunk in enumerate(chunks):
@@ -378,7 +359,6 @@ Client upload loop (pseudo):
           mark_uploaded(chunk)
       else:
           break  # retry on next sync cycle
-
 ```
 
 Challenges. If the same activity is recorded on two devices (phone and watch), both generate the same UUID but with different GPS streams. The merge strategy: union points by seq, deduplicate by (activity_id, seq). If seq conflicts with different coordinates, prefer the device with higher reported GPS accuracy.
@@ -386,7 +366,6 @@ Challenges. If the same activity is recorded on two devices (phone and watch), b
 Decision. Deterministic client-side UUID + chunked idempotent upload + crash-safe SQLite. No CRDT — Last-Write-Wins for status transitions; GPS points are append-only by sequence number.
 
 Rationale. This pattern is production-validated across fitness and mapping apps. LWW is sufficient because an activity's status transitions form a linear sequence — there are no concurrent edits from different devices. The UUIDv5 approach eliminates server-side deduplication logic entirely: the database primary key is also the idempotency token. Chunked upload is critical for ultra-endurance athletes: rides exceeding 12 hours with intermittent connectivity — chunks with per-checksum verification ensure 11 hours of data aren't lost because the 12th hour's upload timed out. Google Maps timeline and Uber's driver app use equivalent local-store-first patterns with deterministic IDs.
-
 
 > [!TIP]
 > **Key insight:** The client is source of truth during recording; the server is source of truth after upload. The boundary is the upload acknowledgment. Before that boundary, the server knows nothing; after it, the client can discard local data.
@@ -405,12 +384,10 @@ Problem. When an athlete completes a ride, their followers should see it within 
 Option A — pull model (read-time merge). On GET /feed, query activities of every followee, merge by timestamp, return top-N.
 
 ```sql
-
 SELECT a.* FROM activities a
 JOIN follows f ON a.user_id = f.followee_id
 WHERE f.follower_id = $1
 ORDER BY a.start_time DESC LIMIT 20;
-
 ```
 
 Challenges. For a user following 2,000 athletes, this scans 2,000 partitions and merges potentially millions of rows. Latency grows linearly with followee count. At Strava's scale, this runs millions of times per minute.
@@ -423,17 +400,17 @@ Option C — hybrid push/pull with follower threshold. The production model:
 
 - ≤ 10K followers: Fan-out on write. Activities pushed to all follower inboxes.
 - > 10K followers (celebrity tier): Activities stored in a shared outbox (Redis sorted set). At feed read time, merge: (1) personal inbox (push path), (2) pull from each celebrity outbox (up to 5 recent activities each).
-```mermaid
 
+```mermaid
 graph TB
-    Complete["🏁 Activity<br/>Completed"]
+    Complete["Activity<br/>Completed"]
     FollowerCheck{"Follower<br/>count?"}
-    FanOut["📬 Fan-Out Worker<br/>write to all<br/>follower inboxes"]
-    Outbox["📤 Celebrity Outbox<br/>sorted set by time"]
-    FeedRead["📰 GET /feed"]
-    Inbox["📥 Personal Inbox<br/>Redis ZSET"]
-    Merge["🔀 Merge + Sort"]
-    Response["✅ Feed Response"]
+    FanOut["Fan-Out Worker<br/>write to all<br/>follower inboxes"]
+    Outbox["Celebrity Outbox<br/>sorted set by time"]
+    FeedRead["GET /feed"]
+    Inbox["Personal Inbox<br/>Redis ZSET"]
+    Merge["Merge + Sort"]
+    Response["Feed Response"]
 
     Complete --> FollowerCheck
     FollowerCheck -->|≤ 10K| FanOut
@@ -449,7 +426,6 @@ graph TB
     classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
     class FanOut,Merge svc;
     class Inbox,Outbox store;
-
 ```
 
 Real-time delivery uses WebSocket: the Feed Service pushes a lightweight notification (activity ID + summary) to online followers. The client fetches the full card lazily when the user opens the feed. WebSocket (bidirectional) rather than SSE (server→client only) because the same connection is reused for live segment tracking — the server pushes "3 seconds behind KOM" alerts while the athlete rides.
