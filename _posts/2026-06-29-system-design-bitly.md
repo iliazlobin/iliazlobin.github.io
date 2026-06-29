@@ -271,7 +271,7 @@ Edge case: A create-service instance crashes mid-range. IDs 4001-4500 were claim
 
 Approach 2: Snowflake-style 64-bit IDs
 
-[No central coordinator. Every instance generates IDs locally: 41 bits of millisecond timestamp + 10 bits of machine ID + 12 bits of sequence number. Guaranteed unique within the same millisecond on the same machine. This is what Twitter t.co uses.](http://t.co/)
+No central coordinator. Every instance generates IDs locally: 41 bits of millisecond timestamp + 10 bits of machine ID + 12 bits of sequence number. Guaranteed unique within the same millisecond on the same machine. This is what Twitter [t.co](https://t.co) uses.
 
 
 ```javascript
@@ -281,7 +281,7 @@ Snowflake ID (64 bits):
 
 ```
 
-[Challenges: Base62-encoding a 64-bit integer produces 11 characters, not 7. For Twitter t.co, this doesn't matter — every tweet link is auto-wrapped and the user never sees the short code. For Bitly, 7-character codes are the product. You could truncate, but then you're back to collision territory: a 42-bit truncated snowflake at 40B records has a birthday-paradox collision probability of ~90%.](http://t.co/)
+Challenges: Base62-encoding a 64-bit integer produces 11 characters, not 7. For Twitter t.co, this doesn't matter — every tweet link is auto-wrapped and the user never sees the short code. For Bitly, 7-character codes are the product. You could truncate, but then you're back to collision territory: a 42-bit truncated snowflake at 40B records has a birthday-paradox collision probability of ~90%.
 
 Edge case: Clock skew. If an instance's clock jumps backward (NTP step), it can produce duplicate IDs. Snowflake handles this by blocking until the clock catches up (spinwait), which kills throughput temporarily on that instance.
 
