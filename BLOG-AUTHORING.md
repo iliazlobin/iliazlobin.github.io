@@ -111,13 +111,13 @@ bare URL** — keep authors/year/venue as plain text around the link:
 
 ```markdown
 <!-- BAD — bare URL, renders unclickable -->
-1. Cormode, G., & Muthukrishnan, S. (2005). "An Improved Data Stream Summary." Journal of CSS. https://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf
+1. Cormode, G., & Muthukrishnan, S. (2005). "An Improved Data Stream Summary." Journal of Computer and System Sciences. https://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf
 
 <!-- GOOD — title is the link, no naked URL -->
-1. Cormode, G., & Muthukrishnan, S. (2005). ["An Improved Data Stream Summary"](https://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf). Journal of CSS.
+1. Cormode, G., & Muthukrishnan, S. (2005). ["An Improved Data Stream Summary"](https://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf). Journal of Computer and System Sciences.
 ```
 
 For an engineering-blog / source-code entry, hyperlink the whole label:
-`[Twitter Algebird — CMS with TopCMS](https://github.com/twitter/algebird/…).`
+`[Twitter Algebird — CMS with TopCMS](https://github.com/twitter/algebird/blob/develop/algebird-core/src/main/scala/com/twitter/algebird/CountMinSketch.scala).`
 
 Never fabricate a link — drop a source you can't verify. Use real, resolvable URLs.

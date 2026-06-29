@@ -546,7 +546,7 @@ Edge cases:
 
 1. Redis Ltd. ["Count-Min Sketch: The Art and Science of Estimating Stuff"](https://redis.io/blog/count-min-sketch-the-art-and-science-of-estimating-stuff/). Redis Blog.
 
-1. Google Research. ["Streaming Trends: A Low-Latency Platform for Dynamic Video Grouping and Trending Corpora Building"](https://research.google/pubs/streaming-trends-a-low-latency-platform-for-dynamic-video-grouping-and-trending-corpora-building/). (2025).
+1. Google Research (2025). ["Streaming Trends: A Low-Latency Platform for Dynamic Video Grouping and Trending Corpora Building"](https://research.google/pubs/streaming-trends-a-low-latency-platform-for-dynamic-video-grouping-and-trending-corpora-building/).
 
 ### Production Code & Engineering Blogs
 
