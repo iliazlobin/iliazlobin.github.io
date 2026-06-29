@@ -5,6 +5,7 @@ date: 2026-06-27
 tags: [System Design, Instagram, Social Media, Scalability]
 description: "A comprehensive system design for Instagram: 2B DAU, 100M daily posts, ML-ranked feeds, and 7M privacy checks per second against a 600B-edge social graph."
 ---
+A comprehensive system design for Instagram: 2B DAU, 100M daily posts, ML-ranked feeds, and 7M privacy checks per second against a 600B-edge social graph.
 
 ## 1. Problem Frame
 
