@@ -5,6 +5,7 @@ date: 2026-06-28
 tags: [System Design, Strava, Distributed Systems, Fitness, Real-Time, GPS]
 description: "A deep-dive into Strava's architecture: ingesting 10M daily activities with offline recording, matching against 35M+ segments via H3 spatial indexing, powering real-time leaderboards on Redis-backed sorted sets, and fanning out feeds to 180M athletes."
 ---
+A deep-dive into Strava's architecture: ingesting 10M daily activities with offline recording, matching against 35M+ segments via H3 spatial indexing, powering real-time leaderboards on Redis-backed sorted sets, and fanning out feeds to 180M athletes.
 
 ## 1. Problem Frame
 
@@ -457,19 +458,15 @@ Edge cases:
 
 ### Primary Sources
 
-1. Tessa: 1,000,000,000 Strava Activities — Strava Engineering (2024)
-1. From Data Streams to a Data Lake — archival pipeline, Parquet compression
-1. Rebuilding the Segment Leaderboards Infrastructure — Parts 1–4 (2019 Redis→Kafka→Cassandra redesign)
-1. KOMs Powered by Redis — original Redis-as-primary architecture (2011–2019)
-1. The Boring Option — segment effort matching pipeline, peak 6K QPS
-1. The Global Heatmap, Now 6× Hotter — 7.7T points, 30M+ tiles, privacy design
-1. A Richer Activity — Parts 1–2, GPS pipeline, Kalman filter, sensor fusion
-1. Keeping Strava's Segment Leaderboards Fair — ML anti-cheat, 14.85M anomalies removed
-1. How Strava's NoSQL Move Keeps Athletes Moving — Cassandra→ScyllaDB migration
-1. H3: A Hexagonal Hierarchical Geospatial Indexing System — Uber Engineering, resolution 11 ≈ 29m edge
-1. Encoded Polyline Algorithm Format — Google Maps, delta-encoded base64 compression
-1. Timelines at Scale — Twitter Engineering, hybrid fan-out design (2013)
-### Comparison Line
-
-Twitter's timeline fan-out (hybrid push/pull with celebrity threshold), Uber's H3 geospatial indexing (hexagonal tiling at configurable resolution), Google Maps' polyline encoding (delta-compressed route serialization), LinkedIn's feed pipeline (Kafka→Samza event sourcing), Netflix's content tiering (hot cache→S3 cold archive). Each of these systems contributed a pattern adapted and combined in Strava's architecture.
-
+1. [Tessa: 1,000,000,000 Strava Activities — Strava Engineering (2024)](https://medium.com/strava-engineering/tessa-1-000-000-000-strava-activities-1-spatiotemporal-dataset-d54c1eb0b600)
+1. [From Data Streams to a Data Lake — archival pipeline, Parquet compression](https://medium.com/strava-engineering/from-data-streams-to-a-data-lake-b6ca17c00a23)
+1. [Rebuilding the Segment Leaderboards Infrastructure — Parts 1–4 (2019 Redis→Kafka→Cassandra redesign)](https://medium.com/strava-engineering/rebuilding-the-segment-leaderboards-infrastructure-part-1-background-13d8850c2e77)
+1. [KOMs Powered by Redis — original Redis-as-primary architecture (2011–2019)](https://medium.com/strava-engineering/koms-powered-by-redis-795f2159f9cf)
+1. [The Boring Option — segment effort matching pipeline, peak 6K QPS](https://medium.com/strava-engineering/the-boring-option-4a7c6ad16ab8)
+1. [The Global Heatmap, Now 6× Hotter — 7.7T points, 30M+ tiles, privacy design](https://medium.com/strava-engineering/the-global-heatmap-now-6x-hotter-23fc01d301de)
+1. [A Richer Activity — Parts 1–2, GPS pipeline, Kalman filter, sensor fusion](https://medium.com/strava-engineering/a-richer-activity-part-1-58b6ce4bde6a)
+1. [Keeping Strava's Segment Leaderboards Fair — ML anti-cheat, 14.85M anomalies removed](https://stories.strava.com/articles/keeping-stravas-segment-leaderboards-fair-an-engineers-perspective)
+1. [How Strava's NoSQL Move Keeps Athletes Moving — Cassandra→ScyllaDB migration](https://resources.scylladb.com/blog/how-strava-s-nosql-move-keeps-athletes-moving)
+1. [H3: A Hexagonal Hierarchical Geospatial Indexing System — Uber Engineering, resolution 11 ≈ 29m edge](https://eng.uber.com/h3/)
+1. [Encoded Polyline Algorithm Format — Google Maps, delta-encoded base64 compression](https://developers.google.com/maps/documentation/utilities/polylinealgorithm)
+1. [Timelines at Scale — Twitter Engineering, hybrid fan-out design (2013)](https://blog.twitter.com/engineering/en_us/a/2013/timelines-at-scale)
