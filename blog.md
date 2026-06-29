@@ -51,7 +51,7 @@ description: "System design write-ups, platform & AI engineering notes, and deep
     </div>
     {%- assign cover_img = post.thumbnail | default: post.image %}
     {%- if cover_img %}
-    <a class="pc-thumb" href="{{ cover_img | relative_url }}" target="_blank" rel="noopener" aria-label="Open the {{ post.title | escape }} diagram"><img src="{{ cover_img | relative_url }}" alt="{{ post.title | escape }} architecture diagram" loading="lazy"></a>
+    <a class="pc-thumb" href="{{ cover_img | relative_url }}" target="_blank" rel="noopener noreferrer" aria-label="Open diagram for {{ post.title | escape }} (opens in a new tab)"><img src="{{ cover_img | relative_url }}" alt="{{ post.title | escape }} architecture diagram" loading="lazy"></a>
     {%- else %}
     <a class="pc-thumb cover g{{ seed }}" href="{{ post.url | relative_url }}" tabindex="-1" aria-hidden="true">
       <span class="pc-cover-title">{{ post.title | escape }}</span>

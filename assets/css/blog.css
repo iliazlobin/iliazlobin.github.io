@@ -81,7 +81,7 @@
 
 .pc-thumb {
   position: relative; z-index: 2;        /* sit above the card's stretched title link so the image opens full */
-  align-self: stretch; min-height: 100%; overflow: hidden; background: #f6f7f9;
+  align-self: stretch; min-height: 100%; overflow: hidden; background: var(--bg);
   border-left: 1px solid var(--line);
 }
 .pc-thumb img {
