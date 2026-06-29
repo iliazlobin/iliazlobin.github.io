@@ -17,7 +17,7 @@ graph LR
     ActivitySvc["Activity Service<br/>lifecycle + state machine"]
     SegmentSvc["Segment Service<br/>H3 match + leaderboard"]
     FeedSvc["Feed Service<br/>fan-out + real-time push"]
-    Stores[(" Storage Tier<br/>PG + ScyllaDB + Redis + S3")]
+    Stores[("Storage Tier<br/>PG + ScyllaDB + Redis + S3")]
 
     Mobile --> Gateway
     Gateway --> ActivitySvc
