@@ -4,6 +4,7 @@ title: "System Design: Strava — The Fitness Social Network at 180M Athletes"
 date: 2026-06-28
 tags: [System Design, Strava, Distributed Systems, Fitness, Real-Time, GPS]
 description: "A deep-dive into Strava's architecture: ingesting 10M daily activities with offline recording, matching against 35M+ segments via H3 spatial indexing, powering real-time leaderboards on Redis-backed sorted sets, and fanning out feeds to 180M athletes."
+thumbnail: /images/posts/2026-06-28-strava-system-design.svg
 ---
 A deep-dive into Strava's architecture: ingesting 10M daily activities with offline recording, matching against 35M+ segments via H3 spatial indexing, powering real-time leaderboards on Redis-backed sorted sets, and fanning out feeds to 180M athletes.
 

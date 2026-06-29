@@ -49,8 +49,9 @@ description: "System design write-ups, platform & AI engineering notes, and deep
       </div>
       {%- endif %}
     </div>
-    {%- if post.thumbnail %}
-    <a class="pc-thumb" href="{{ post.thumbnail | relative_url }}" target="_blank" rel="noopener" aria-label="Open the {{ post.title | escape }} diagram"><img src="{{ post.thumbnail | relative_url }}" alt="{{ post.title | escape }} diagram" loading="lazy"></a>
+    {%- assign cover_img = post.thumbnail | default: post.image %}
+    {%- if cover_img %}
+    <a class="pc-thumb" href="{{ cover_img | relative_url }}" target="_blank" rel="noopener" aria-label="Open the {{ post.title | escape }} diagram"><img src="{{ cover_img | relative_url }}" alt="{{ post.title | escape }} architecture diagram" loading="lazy"></a>
     {%- else %}
     <a class="pc-thumb cover g{{ seed }}" href="{{ post.url | relative_url }}" tabindex="-1" aria-hidden="true">
       <span class="pc-cover-title">{{ post.title | escape }}</span>

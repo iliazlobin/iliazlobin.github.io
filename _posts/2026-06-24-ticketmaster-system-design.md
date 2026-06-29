@@ -4,6 +4,7 @@ title: "Reserving a Seat for 14 Million People: The Ticketmaster System Design"
 date: 2026-06-24
 tags: [System Design, Ticketmaster, AWS, Architecture]
 description: "How Ticketmaster handles 500 million tickets a year, survives 14 million concurrent onsales, and guarantees no seat is ever sold twice."
+thumbnail: /images/posts/2026-06-24-ticketmaster-system-design.svg
 ---
 
 Ticketmaster sells roughly **500 million tickets a year**. On a bad day — or a very good one — it fields **3.5 billion requests**. It serves **14 million people** trying to buy seats at the same time, and fends off **566 million bot attacks** before lunch. The interesting part isn't the scale. It's that selling a seat twice is worse than a search result loading slowly. A page that lags annoys someone. A double booking ruins two someones, starts a refund chain, and ends up in the news.
