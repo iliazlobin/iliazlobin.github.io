@@ -92,8 +92,6 @@ FeedEntry
 AccountEmbedding
   account_id: bigint (PK)
   vector: float[256]             ← ig2vec: Word2Vec on co-engagement graph; FAISS-indexed
- 
-... (truncated)
 ```
 
 **API**
@@ -168,8 +166,32 @@ flowchart TB
     PostSvc -->|"metadata"| PG
     PostSvc -->|"post-created"| Kafka
     Kafka --> MediaWkr
-    MediaWkr -->|"transcode
-... (truncated)
+    MediaWkr -->|"transcode + thumbnails"| Haystack
+    MediaWkr -->|"media-ready"| Kafka
+    Kafka --> FanoutWkr
+    FanoutWkr -->|"materialize timelines"| TAO
+    GraphSvc -->|"social edges"| TAO
+    FeedSvc -->|"read timeline"| TAO
+    FeedSvc -->|"hydrate metadata"| PG
+    CDN -.->|"origin fetch on miss"| Haystack
+    StorySvc -->|"story metadata"| Cassandra
+    StorySvc -->|"story-posted"| Kafka
+    Kafka --> SweepWkr
+    SweepWkr -->|"expire after 24h"| Cassandra
+    ExploreSvc -->|"vector search"| FAISS
+    ExploreSvc -->|"hydrate posts"| PG
+    SocialSvc -->|"likes + comments"| PG
+    SocialSvc -->|"social-events"| Kafka
+
+    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a;
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
+    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
+    classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a;
+
+    class Mobile,CDN,GW edge;
+    class PostSvc,FeedSvc,StorySvc,ExploreSvc,GraphSvc,SocialSvc svc;
+    class Kafka,MediaWkr,FanoutWkr,SweepWkr async;
+    class TAO,Haystack,PG,Cassandra,FAISS store;
 ```
 
 ### FR1: Upload a post
