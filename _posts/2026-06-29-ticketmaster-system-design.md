@@ -4,6 +4,7 @@ title: "Ticketmaster System Design — Surviving 14M Concurrent Users"
 date: 2026-06-29
 tags: [System Design, Ticketmaster, Distributed Systems, High-Concurrency, Payments, Saga]
 description: "Ticketmaster processes 500M tickets per year. This deep-dive walks through the architecture behind selling seats at 100K TPS — from Redis fast-path seat locks to Temporal sagas for exactly-once payments — while surviving 14M concurrent users and 566M daily bot attacks."
+thumbnail: /images/posts/2026-06-29-ticketmaster-system-design.svg
 ---
 
 Ticketmaster processes 500 million tickets per year across 30+ countries, serving as Live Nation's primary ticketing platform. Its system must survive 14 million concurrent users during hot onsales, gate bot traffic at 566 million attacks per day, and guarantee that no seat is ever sold twice — all while delivering authenticated mobile tickets in real time. This write-up walks through the architecture behind that guarantee, from the Redis fast-path seat-lock to the Temporal saga orchestrating exactly-once payments at 100K TPS.

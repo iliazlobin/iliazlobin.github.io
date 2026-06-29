@@ -4,6 +4,7 @@ title: "System Design: Top-K Heavy Hitters — Trending Topics at 5M Events/Seco
 date: 2026-06-29
 tags: [System Design, Top K, Streaming, Count-Min Sketch, Flink, Heavy Hitters]
 description: "A system that ingests a firehose of real-time events at 5M/s peak and returns the K items with the highest counts over sliding windows — scaled to 500M daily active users, using Count-Min Sketch and Space-Saving to stay memory-bound regardless of stream cardinality."
+thumbnail: /images/posts/2026-06-29-top-k-system-design.svg
 ---
 
 A system that ingests a firehose of real-time events at 5M/s peak and returns the K items with the highest counts over sliding windows — scaled to 500M daily active users, using Count-Min Sketch and Space-Saving to stay memory-bound regardless of stream cardinality.
