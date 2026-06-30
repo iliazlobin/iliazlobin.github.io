@@ -49,7 +49,11 @@ description: "System design write-ups, platform & AI engineering notes, and deep
       </div>
       {%- endif %}
     </div>
-    {%- assign cover_img = post.thumbnail | default: post.image %}
+    {%- comment %} Card thumbnail = the post's own rendered diagram (post.thumbnail), set by
+        scripts/render-post-diagram.py. NEVER fall back to post.image — that is the site-wide
+        og-default.png social card (set via _config.yml defaults) and would show the same banner
+        on every post. No thumbnail → the gradient title-card below. {%- endcomment %}
+    {%- assign cover_img = post.thumbnail %}
     {%- if cover_img %}
     <a class="pc-thumb" href="{{ cover_img | relative_url }}" target="_blank" rel="noopener noreferrer" aria-label="Open diagram for {{ post.title | escape }} (opens in a new tab)"><img src="{{ cover_img | relative_url }}" alt="{{ post.title | escape }} architecture diagram" loading="lazy"></a>
     {%- else %}
