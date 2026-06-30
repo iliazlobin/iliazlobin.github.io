@@ -173,6 +173,7 @@ graph TB
 1. Warm Redis: SET url:{short_code} {long_url} EX 86400
 1. Publish scan request to Crawler (async, non-blocking): Crawler fetches destination → TDS + Google Web Risk assess → Abuse API writes safety_status
 1. Return 200 {short_url: "https://bit.ly/aBcDeFg", safety_status: "pending"}
+
 **Design consideration:** The ID Generator claims ranges of 1,000 IDs from ZooKeeper via atomic compareAndSet on a persistent counter node. Each Create Service instance burns through its range in-process with zero network calls on the hot path. At ~70 creates/sec, a single range lasts ~14 seconds. When 20% remains, the instance asynchronously fetches the next block. This collapses coordination traffic by 1,000× versus per-request counter increments. ZooKeeper itself handles ~10K ops/sec easily — well above what even a fleet of 100 create instances needs.
 
 #### FR2: Redirect Short URL
@@ -190,6 +191,7 @@ graph TB
 1. Populate Redis (SET url:aBcDeFg {long_url} EX 86400) and LRU
 1. Respond HTTP 301 Moved Permanently + Location: {long_url} + Cache-Control: private, max-age=90
 1. Async fire: publish {short_code, timestamp, referrer, user_agent} to NSQ topic url.clicks
+
 **Design consideration:** 301 + max-age=90 is Bitly's production choice over the more commonly cited 302. A bare 302 gives perfect analytics fidelity — every click hits origin — but at 200K req/s peak, that's 200K origin hits per second that could have been absorbed by the browser. 301 tells the browser "this redirect is stable, cache it for 90 seconds." The first click in a 90s window hits origin; subsequent clicks from the same client are served from browser cache. The tradeoff: analytics for a link that's clicked 10 times in 90 seconds from the same browser might show 1 click instead of 10. For a system where the core metric is unique reach rather than per-click billing, 90 seconds of lag is acceptable. The private directive stops shared caches — CDN PoPs, corporate proxies, ISP caches — from storing the redirect, so every distinct user still hits origin at least once per window and analytics stay user-scoped.
 
 #### FR3: Click Analytics
@@ -204,6 +206,7 @@ graph TB
 1. Upsert rollups into ClickHouse click_rollups table (MergeTree, partitioned by toYYYYMM(date))
 1. Analytics API (GET /api/urls/{short_code}/stats) queries pre-aggregated rollups — SELECT sum(clicks) WHERE short_code = ? AND hour BETWEEN ? AND ? — O(log n) on sorted index, no full scan
 1. Raw events also archived to S3/GCS via separate NSQ channel for long-term cold storage
+
 **Design consideration:** The split between real-time rollups and raw archive is load-bearing. ClickHouse runs on a small number of nodes because it only stores aggregated data — ~10MB/day at current scale — while the raw event firehose (360M events/day × ~200 bytes = ~72GB/day uncompressed) goes straight to cheap object storage. The Flink job is tuned to drop bot traffic (HEAD requests, known crawler UAs, empty referrers from direct URL entry) before aggregation, cutting volume by ~30-40% before hitting ClickHouse. Old data ages out of ClickHouse after 90 days; queries beyond that window fall back to a slower Athena/Presto scan over the raw archives.
 
 #### FR4: Custom Aliases
@@ -218,6 +221,7 @@ graph TB
 1. INSERT INTO urls (short_code, ...) IF NOT EXISTS — Bigtable conditional mutation; appends #collision atomically
 1. On collision → 409 Conflict {existing: {short_url, created_at}}
 1. On success → same write+cache flow as FR1
+
 **Design consideration:** Custom aliases share the same short_code column as auto-generated codes, but the allowed alias charset includes the hyphen (`my-brand`), which the base62 auto-generator never emits — so a custom alias can only ever collide with another custom alias, never with a generated code. Sub-4-character aliases are reserved for paid tiers — enforced at the API Gateway by checking alias length against the authenticated account's tier. The Bloom filter sits in each Create Service's memory (~10MB for 10M custom aliases at 1% false-positive rate) and absorbs ~99% of collision checks without a DB round-trip. When the Bloom filter returns positive, the conditional write is the source of truth.
 
 #### FR5: URL Expiration
@@ -230,6 +234,7 @@ graph TB
 1. On redirect: Redirect Service checks expires_at against now() at every cache-miss DB read; returns 410 Gone if expired, and publishes a tombstone to Redis (DEL url:{short_code})
 1. Per-link expiry is enforced on read (return 410) — Bigtable's column-family GC is age-based (delete cells older than a fixed maxage), so it cannot key off the expires_at value; physical removal of expired rows is handled by a lightweight background sweeper
 1. Browser max-age=90 ensures a cached 301 for a just-expired link is reused for at most 90 seconds before the client re-fetches from origin
+
 **Design consideration:** The only sharp edge is the race between max-age=90 and expires_at. If a link expires at T+0 and a client cached the 301 at T-89, that browser keeps following the redirect until T+1. At a 90s browser TTL this window is small enough that no active invalidation on expiration is needed. Value-based expiry always needs a sweeper — Bigtable's column-family GC is age-based, not value-based, so it can cap absolute retention but can't honor a per-row expires_at. The sweeper queries WHERE expires_at < now() LIMIT 1000 every 60 seconds — the same pattern Bitly ran on MySQL before the Bigtable migration.
 
 #### FR6: Safety Warnings
@@ -246,6 +251,7 @@ graph TB
 1. clean → normal 301 redirect
 1. warn → interstitial page: "This link may be unsafe. [Proceed anyway] [Go back]"
 1. blocked → interstitial page with no destination revealed (destination itself is dangerous, e.g. auto-downloading malware)
+
 **Design consideration:** The Abuse API is consulted on every redirect but served from a small Redis instance — the key space is only the subset of URLs flagged as non-clean, and the TDS Google Web Risk pipeline processes URLs asynchronously within ~500ms of creation. The abuse check adds <1ms (local Redis read) to the redirect hot path. False positives are calibrated aggressively toward warn rather than blocked because an interstitial with a "proceed anyway" escape hatch is annoying but survivable; a false blocked kills a legitimate link entirely.
 
 ## 6. Deep dives

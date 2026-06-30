@@ -295,18 +295,21 @@ Poll `SELECT ... WHERE scheduled_at <= NOW() AND status = 'PENDING' ORDER BY sch
 
 - **Pro:** Single source of truth. Survives crashes — state is in the DB. Simple to reason about.
 - **Con:** Poll interval is the precision floor — average 250ms latency, but P99 spikes when the DB is under load. At 10K jobs/sec, multiple scheduler replicas scanning the same B-tree cause buffer pool contention on the hot leaf pages. `SKIP LOCKED` avoids row-level blocking but not page-level churn. Shopify reported their Airflow scheduler DB CPU as the #1 scaling complaint at 10K DAG scale.
+
 **Approach 2: Redis sorted set**
 
 `ZADD delayed_queue {scheduled_at_unix_ms} {job_id}` with BullMQ-style timestamp baking for FIFO. Poll `ZRANGEBYSCORE -inf NOW LIMIT 500` every 200ms. Atomic claim via Lua `ZPOPMIN`.
 
 - **Pro:** Sub-millisecond poll latency (single-threaded, memory-resident). 200ms poll interval → ~100ms average precision. Pinterest Pacer uses this pattern (MySQL + Redis dual storage).
 - **Con:** Redis is not the source of truth — if Redis restarts, the ZSET is lost. Must replay from the DB, creating recovery lag. Lua scripts block the event loop during the pop-and-move operation; partitioning the ZSET at 10K+ items keeps `M` bounded. Google SRE Book explicitly warns against making the in-memory structure the authority.
+
 **Approach 3: In-memory hierarchical timing wheel (HTW)**
 
 A 3-level circular buffer: 60 second slots (1s each), 60 minute slots (60s each), 24 hour slots (3600s each). Jobs in the far future land in the hour wheel; when the minute hand advances, jobs cascade into the seconds wheel. Tick fires all jobs in the current second slot.
 
 - **Pro:** O(1) insertion, O(1) tick, O(1) removal. The cascade (hour → minute → second) is rare and amortized. Kafka uses HTW internally for delayed produce/fetch operations: 9× faster than `java.util.Timer` with half the heap allocations. Google's internal cron leader uses an in-memory sorted list with the same constant-tick philosophy.
 - **Con:** Volatile — crash loses the entire wheel. Must reload from durable store on restart. Cascade spikes if many jobs land in the same hour slot (mitigate by re-inserting into seconds wheel with randomized offsets).
+
 **Approach 4: Hybrid — HTW for near-future + DB for long-tail**
 
 Load jobs with `scheduled_at ≤ now + 15 min` into the HTW on scheduler startup and every 30s. Jobs beyond 15 min stay in the DB. HTW handles the hot path; DB `SKIP LOCKED` polling handles the cold path. Redis ZSET sits as an optional middle tier for >15 min jobs if DB poll latency exceeds 200ms.
@@ -333,18 +336,21 @@ Run N identical scheduler processes, each polling the same job table with `SKIP 
 
 - **Pro:** Simplest scaling model. Airflow 2.4+ operates this way — multiple scheduler replicas, one database.
 - **Con:** The DB is the bottleneck, not the schedulers. The scheduling query contends on the same B-tree hot pages; adding replicas increases concurrent index scans without increasing the DB's capacity. Shopify's 10K DAG deployment found scheduler DB CPU as the primary limit. The ceiling is the database, not the number of schedulers.
+
 **Approach 2: Partitioned job table, per-shard leader**
 
 Divide the job table into N fixed shards (`hash(job_id) % N`). Native PostgreSQL table partitioning by `shard_id`. One elected leader per shard runs the scheduling loop on its partition only. Kafka topic has one partition per shard — workers consume across all partitions via a consumer group.
 
 - **Pro:** Linear horizontal scaling. Each shard is an independent domain — no cross-shard coordination on the hot path. Adding shards increases aggregate throughput proportionally. Each leader operates on a smaller working set, improving Postgres buffer pool locality and HTW footprint. Temporal uses 512 fixed history shards for this exact reason.
 - **Con:** Fixed shard count at creation time — Temporal's `numHistoryShards` is immutable. Under-provisioning caps peak throughput. Cross-shard DAG workflows require a coordinator to fan out job creation across shards (rare: most DAGs are submitted together and hash naturally to one shard).
+
 **Approach 3: Consistent-hash ring with dynamic resizing**
 
 Replace `hash % N` with a consistent-hash ring. Adding shards remaps only ~1/N of jobs. Migration window dual-writes to old and new shards.
 
 - **Pro:** Online resizing. Add shards as throughput grows without cluster restart.
 - **Con:** Ring management adds operational complexity. Dual-write migrations need careful fencing to avoid duplication. In practice, most deployments size for peak — Temporal's fixed 512 shards has worked from startup through 12B+ executions at Uber without resizing.
+
 **Decision:** Fixed-shard partitioning at cluster creation with `hash(job_id) % 512`. Start at 512 (over-provisioned at launch, headroom for 100K+ jobs/sec peak). Workers consume from Kafka partitions 1:1 mapped to shards.
 
 **Rationale:** Temporal's 512-shard design is proven at Uber scale: 270B+ actions/month, 1000+ services. A scheduler leader is lightweight (~200 MB RAM, single-digit % CPU at 20 jobs/sec) — over-provisioning 512 shards costs ~100 GB RAM cluster-wide, roughly 2–3 Kubernetes nodes. This is cheap insurance against the operational pain of resharding live. If resizing is ever needed, a blue-green migration (deploy new cluster with 1024 shards, dual-write, drain old cluster) is simpler than maintaining a consistent-hash ring in production.
@@ -407,6 +413,7 @@ RETURNING job_id, status;
 ```
 
 - **Edge case:** The retry arrives while the original is still `PENDING`. The handler returns the in-flight job. The client polls `GET /jobs/{job_id}` until a terminal status.
+
 **Approach 2: Fencing token + CAS claim**
 
 Every job carries a `fence_token` (monotonic BIGINT). Workers claim jobs by incrementing it atomically:
@@ -426,6 +433,7 @@ If the returned token does not match the expected token + 1, the claim fails —
 
 - **Normal path:** Scheduler publishes with `fence_token = 5`. Worker A claims → token 6. Worker A writes `SUCCESS` with token 6 → accepted.
 - **Stale worker path:** Worker A GC-pauses for 60s. Scheduler declares it dead, increments token to 7, re-enqueues. Worker B claims → token 8. Worker A recovers, tries to write token 6 → rejected. The stale write is fenced.
+
 **Approach 3: Heartbeat-based liveness**
 
 Workers emit a heartbeat every 15s for long-running jobs (`timeout_sec > 60`). Scheduler tracks `last_heartbeat_at`. After 3 missed intervals (45s), the scheduler increments `fence_token`, resets `status = PENDING`, and re-enqueues. The stale worker's next write fails the fence-token check. This is Temporal's lease-renewal model: the worker holds a soft lease; the scheduler revokes it on missed heartbeats.
@@ -463,18 +471,21 @@ Every tick, scan all workflows, check every upstream task's status. Fire childre
 
 - **Pro:** Zero additional state beyond task status. Simple to implement.
 - **Con:** O(W × E) work per tick — 1M queries/sec just for dependency resolution at Shopify scale. This dominates scheduling CPU before any jobs are actually dispatched.
+
 **Approach 2: Denormalized ****`pending_parents`**** counter, atomic decrement**
 
 Store `pending_parents = count(upstream_parents)` per edge. On task completion, atomically decrement all its outgoing edges. Children reaching zero fire.
 
 - **Pro:** O(1) per completion event. Only the finishing task's immediate children are touched. Airflow's internal DAG resolution uses this exact model. Netfix Conductor's Decider state machine uses the same pattern (denormalized pending-parent counters in the workflow state).
 - **Con:** The atomic decrement must serialize concurrent parent completions. PostgreSQL row-level locking on `UPDATE` handles this naturally — two concurrent parent completions targeting the same child execute serially, the second sees the counter at 1 → 0 and triggers the enqueue.
+
 **Approach 3: Event-sourced state machine (Temporal/Cadence model)**
 
 Instead of counters, emit a `TASK_COMPLETED` event. A workflow orchestrator (deterministic state machine) subscribes to these events per workflow instance. On each event, the orchestrator replays the workflow code, determines which tasks are now unblocked, and fires them.
 
 - **Pro:** No polling, no counters. The workflow is entirely event-driven. Handles dynamic fan-out naturally — the workflow code can spawn new tasks at runtime, not just at DAG definition time. Temporal's workflow-as-code uses this model.
 - **Con:** Requires a durable state machine runtime per workflow instance. Workers must be deterministic. Replay must be exact. This is the right model for long-running business workflows (days to months at Uber) but overkill for a second-scale job scheduler where most DAGs complete in minutes.
+
 **Decision:** Denormalized `pending_parents` counter with atomic decrement (Approach 2). Dynamic fan-out handled by allowing executing tasks to insert new `workflow_edge` rows at runtime, registering spawned children with `pending_parents = 1`.
 
 **Rationale:** Airflow processes 150K DAG runs/day at Shopify and 800K task instances/day at Uber using this exact counter model. The counter serializes through Postgres row locks — no distributed coordination needed. Temporal's event-sourced model is more general (handles arbitrary workflow code with branching and loops) but introduces deterministic replay and event-sourcing complexity that adds operational burden without benefit for DAGs that complete in seconds or minutes. The counter model handles ~95% of production DAG patterns (ETL pipelines, cron-driven workflows, ML training pipelines).

@@ -41,6 +41,7 @@ graph LR
 - FR4: Send and receive media including images, video, and audio.
 - FR5: View three-tier delivery status: sent, delivered, and read.
 - FR6: See when contacts are online, offline, or were last seen.
+
 **Non-functional**
 
 - NFR1: End-to-end encrypt all messages and media by default.
@@ -184,6 +185,7 @@ FR1: Send and receive text messages in real time
 1. The server returns `{"status":"sent","message_id":"<uuid>","global_seq":<n>}` — this is the single-check (✓) receipt.
 1. For each online recipient, the Chat Server publishes the message envelope to `user:<recipient_id>:messages` in Redis Pub/Sub. The recipient's Chat Server (subscribed to that channel) receives the publish, looks up the recipient's active WebSocket connections from a local connection map, and pushes the envelope to each device.
 1. The recipient's client decrypts the ciphertext and sends a delivery ACK: `{"cmd":"ack_delivery","message_id":"<uuid>"}`. The ACK propagates to the sender's server, which pushes a double-check (✓✓) receipt.
+
 **Design consideration:** The key routing problem is that the sender's Chat Server does not inherently know which server hosts the recipient's connection. At WhatsApp's scale, a fully-connected mesh of servers (N² connections) breaks down. Redis Pub/Sub solves this efficiently — each server subscribes only to channels for its currently-connected users, and unsubscribes on disconnect. Pub/Sub is at-most-once, so it is paired with the durable Inbox as the source of truth (see FR2). A server crash during delivery loses the pub/sub event but the message survives in the Inbox and is delivered on the next reconnect sync.
 
 FR2: Receive messages sent while offline for up to 30 days
@@ -199,6 +201,7 @@ FR2: Receive messages sent while offline for up to 30 days
 1. The Chat Server queries Cassandra: `SELECT * FROM inbox_entries WHERE user_id = ? AND device_id = ? AND global_seq > ? ORDER BY global_seq ASC LIMIT 500`. Because `InboxEntry` is partitioned by `(user_id, device_id)`, this is a single-partition range scan — no scatter-gather.
 1. The server streams each pending message to the client and awaits a delivery ACK for each. On ACK, it updates the `InboxEntry.status` to `delivered` and deletes the row after a short grace period (or leaves it to TTL-expire).
 1. If the device goes offline again mid-sync, the `last_ack_seq` cursor ensures the next sync picks up exactly where it left off.
+
 **Design consideration:** The `global_seq` is a cluster-wide monotonic sequence (e.g., Twitter Snowflake or a sequence service). It is critical because a per-chat `client_seq` can't be used for reconnect sync — a user belongs to hundreds of chats, and scanning each one on reconnect would be an N-way scatter-gather. A single global sequence per `(user_id, device_id)` means one efficient range scan restores the full state. The tradeoff is that `global_seq` gaps appear when a message is sent to a group but not all members download it — the sequence still increments, and the client simply skips gaps.
 
 FR3: Create and participate in group chats with up to 1,024 members
@@ -213,6 +216,7 @@ FR3: Create and participate in group chats with up to 1,024 members
 1. The Chat Server forwards the request to the Group Service, which queries `ChatMember` to retrieve the full member list.
 1. The Group Service performs **server-side fan-out**: for each member, it writes one `InboxEntry` row (partitioned by `member.user_id`). For online members, it publishes to `user:<member_id>:messages` in Redis Pub/Sub; for offline members, it triggers a push notification.
 1. Each recipient's Chat Server delivers the message via its existing WebSocket (as in FR1). Recipients decrypt using the same Sender Key.
+
 **Design consideration:** Without Sender Keys, every group message would require N asymmetric encryption operations (one per member) — for a 1,024-member group, that is 1,024 Curve25519 operations per message. With Sender Keys, the O(N) cost is paid once at key distribution; every subsequent message costs O(1) symmetric encryption. The trade-off surfaces when a member leaves the group: all active Sender Keys must be rotated and re-distributed. WhatsApp handles this by having the Group Service coordinate a key rotation epoch — when a member leaves, the epoch increments, and all senders re-derive and re-distribute their Sender Keys on their next message.
 
 ```sql
@@ -238,6 +242,7 @@ FR4: Send and receive media including images, video, and audio
 1. On upload completion, S3 triggers a notification (via SQS or webhook) to the Transcode Queue. ffmpeg workers generate device-appropriate variants: 720p/480p/240p for video, thumbnail for images, Opus/AAC for audio.
 1. The sender's client includes `"media_ref":"<sha256>"` in the message envelope sent via `POST /v1/messages`.
 1. When a recipient's client renders the message, it requests `GET /v1/media/<sha256>`. The Media Service generates a short-lived signed CDN URL (or S3 presigned URL) and responds with a 302 redirect. The CDN edge caches the variant and serves it from the nearest POP.
+
 **Design consideration:** Client-direct upload via presigned URLs keeps the Chat Servers' network bandwidth free for message routing. A single Chat Server handling 1M concurrent connections at WhatsApp's scale would saturate its NIC if media passed through it — 214M images/day at 29 Gb/sec would require dedicated hardware. The Media Service itself is a lightweight metadata layer: it owns the reference-counting table (`media_ref → {byte_size, content_type, ref_count, variants[], created_at}`) and the SHA-256 dedup index, but never stores or proxies blob data. Reference counting ensures storage is reclaimed when all referring messages are TTL-expired.
 
 FR5: View three-tier delivery status: sent, delivered, and read
@@ -249,6 +254,7 @@ FR5: View three-tier delivery status: sent, delivered, and read
 1. **Sent ✓:** The sender's Chat Server acknowledges receipt and persistence of the message (step 5 in FR1). The sender's UI renders a single grey checkmark.
 1. **Delivered ✓✓:** When the recipient's Chat Server successfully pushes the message to at least one of the recipient's devices, the recipient's Chat Server sends a delivery ACK. This ACK does NOT route back through Pub/Sub — it follows the reverse server-to-server path. The sender's Chat Server pushes a receipt update to the sender's WebSocket. The sender's UI renders a double grey checkmark.
 1. **Read ✓✓ (blue):** When the recipient opens the chat, the recipient's client sends `{"cmd":"ack_read","chat_id":"<id>","up_to_global_seq":<n>}`. The server updates `InboxEntry.status = 'read'` for all messages in that chat up to the given sequence, then propagates the read receipt to the sender's Chat Server. The sender's UI renders blue double checkmarks.
+
 **Design consideration:** Exactly-once delivery semantics require client-side deduplication. The sender generates a `client_msg_id` (UUID) and includes it in every send request. The Chat Server checks a short-lived dedup cache (Redis, TTL 24 hours): if `client_msg_id` already exists, the server returns the original `message_id` and `global_seq` without reprocessing. This handles the case where the server persisted the message and sent the ACK, but the ACK was dropped before the client received it — the client retries, and the server deduplicates. Without this, a TCP-level retry after a successful server-side write would produce a duplicate message.
 
 FR6: See when contacts are online, offline, or were last seen
@@ -261,6 +267,7 @@ FR6: See when contacts are online, offline, or were last seen
 1. When a user opens a chat (or their contact list), the client subscribes to presence for those contacts: `{"cmd":"sub_presence","user_ids":[...]}`. The Chat Server subscribes to Redis Pub/Sub channels `presence:<each_user_id>`.
 1. On each user's presence state change (online → offline via TTL expiry, or explicit offline when the client sends `{"cmd":"go_offline"}` before disconnecting), the Chat Server publishes to `presence:<user_id>`. All subscribed servers receive the event and push a presence update to their respective clients.
 1. "Last seen" is a secondary read: when a client requests presence for a user who is offline, the server reads the last known `last_seen` timestamp from a secondary Redis key that persists beyond the TTL.
+
 **Design consideration:** Full-contact-list presence subscription creates quadratic fan-out — if 500M users are online and each has 200 contacts, every heartbeat tick generates 100B presence events. WhatsApp mitigates this with **on-demand subscriptions**: the client subscribes only to presence for currently visible contacts (e.g., the 10–20 chats on screen) and the chat list's top contacts. When the user scrolls or navigates away, the client unsubscribes. This reduces the fan-out multiplier from the full contact graph (~200) to the viewport (~20), a 10× reduction. Heartbeats themselves are batched server-side — the Chat Server buffers presence state changes and flushes every 5 seconds, so a flapping connection (connect/disconnect/connect) produces one aggregated event rather than a storm.
 
 ## 6. Deep dives
@@ -465,5 +472,6 @@ This is four Diffie-Hellman operations that together produce a shared secret eve
 1. [Rick Reed, Erlang Factory SF 2014 — WhatsApp Scaling (PDF)](http://www.erlang-factory.com/static/upload/media/1394350183453526efsf2014whatsappscaling.pdf) — Mnesia island architecture, meta-clustering, BEAM patches
 1. [Igors Istocniks, Code BEAM SF 2019 — How WhatsApp Moved 1.5B Users Across Data Centers (PDF)](https://codemesh.io/uploads/media/activity_slides/0001/01/f9539fb9fd3565db0de255bbbb0289ad5fe17414.pdf) — Per-prefix failover, db_module abstraction, C++ gateway
 1. [WhatsApp/warts on GitHub](https://github.com/WhatsApp/warts) — WhatsApp's open-source Erlang runtime fork (Apache 2.0)
+
 **Comparison sources:** *Designing Data-Intensive Applications* (Kleppmann, Ch. 5–6 on replication and partitioning), *High Scalability: The WhatsApp Architecture Facebook Bought for $19 Billion*, *ByteByteGo: How WhatsApp Handles 40 Billion Messages*, *SystemInternals / Systems Explained: Design WhatsApp*.
 
