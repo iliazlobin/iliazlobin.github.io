@@ -50,11 +50,11 @@ Out of scope: fleet routing and ETA optimization, driver onboarding and payouts,
 
 ## 3. Back of the envelope
 
-500 DCs × ~3,000 SKUs/DC → 1.5M inventory rows total, ~10 GB without indexes. Small enough to fit in memory on a single modern host, but the workload is write-heavy at peak (reservations, deductions, restock) — practical ceiling is per-DC partitioning so hot DCs don't saturate a shared instance. Implication: partition by DC from day one; shard count = number of physical DCs.
+- 500 DCs × ~3,000 SKUs/DC → 1.5M inventory rows total, ~10 GB without indexes. Small enough to fit in memory on a single modern host, but the workload is write-heavy at peak (reservations, deductions, restock) — practical ceiling is per-DC partitioning so hot DCs don't saturate a shared instance. Implication: partition by DC from day one; shard count = number of physical DCs.
 
-500 DCs × 5 orders/min peak rush → ~42 orders/s sustained. Each order touches inventory (reserve + deduct), payment (authorize + capture), and fulfillment (dispatch picker). The concurrency point is the per-DC inventory row — at 5 orders/min per DC, the contention window is ~12 seconds per order, well within row-lock tolerances. Implication: per-DC inventory locking is safe at this scale; no need for distributed coordination across DCs.
+- 500 DCs × 5 orders/min peak rush → ~42 orders/s sustained. Each order touches inventory (reserve + deduct), payment (authorize + capture), and fulfillment (dispatch picker). The concurrency point is the per-DC inventory row — at 5 orders/min per DC, the contention window is ~12 seconds per order, well within row-lock tolerances. Implication: per-DC inventory locking is safe at this scale; no need for distributed coordination across DCs.
 
-2M DAU × 3 page loads/session → ~6M catalog reads/day ≈ 70 QPS average, 200 QPS peak. But each page load is a geo-filtered availability query: "show me all chips in stock at DC #247." If every SKU query fans out to inventory, that's 200 × 3,000 = 600K sub-queries — a DB killer. Implication: availability must be pre-computed and denormalized into the catalog read path; inventory service is called only on cart-add and checkout, not on browse.
+- 2M DAU × 3 page loads/session → ~6M catalog reads/day ≈ 70 QPS average, 200 QPS peak. But each page load is a geo-filtered availability query: "show me all chips in stock at DC #247." If every SKU query fans out to inventory, that's 200 × 3,000 = 600K sub-queries — a DB killer. Implication: availability must be pre-computed and denormalized into the catalog read path; inventory service is called only on cart-add and checkout, not on browse.
 
 ## 4. Entities & API
 
