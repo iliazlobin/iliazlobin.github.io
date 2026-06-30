@@ -11,10 +11,9 @@ How Bitly serves 360 million clicks per day at 200K redirects/second with a 4-la
 
 <!--more-->
 
-## 1. Problem frame
+## 1. Problem
 
 Bitly turns long URLs into short ones and tracks every click. At first glance this looks like a hash table with a web frontend — take a URL, generate a 7-character code, store the mapping, redirect on lookup. The hidden weight is analytics: every redirect fires an event into a pipeline that powers the business. 40 billion active links, 360 million clicks a day, peak throughput north of 200K redirects per second. The write path is light (~80 creates/sec); the read path is a firehose. The whole thing runs on ~270 backend services, and the architecture is shaped by one fact: you never block a redirect on analytics.
-
 
 ```mermaid
 graph LR
@@ -36,26 +35,35 @@ graph LR
     class CDN,LB,Redirect,Analytics,Archive svc;
     class Cache,Store store;
     class MQ async;
-
 ```
 
 ## 2. Requirements
 
-### Functional
+**Functional**
 
 - FR1: User submits a long URL, receives a shortened version
+
 - FR2: User clicks a short URL, gets redirected to the original destination
+
 - FR3: User views click counts and referrer breakdowns per short link
+
 - FR4: User creates a custom vanity short URL via an alias field
+
 - FR5: User sets an optional expiration time on a short link
+
 - FR6: User receives an interstitial safety warning before visiting risky destinations
-### Non-functional
+
+**Non-functional**
 
 - NFR1: Redirect completes in under 10ms p50 measured at the server
+
 - NFR2: System available 99.99% of the time across all regions
+
 - NFR3: Peak throughput of 200K redirects/sec without degradation
+
 - NFR4: Click analytics queryable within 90 seconds of the event
-Out of scope: user accounts, billing, team management, QR code generation.
+
+*Out of scope: user accounts, billing, team management, QR code generation.*
 
 ## 3. Back of the envelope
 
@@ -64,29 +72,30 @@ Out of scope: user accounts, billing, team management, QR code generation.
 - 40B links × ~650 bytes/link → ~26TB of row data → any single-node DB is out; distributed store with partition-per-short-code is the only path
 ## 4. Entities & API
 
+```sql
+URL {
+  short_code:   string PK ← base62-encoded ID, 7 characters
+  long_url:     string    ← canonicalized, max 2048 chars
+  created_at:   timestamp
+  expires_at:   timestamp ← null = never; enforced on read + swept
+  user_id:      string CK ← partition-scoped analytics grouping
+  safety_status:enum      ← clean | warn | blocked
+}
 
-```javascript
-URL
-  short_code: string (PK)        ← base62-encoded ID, 7 characters
-  long_url: string               ← canonicalized, max 2048 chars
-  created_at: timestamp
-  expires_at: timestamp          ← null = never; enforced on read + swept
-  user_id: string (CK)           ← partition-scoped analytics grouping
-  safety_status: enum            ← clean | warn | blocked
-
-ClickEvent
-  short_code: string (PK)        ← partition key for event stream
-  timestamp: timestamp (CK)      ← ordering key within partition
-  referrer: string | null
+ClickEvent {
+  short_code: string PK    ← partition key for event stream
+  timestamp:  timestamp CK ← ordering key within partition
+  referrer:   string?
   user_agent: string
-  geo_country: string            ← enriched by stream processor
+  geo_country:string       ← enriched by stream processor
+}
 
-CounterRange
-  service_id: string (PK)        ← which create-service instance owns this
-  range_start: int64
-  range_end: int64
-  current: int64                 ← monotonically increasing, in-memory
-
+CounterRange {
+  service_id: string PK ← which create-service instance owns this
+  range_start:bigint
+  range_end:  bigint
+  current:    bigint    ← monotonically increasing, in-memory
+}
 ```
 
 ### API
@@ -97,7 +106,6 @@ CounterRange
 - POST /api/urls/{short_code}/report — flag a link as potentially unsafe
 - GET /api/safety/{short_code} — check safety status (clean/warn/blocked)
 ## 5. High-Level Design
-
 
 ```mermaid
 graph TB
@@ -155,7 +163,6 @@ graph TB
     class Router,RateLimit,Creator,Crawler,TDS,Flink svc;
     class L1,L2,L3,ClickHouse,Archive store;
     class NSQ,IDGen async;
-
 ```
 
 #### FR1: Create Short URL
@@ -264,12 +271,10 @@ graph TB
 
 A single Redis instance holds INCR url_id_counter. Each create-service instance calls INCRBY 1000 once, claims that range, and burns through it locally. On exhaustion, fetch another.
 
-
 ```javascript
 # Redis: single key
 INCRBY url_counter 1000   → returns 5001
 # Instance owns 4001..5000; base62-encode each one
-
 ```
 
 **Challenges:** Redis is still a single point of failure. If it crashes, every create-service instance stops within seconds — even with Sentinel failover, there's a 5-10s gap. Multi-region creates need disjoint ranges (US owns 0..1T, EU owns 1T..2T), which means the range partition is a static config change, not self-healing.
@@ -280,12 +285,10 @@ INCRBY url_counter 1000   → returns 5001
 
 No central coordinator. Every instance generates IDs locally: 41 bits of millisecond timestamp + 10 bits of machine ID + 12 bits of sequence number. Guaranteed unique within the same millisecond on the same machine. This is what Twitter [t.co](https://t.co) uses.
 
-
 ```javascript
 Snowflake ID (64 bits):
 | 41 bits: ms since epoch | 10 bits: worker ID | 12 bits: seq |
 = base62 → 11 characters (64 ÷ log₂(62) ≈ 10.7)
-
 ```
 
 **Challenges:** Base62-encoding a 64-bit integer produces 11 characters, not 7. For Twitter t.co, this doesn't matter — every tweet link is auto-wrapped and the user never sees the short code. For Bitly, 7-character codes are the product. You could truncate, but then you're back to collision territory: a 42-bit truncated snowflake at 40B records has a birthday-paradox collision probability of ~90%.
@@ -296,14 +299,12 @@ Snowflake ID (64 bits):
 
 Each create-service instance registers with ZooKeeper and claims a range via atomic compareAndSet on a persistent sequential znode.
 
-
 ```javascript
 # ZK path: /shortener/ranges/next
 compareAndSet(current=4001, next=5001)  → success
 # Instance owns 4001..5000 exclusively
 # In-memory: atomic.AddInt64(&localCounter, 1)
 # When localCounter > rangeEnd * 0.8: async refill
-
 ```
 
 ZooKeeper holds the canonical next_range value. The compareAndSet ensures exactly one instance claims each range. There's no clock dependency, no truncation — every code is exactly 7 characters. ZK handles ~10K ops/sec on a 3-node ensemble, which supports ~10M range claims per second (each range is 1,000 IDs), so the coordination layer saturates only if you're running tens of thousands of create-service instances.
@@ -327,11 +328,9 @@ ZooKeeper holds the canonical next_range value. The compareAndSet ensures exactl
 
 One Redis cluster, sharded by short_code. All redirect traffic queries Redis before falling through to the DB. Simple, battle-tested, easy to operate.
 
-
 ```javascript
 GET url:{short_code} → Redis (1-2ms) → hit: return 301
                                       → miss: query DB (5-15ms)
-
 ```
 
 **Challenges:** At 200K req/s, Redis handles the load easily (a single Redis node does ~100K ops/sec, a 6-node cluster handles 600K). But every request still traverses the network stack, and popular links — a viral tweet, a front-page story — generate hot keys that concentrate load on one shard. A single short code getting 50K req/s saturates its Redis shard even though the cluster overall is at 25% capacity.
@@ -341,7 +340,6 @@ GET url:{short_code} → Redis (1-2ms) → hit: return 301
 **Approach 2: Multi-Layer Cache Pyramid**
 
 Layer the caches by speed and capacity. Each layer absorbs a fraction of misses from the layer above.
-
 
 ```javascript
 Layer 1: Browser cache (per client, private + max-age=90)
@@ -361,7 +359,6 @@ Layer 3: Redis Cluster (sharded by short_code hash)
 Layer 4: Primary Store (Bigtable/ScyllaDB)
   Hit rate: 100% (the rest)
   Latency: 5-15ms
-
 ```
 
 The in-process LRU is the sleeper layer. It costs nothing to check (a hash map lookup in Go is ~50ns) and catches the common pattern of one link being clicked multiple times in rapid succession — a retweet storm, a Slack unfurl, a group chat where 20 people click the same link within 2 seconds. At 1,000 entries with 1s TTL, it uses ~200KB of memory per server.
@@ -374,10 +371,8 @@ The in-process LRU is the sleeper layer. It costs nothing to check (a hash map l
 
 Push the CDN from a non-caching edge to the primary defense. Configure edge cache TTL aggressively (e.g., s-maxage=3600 for CDNs) and use stale-while-revalidate to let the CDN serve a possibly-stale copy while asynchronously checking the origin.
 
-
 ```javascript
 Cache-Control: public, max-age=90, s-maxage=3600, stale-while-revalidate=86400
-
 ```
 
 The CDN serves cached 301s for up to an hour. If the link expires or the destination changes, stale-while-revalidate triggers an async origin check; the CDN serves the stale copy during the check, then updates. This means the origin sees almost no traffic for popular links.
@@ -396,10 +391,8 @@ The CDN serves cached 301s for up to an hour. If the link expires or the destina
 
 On every redirect, update a clicks counter in the primary database: UPDATE urls SET total_clicks = total_clicks + 1 WHERE short_code = ?.
 
-
 ```sql
 UPDATE urls SET total_clicks = total_clicks + 1 WHERE short_code = 'aBcDeFg';
-
 ```
 
 **Challenges:** This adds a write to every redirect, doubling the DB load. At 200K peak redirects/sec, you'd need 200K DB writes/sec for analytics alone — completely unworkable on the same cluster serving redirect reads. Worse, the UPDATE creates write contention on hot rows (viral links), causing lock contention and cascading latency on the read path that should be sub-1ms.
@@ -410,13 +403,11 @@ UPDATE urls SET total_clicks = total_clicks + 1 WHERE short_code = 'aBcDeFg';
 
 The redirect service publishes an event to NSQ/Kafka and immediately returns the 301. Zero blocking. Downstream consumers handle enrichment, aggregation, and storage. The redirect service doesn't know about analytics infrastructure.
 
-
 ```javascript
 Redirect Service:
   resp := build301Response(url)
   go nsq.Publish("url.clicks", ClickEvent{Code: code, TS: now, UA: ua, Ref: ref})
   return resp  // doesn't wait for publish ack in the hot path
-
 ```
 
 **Challenges:** At-least-once delivery (NSQ's default) means some events are processed twice. The aggregation layer must handle deduplication (unique short_code + timestamp_ms + client_ip triplet, or just accept ~0.1% overcount as noise). The queue itself becomes a critical piece of infrastructure — if NSQ goes down, you lose analytics data for the duration of the outage, though redirects continue unaffected (which is the right priority).
@@ -427,7 +418,6 @@ Redirect Service:
 
 Instead of storing raw events in the analytics store, aggregate at ingest time using a streaming processor (Flink/Spark Streaming). The aggregation window is small — 5 seconds — and the output is pre-computed rollups.
 
-
 ```javascript
 Flink job:
   source: NSQ topic "url.clicks"
@@ -437,11 +427,9 @@ Flink job:
   window: TumblingEventTimeWindows.of(Time.seconds(5))
   aggregate: COUNT, COUNT_DISTINCT(ip), TOP_K(referrer, 10)
   sink: ClickHouse INSERT INTO click_rollups
-
 ```
 
 The ClickHouse table stores one row per (short_code, hour_bucket, country, referrer_domain):
-
 
 ```sql
 CREATE TABLE click_rollups (
@@ -454,7 +442,6 @@ CREATE TABLE click_rollups (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(hour)
 ORDER BY (short_code, hour, country);
-
 ```
 
 A dashboard query for "clicks on aBcDeFg in the last 7 days" reads at most 168 rows (24 hours × 7 days, assuming one country and no referrer breakdown) instead of scanning 360M raw events.
@@ -477,7 +464,6 @@ A dashboard query for "clicks on aBcDeFg in the last 7 days" reads at most 168 r
 **Approach 1: Token Bucket per API Key**
 
 Each authenticated user gets a token bucket: max_tokens = 100, refill_rate = 10/sec. On each create request, a token is consumed. If the bucket is empty, return 429 Too Many Requests. The bucket is stored in Redis:
-
 
 ```lua
 -- Token bucket, atomic. KEYS[1] = "rate:" .. api_key
@@ -507,7 +493,6 @@ end
 redis.call("HMSET", key, "tokens", tokens, "ts", ts)
 redis.call("EXPIRE", key, 60)          -- reclaim idle buckets
 return { allowed, tokens }              -- {1, remaining} allowed | {0, 0} limited
-
 ```
 
 **Challenges:** What about unauthenticated users? Without an API key, you fall back to IP-based rate limiting, which breaks for users behind Carrier-Grade NAT (thousands of users sharing one IP). CGNAT IPs routinely hit rate limits that were set for individual users. Worse, an attacker can rotate IPs via a botnet and bypass rate limiting entirely.
@@ -518,13 +503,11 @@ return { allowed, tokens }              -- {1, remaining} allowed | {0, 0} limit
 
 When rate limits trigger, don't immediately reject. Instead, escalate through progressive challenges: first 429 with Retry-After: 5, then a CAPTCHA, then a temporary block.
 
-
 ```javascript
 if bucket.tokens <= 0:
     if violation_count < 3:  return 429 + Retry-After
     elif violation_count < 10: return CAPTCHA challenge
     else: return 403 (blocked for 1 hour)
-
 ```
 
 **Challenges:** CAPTCHAs are user-hostile and break API clients entirely. A CAPTCHA on an API endpoint means the integrating developer's script is dead until a human solves the puzzle. For a developer-product like Bitly, this is a last resort. CAPTCHAs also add 2-5 seconds of latency to the create flow.
@@ -535,7 +518,6 @@ if bucket.tokens <= 0:
 
 Rate limiting catches volume attacks but misses targeted phishing — one carefully crafted short link to a fake login page. For this, add an async content-scanning pipeline that runs on every created URL:
 
-
 ```javascript
 On create:
   1. Crawler fetches destination page (async, non-blocking)
@@ -543,7 +525,6 @@ On create:
   3. Google Web Risk API: real-time lookup against known phishing/malware URLs
   4. Abuse API aggregates scores → safety_status (clean/warn/blocked)
   5. On redirect: check Abuse API cache → show interstitial if warranted
-
 ```
 
 **Challenges:** The crawler costs real money — fetching millions of destination pages per day. At 6M creates/day, even a lightweight HEAD request per URL adds 6M outbound HTTP calls. The crawler pool needs to be large enough to keep up (Bitly's crawler processes ~200 URLs/sec across a pool of workers). Google Web Risk API calls are also rate-limited and cost money per lookup.

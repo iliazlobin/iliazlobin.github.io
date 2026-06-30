@@ -11,7 +11,7 @@ WhatsApp is a real-time messaging platform serving 2 billion monthly active user
 
 <!--more-->
 
-## 1. Problem frame
+## 1. Problem
 
 WhatsApp is a real-time messaging platform serving 2 billion monthly active users who exchange over 100 billion messages daily — text, images, video, and audio — across unreliable mobile networks worldwide. Every message must be end-to-end encrypted so that no intermediary, including the platform itself, can read it. Messages must reach recipients within one second whether they are online or offline (up to 30 days), and delivery acknowledgements must propagate back to senders reliably. Groups of up to 1,024 members compound the fan-out challenge: a single message in a large group can spawn a thousand delivery operations.
 
@@ -28,7 +28,6 @@ graph LR
     class A,F edge;
     class B,E svc;
     class C,D store;
-
 ```
 
 ## 2. Requirements
@@ -36,17 +35,25 @@ graph LR
 **Functional**
 
 - FR1: Send and receive text messages in real time.
+
 - FR2: Receive messages sent while offline for up to 30 days.
+
 - FR3: Create and participate in group chats with up to 1,024 members.
+
 - FR4: Send and receive media including images, video, and audio.
+
 - FR5: View three-tier delivery status: sent, delivered, and read.
+
 - FR6: See when contacts are online, offline, or were last seen.
 
 **Non-functional**
 
 - NFR1: End-to-end encrypt all messages and media by default.
+
 - NFR2: Deliver messages within 1 second at the 99.99th percentile.
+
 - NFR3: Support 2 billion monthly active users globally.
+
 - NFR4: Operate reliably over unreliable low-bandwidth 2G/3G networks.
 
 ## 3. Back of the envelope
@@ -57,7 +64,7 @@ graph LR
 
 ## 4. Entities & API
 
-```javascript
+```sql
 User {
   user_id:     uuid PK          ← globally unique, shard key
   phone:       string UNIQUE    ← hashed at rest
@@ -103,7 +110,6 @@ ChatMember {
   role:        enum             ← member | admin
   joined_at:   timestamp
 }
-
 ```
 
 **API**
@@ -169,7 +175,6 @@ graph TB
     class E,F,G,H svc;
     class I,J,K,L,M store;
     class N,O async;
-
 ```
 
 FR1: Send and receive text messages in real time
@@ -224,7 +229,6 @@ FR3: Create and participate in group chats with up to 1,024 members
 INSERT INTO inbox_entries (user_id, device_id, message_id, chat_id, global_seq, status, ttl)
 VALUES (?, ?, ?, ?, next_global_seq(), 'pending', NOW() + INTERVAL '30 days');
 -- Executed once per group member (up to 1,024 times) inside an async batch
-
 ```
 
 For groups larger than ~256 members, the fan-out-on-write approach (1,024 inbox writes per message) can be replaced with a fan-out-on-read hybrid: the message is written once to a group feed partition, and members fetch it on their next reconnect sync. The threshold is adaptive and configurable.
@@ -310,15 +314,14 @@ sequenceDiagram
     CS2->>Redis: SUBSCRIBE user:B:messages
     SA->>CS1: sendMessage (encrypted)
     CS1->>DB: Write Message + InboxEntry
-    CS1-->>SA: ACK: sent ✓
+    CS1-->>SA: ACK: sent 
     CS1->>Redis: PUBLISH user:B:messages <envelope>
     Redis->>CS2: deliver <envelope>
     CS2->>CS2: lookup WebSocket for user:B
     CS2->>RA: push <envelope>
-    RA-->>CS2: ACK: delivered ✓✓
+    RA-->>CS2: ACK: delivered 
     CS2-->>CS1: fwd delivery ACK
     CS1-->>SA: push delivery receipt
-
 ```
 
 💡 **What the WhatsApp team actually did:** Instead of Redis, they used Erlang's built-in distribution protocol — process mailboxes are the pub/sub channel. One Erlang process per connection means `Pid ! Msg` is the "publish." The routing table lives in Mnesia (distributed in-memory table): querying which server owns a user is a local Mnesia read, not a network call. This collapses the routing + pub/sub layers into the runtime itself — no external Redis, no Kafka. The cost is that you must run Erlang/BEAM, and you must patch the VM to fix contention at 2M connections/server.
@@ -408,7 +411,6 @@ sequenceDiagram
         S3-->>CDN: media variant
         CDN-->>RC: media variant
     end
-
 ```
 
 💡 **What the WhatsApp team actually did:** Before S3/CDN, WhatsApp ran their own media servers on FreeBSD with directly-attached JBOD storage (6×800 GB SSD for images, 4 TB SATA for audio/video). Their key optimization was a hashed directory tree — no more than 1,000 files per leaf directory — to avoid filesystem directory-entry contention. They also hit a `sendfile()` bug on FreeBSD where async I/O threads caused long BEAM stalls, so they disabled kernel-level sendfile entirely and used userspace async threads (`+A 1024`). This is the cost of running your own storage layer: you inherit kernel and filesystem bugs.
@@ -431,7 +433,6 @@ Sender and recipient establish a shared AES key (via Diffie-Hellman) and use it 
 
 ```javascript
 master_secret = ECDH(I_A, S_B) || ECDH(E_A, I_B) || ECDH(E_A, S_B) || ECDH(E_A, O_B)
-
 ```
 
 This is four Diffie-Hellman operations that together produce a shared secret even though the recipient is offline. The server stores and serves prekey bundles but never sees the resulting secret. The master secret is fed through HKDF to produce a Root Key and initial Chain Key.
@@ -472,6 +473,4 @@ This is four Diffie-Hellman operations that together produce a shared secret eve
 1. [Rick Reed, Erlang Factory SF 2014 — WhatsApp Scaling (PDF)](http://www.erlang-factory.com/static/upload/media/1394350183453526efsf2014whatsappscaling.pdf) — Mnesia island architecture, meta-clustering, BEAM patches
 1. [Igors Istocniks, Code BEAM SF 2019 — How WhatsApp Moved 1.5B Users Across Data Centers (PDF)](https://codemesh.io/uploads/media/activity_slides/0001/01/f9539fb9fd3565db0de255bbbb0289ad5fe17414.pdf) — Per-prefix failover, db_module abstraction, C++ gateway
 1. [WhatsApp/warts on GitHub](https://github.com/WhatsApp/warts) — WhatsApp's open-source Erlang runtime fork (Apache 2.0)
-
-**Comparison sources:** *Designing Data-Intensive Applications* (Kleppmann, Ch. 5–6 on replication and partitioning), *High Scalability: The WhatsApp Architecture Facebook Bought for $19 Billion*, *ByteByteGo: How WhatsApp Handles 40 Billion Messages*, *SystemInternals / Systems Explained: Design WhatsApp*.
 
