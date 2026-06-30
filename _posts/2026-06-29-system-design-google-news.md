@@ -50,11 +50,11 @@ Out of scope: publisher payment and revenue share, full-text article hosting (on
 
 ## 3. Back of the envelope
 
-50K sources × 20 articles/day avg → 1M articles/day base; but 50K sources × 200 articles/day peak (breaking news triples output) → 10M articles during spike day. With 100+ words/article and extracted metadata, ~5 KB per article → 50 GB raw ingest/day. Implication: ingestion is write-heavy but moderate volume (~115 articles/s peak); the bottleneck is crawl scheduling, not storage bandwidth.
+- 50K sources × 20 articles/day avg → 1M articles/day base; but 50K sources × 200 articles/day peak (breaking news triples output) → 10M articles during spike day. With 100+ words/article and extracted metadata, ~5 KB per article → 50 GB raw ingest/day. Implication: ingestion is write-heavy but moderate volume (~115 articles/s peak); the bottleneck is crawl scheduling, not storage bandwidth.
 
-200M DAU × 1 feed refresh/session × 5 sessions/day → ~1B feed requests/day ≈ 12K QPS average, 50K QPS peak (morning commute). Each feed request assembles ~30 story clusters per user with headlines, snippets, and thumbnail URLs — ~10 KB per response → 500 MB/s egress at peak. Implication: feed assembly must be fast (p95 < 50ms server-side) and cacheable; serve from CDN edge with personalization stitched at the edge or via ESI (Edge-Side Includes).
+- 200M DAU × 1 feed refresh/session × 5 sessions/day → ~1B feed requests/day ≈ 12K QPS average, 50K QPS peak (morning commute). Each feed request assembles ~30 story clusters per user with headlines, snippets, and thumbnail URLs — ~10 KB per response → 500 MB/s egress at peak. Implication: feed assembly must be fast (p95 < 50ms server-side) and cacheable; serve from CDN edge with personalization stitched at the edge or via ESI (Edge-Side Includes).
 
-1B articles/day ingested → ~50K new articles/min peak. Dedup must compare each incoming article against a rolling window of recent articles. Brute-force pairwise comparison is O(n²) at 50K/min — a non-starter. Implication: MinHash + LSH reduces comparison to O(n) by bucketing similar articles; the LSH index must support ~50K insertions/min and ~50K queries/min (each new article queries against the index to find its cluster).
+- 1B articles/day ingested → ~50K new articles/min peak. Dedup must compare each incoming article against a rolling window of recent articles. Brute-force pairwise comparison is O(n²) at 50K/min — a non-starter. Implication: MinHash + LSH reduces comparison to O(n) by bucketing similar articles; the LSH index must support ~50K insertions/min and ~50K queries/min (each new article queries against the index to find its cluster).
 
 ## 4. Entities & API
 
