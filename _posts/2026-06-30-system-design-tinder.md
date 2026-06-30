@@ -4,6 +4,7 @@ title: "System Design: Tinder"
 date: 2026-06-30
 tags: [System Design, Distributed Systems, Geo-Spatial, Cassandra, Redis, Mobile, Dating App]
 description: "How Tinder serves 1B+ swipes per day to 75M users with geo-spatial Redis indexing, Cassandra-backed swipe consistency, Bloom filter re-show avoidance, and a multi-factor ranking engine — a deep-dive system design of the world's largest dating app."
+thumbnail: /images/posts/2026-06-30-system-design-tinder.svg
 ---
 
 How Tinder serves 1B+ swipes per day to 75M users with geo-spatial Redis indexing, Cassandra-backed swipe consistency, Bloom filter re-show avoidance, and a multi-factor ranking engine — a deep-dive system design of the world's largest dating app.
