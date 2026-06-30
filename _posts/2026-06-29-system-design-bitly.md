@@ -18,7 +18,7 @@ Bitly turns long URLs into short ones and tracks every click. At first glance th
 ```mermaid
 graph LR
     Client[Client Browser] -->|HTTP| CDN[CDN Edge]
-    CDN -->|miss| LB[Load Balancer]
+    CDN -->|forward| LB[Load Balancer]
     LB --> Redirect[Redirect Service]
     Redirect --> Cache[(Redis Cluster)]
     Cache -->|miss| Store[(Bigtable)]
@@ -69,7 +69,7 @@ URL
   short_code: string (PK)        ← base62-encoded ID, 7 characters
   long_url: string               ← canonicalized, max 2048 chars
   created_at: timestamp
-  expires_at: timestamp          ← null = never; TTL column in Bigtable
+  expires_at: timestamp          ← null = never; enforced on read + swept
   user_id: string (CK)           ← partition-scoped analytics grouping
   safety_status: enum            ← clean | warn | blocked
 
@@ -102,7 +102,7 @@ CounterRange
 graph TB
     subgraph Edge["Edge / Fronting"]
         Client[Client]
-        CDN[CDN PoP<br/>s-maxage=90]
+        CDN[CDN PoP<br/>TLS + routing]
     end
 
     subgraph Gateway["API Gateway"]
@@ -131,7 +131,7 @@ graph TB
     end
 
     Client -->|1. GET /abc123| CDN
-    CDN -->|2. cache miss| Router
+    CDN -->|2. forward| Router
     Router -->|3. route| L1
     L1 -->|4. miss| L2
     L2 -->|5. miss| L3
@@ -167,7 +167,7 @@ Flow:
 1. Gateway rate-limits by API key; rejects if over quota (429)
 1. Create Service canonicalizes the long URL (lowercase scheme+host, strip default ports, remove fragment)
 1. On custom_alias: check collision via INSERT IF NOT EXISTS on Bigtable; on conflict return 409
-1. On auto-generation: call ID Generator → base62-encode the 64-bit counter value → 7-char short_code
+1. On auto-generation: call ID Generator → base62-encode the sequential counter value (bounded to the 62^7 ≈ 3.5T code space) → 7-char short_code
 1. Write (short_code, long_url, expires_at, user_id, safety=pending) to Bigtable
 1. Warm Redis: SET url:{short_code} {long_url} EX 86400
 1. Publish scan request to Crawler (async, non-blocking): Crawler fetches destination → TDS + Google Web Risk assess → Abuse API writes safety_status
@@ -180,16 +180,16 @@ Components: CDN Edge (Cloudflare/CloudFront), Load Balancer, Redirect Service, i
 
 Flow:
 
-1. User clicks bit.ly/aBcDeFg → browser resolves DNS to nearest CDN PoP
-1. CDN checks edge cache for aBcDeFg; on hit → returns cached 301 + Location directly (zero origin cost)
-1. On CDN miss → request hits origin Load Balancer → forwarded to any Redirect Service instance
+1. User clicks bit.ly/aBcDeFg → browser first checks its own HTTP cache (a prior 301 with max-age=90); on hit → reuses the redirect with zero network call
+1. On browser-cache miss → DNS resolves to the nearest CDN PoP, which terminates TLS and routes the request (the `private` directive means the PoP does not cache the redirect — every distinct client reaches origin at least once per 90s window)
+1. CDN forwards to the origin Load Balancer → any Redirect Service instance
 1. Redirect Service checks in-process LRU (map[short_code]url_cache); on hit → 301
 1. On LRU miss → query Redis: GET url:aBcDeFg; on hit → populate LRU + 301
 1. On Redis miss → query Bigtable by partition key short_code; check expires_at; return 301 or 410 Gone
 1. Populate Redis (SET url:aBcDeFg {long_url} EX 86400) and LRU
 1. Respond HTTP 301 Moved Permanently + Location: {long_url} + Cache-Control: private, max-age=90
 1. Async fire: publish {short_code, timestamp, referrer, user_agent} to NSQ topic url.clicks
-Design consideration: 301 + max-age=90 is Bitly's production choice over the more commonly cited 302. A bare 302 gives perfect analytics fidelity — every click hits origin — but at 200K req/s peak, that's 200K origin hits per second that could have been absorbed by the browser or CDN. 301 tells the browser "this redirect is stable, cache it for 90 seconds." The first click in a 90s window hits origin; subsequent clicks from the same client are served from browser cache. The tradeoff: analytics for a link that's clicked 10 times in 90 seconds might show 1 click instead of 10. For a system where the core metric is unique reach rather than per-click billing, 90 seconds of lag is acceptable. The private directive stops intermediate proxies from caching the redirect, so different users still hit origin at least once.
+Design consideration: 301 + max-age=90 is Bitly's production choice over the more commonly cited 302. A bare 302 gives perfect analytics fidelity — every click hits origin — but at 200K req/s peak, that's 200K origin hits per second that could have been absorbed by the browser. 301 tells the browser "this redirect is stable, cache it for 90 seconds." The first click in a 90s window hits origin; subsequent clicks from the same client are served from browser cache. The tradeoff: analytics for a link that's clicked 10 times in 90 seconds from the same browser might show 1 click instead of 10. For a system where the core metric is unique reach rather than per-click billing, 90 seconds of lag is acceptable. The private directive stops shared caches — CDN PoPs, corporate proxies, ISP caches — from storing the redirect, so every distinct user still hits origin at least once per window and analytics stay user-scoped.
 
 #### FR3: Click Analytics
 
@@ -212,24 +212,24 @@ Components: Create Service, Bigtable conditional write, Bloom filter.
 Flow:
 
 1. Client includes custom_alias: "my-brand" in POST /api/urls
-1. Create Service normalizes alias (lowercase, strip non-base62 chars)
+1. Create Service normalizes alias (lowercase, strip characters outside [a-z0-9-])
 1. Check Bloom filter for likely absence — negative guarantees no collision, positive requires DB check
 1. INSERT INTO urls (short_code, ...) IF NOT EXISTS — Bigtable conditional mutation; appends #collision atomically
 1. On collision → 409 Conflict {existing: {short_url, created_at}}
 1. On success → same write+cache flow as FR1
-Design consideration: Custom aliases share the same short_code namespace as auto-generated codes. Sub-4-character aliases are reserved for paid tiers — enforced at the API Gateway by checking alias length against the authenticated account's tier. The Bloom filter sits in each Create Service's memory (~10MB for 10M custom aliases at 1% false-positive rate) and absorbs ~99% of collision checks without a DB round-trip. When the Bloom filter returns positive, the conditional write is the source of truth.
+Design consideration: Custom aliases share the same short_code column as auto-generated codes, but the allowed alias charset includes the hyphen (`my-brand`), which the base62 auto-generator never emits — so a custom alias can only ever collide with another custom alias, never with a generated code. Sub-4-character aliases are reserved for paid tiers — enforced at the API Gateway by checking alias length against the authenticated account's tier. The Bloom filter sits in each Create Service's memory (~10MB for 10M custom aliases at 1% false-positive rate) and absorbs ~99% of collision checks without a DB round-trip. When the Bloom filter returns positive, the conditional write is the source of truth.
 
 #### FR5: URL Expiration
 
-Components: Bigtable TTL, Redirect Service expiration check, background sweeper.
+Components: Redirect Service expiration check, background sweeper, Bigtable age-based GC.
 
 Flow:
 
 1. On create: expires_at stored in the URL row
 1. On redirect: Redirect Service checks expires_at against now() at every cache-miss DB read; returns 410 Gone if expired, and publishes a tombstone to Redis (DEL url:{short_code})
-1. Bigtable column-family TTL configured to auto-GC rows whose expires_at is in the past — no sweeper needed
-1. CDN max-age=90 ensures stale 301s expire from edge caches within 90 seconds of a link expiring
-Design consideration: The only sharp edge is race between max-age=90 and expires_at. If a link expires at T+0 and the CDN cached the 301 at T-89, the CDN continues serving the redirect until T+1. At 90s CDN TTL this window is small enough that no explicit CDN purge on expiration is needed. For systems without Bigtable's native TTL, a background sweeper queries WHERE expires_at < now() LIMIT 1000 every 60 seconds — the same pattern Bitly ran on MySQL before the Bigtable migration.
+1. Per-link expiry is enforced on read (return 410) — Bigtable's column-family GC is age-based (delete cells older than a fixed maxage), so it cannot key off the expires_at value; physical removal of expired rows is handled by a lightweight background sweeper
+1. Browser max-age=90 ensures a cached 301 for a just-expired link is reused for at most 90 seconds before the client re-fetches from origin
+Design consideration: The only sharp edge is the race between max-age=90 and expires_at. If a link expires at T+0 and a client cached the 301 at T-89, that browser keeps following the redirect until T+1. At a 90s browser TTL this window is small enough that no active invalidation on expiration is needed. Value-based expiry always needs a sweeper — Bigtable's column-family GC is age-based, not value-based, so it can cap absolute retention but can't honor a per-row expires_at. The sweeper queries WHERE expires_at < now() LIMIT 1000 every 60 seconds — the same pattern Bitly ran on MySQL before the Bigtable migration.
 
 #### FR6: Safety Warnings
 
@@ -337,9 +337,9 @@ Layer the caches by speed and capacity. Each layer absorbs a fraction of misses 
 
 
 ```javascript
-Layer 1: CDN Edge (PoP cache)
-  TTL: 30-90s, hit rate: 15-30% for viral links
-  Latency: 5-20ms (but it's the user's round-trip, not origin cost)
+Layer 1: Browser cache (per client, private + max-age=90)
+  TTL: 90s, hit rate: 15-30% for viral links (repeat + back-button clicks)
+  Latency: ~0ms (served locally, no network) — CDN PoP only does TLS + routing, never caches the private redirect
 
 Layer 2: In-Process LRU (per app server)
   Size: ~1,000 entries, TTL: 1s
@@ -359,13 +359,13 @@ Layer 4: Primary Store (Bigtable/ScyllaDB)
 
 The in-process LRU is the sleeper layer. It costs nothing to check (a hash map lookup in Go is ~50ns) and catches the common pattern of one link being clicked multiple times in rapid succession — a retweet storm, a Slack unfurl, a group chat where 20 people click the same link within 2 seconds. At 1,000 entries with 1s TTL, it uses ~200KB of memory per server.
 
-Challenges: CDN cache invalidation is coarse — you can't purge a specific short code from 200+ edge PoPs in real time. If a link's destination changes (a feature Bitly doesn't support), the CDN serves the stale redirect for up to 90 seconds. For link expiration, the 90s CDN TTL means a link appears valid for up to 90 seconds after its expires_at — acceptable. L1 LRU is per-instance memory, so it only helps for repeated clicks hitting the same server; a load balancer distributing requests round-robin across 50 instances means the L1 hit rate is effectively divided by 50 for each unique short code.
+Challenges: Browser caches can't be invalidated at all — once a client holds a 301 with max-age=90, it reuses it for the full 90s regardless of origin state. If a link's destination changes (a feature Bitly doesn't support) or expires, clients that already cached it follow the stale redirect for up to 90 seconds — acceptable, and bounded by the deliberately short max-age. L1 LRU is per-instance memory, so it only helps for repeated clicks hitting the same server; a load balancer distributing requests round-robin across 50 instances means the L1 hit rate is effectively divided by 50 for each unique short code.
 
 Edge case: Hot key hot potato. A link getting 50K req/s will saturate whichever Redis shard owns it. The answer is hot-key replication: detect the hot key (via Count-Min Sketch or Redis HOTKEYS command), replicate it across multiple shards (url:{short_code}:replica1, url:{short_code}:replica2), and have the redirect service pick a replica at random. This trades storage for even load distribution.
 
 Approach 3: CDN-First with Stale-While-Revalidate
 
-Push the CDN from "nice-to-have third option" to the primary defense. Configure edge cache TTL aggressively (e.g., s-maxage=3600 for CDNs) and use stale-while-revalidate to let the CDN serve a possibly-stale copy while asynchronously checking the origin.
+Push the CDN from a non-caching edge to the primary defense. Configure edge cache TTL aggressively (e.g., s-maxage=3600 for CDNs) and use stale-while-revalidate to let the CDN serve a possibly-stale copy while asynchronously checking the origin.
 
 
 ```javascript
@@ -377,7 +377,7 @@ The CDN serves cached 301s for up to an hour. If the link expires or the destina
 
 Challenges: This is safe for a URL shortener where links almost never change destination. If Bitly ever adds link editing, this strategy breaks — users would see stale redirects for hours. The s-maxage=3600 effectively kills per-click analytics because the CDN absorbs nearly all clicks. For Bitly's business model (analytics is the product), this is the wrong tradeoff.
 
-Decision: Multi-layer cache pyramid (Approach 2) with 301 + Cache-Control: private, max-age=90. The CDN gets a 90s TTL (not 3600) to keep analytics lag bounded. The in-process LRU is cheap insurance. Redis is the workhorse. The primary store sees <2% of traffic.
+Decision: Multi-layer cache pyramid (Approach 2) with 301 + Cache-Control: private, max-age=90. The browser gets a 90s client-side TTL via max-age (not 3600) to keep analytics lag bounded, while private keeps the CDN and proxies out of the redirect cache entirely. The in-process LRU is cheap insurance. Redis is the workhorse. The primary store sees <2% of traffic.
 
 Rationale: Bitly's production architecture has run a layered cache since at least 2014. The private, max-age=90 directive is what a direct HTTP probe of bit.ly returns. The key insight: private prevents shared caches (corporate proxies, ISP caches) from absorbing redirects, so every distinct user still hits the origin infrastructure at least once per 90s — enough for accurate analytics. The 90s number isn't magic; it's the smallest value that still meaningfully reduces origin traffic (repeat clicks within 90s are common).
 
@@ -472,18 +472,34 @@ Approach 1: Token Bucket per API Key
 Each authenticated user gets a token bucket: max_tokens = 100, refill_rate = 10/sec. On each create request, a token is consumed. If the bucket is empty, return 429 Too Many Requests. The bucket is stored in Redis:
 
 
-```javascript
--- Lua script (atomic):
-local key = "rate:" .. api_key
-local tokens = redis.call("GET", key)
-if tokens == false then tokens = max_tokens end
-if tonumber(tokens) > 0 then
-    redis.call("DECR", key)
-    redis.call("EXPIRE", key, 60)
-    return {1, tokens - 1}  -- allowed
-else
-    return {0, 0}  -- rate limited
+```lua
+-- Token bucket, atomic. KEYS[1] = "rate:" .. api_key
+-- ARGV = { now_ms, max_tokens, refill_per_sec }
+local key    = KEYS[1]
+local now    = tonumber(ARGV[1])
+local max    = tonumber(ARGV[2])
+local refill = tonumber(ARGV[3])
+
+local state  = redis.call("HMGET", key, "tokens", "ts")
+local tokens = tonumber(state[1])
+local ts     = tonumber(state[2])
+if tokens == nil then           -- first request: start with a full bucket
+    tokens, ts = max, now
 end
+
+-- refill by elapsed time, capped at max
+tokens = math.min(max, tokens + (now - ts) / 1000 * refill)
+ts     = now
+
+local allowed = 0
+if tokens >= 1 then
+    tokens  = tokens - 1
+    allowed = 1
+end
+
+redis.call("HMSET", key, "tokens", tokens, "ts", ts)
+redis.call("EXPIRE", key, 60)          -- reclaim idle buckets
+return { allowed, tokens }              -- {1, remaining} allowed | {0, 0} limited
 
 ```
 
@@ -537,10 +553,10 @@ Rationale: Bitly's Trust & Safety team runs Google Web Risk + internal TDS at "r
 |---|---|---|---|
 | Redirect HTTP status | 301 + Cache-Control: private, max-age=90 | 302 (no caching, perfect analytics) | 90s browser cache cuts origin traffic ~50% at acceptable analytics lag; private prevents proxy caching so analytics remain user-scoped |
 | ID generation | ZooKeeper range allocation | Snowflake (11-char codes), pure Redis counter (SPOF) | Produces 7-char codes; 1 ZK call per 1,000 IDs; ZK already operated for service discovery |
-| Cache architecture | 4-layer pyramid: CDN → LRU → Redis → Bigtable | Single Redis layer (hot key saturation) | Each layer absorbs a fraction of misses; L1 LRU costs ~200KB per server and catches repeat-click bursts |
+| Cache architecture | 4-layer pyramid: browser → LRU → Redis → Bigtable | Single Redis layer (hot key saturation) | Each layer absorbs a fraction of misses; private keeps the CDN out of the redirect cache so analytics stay user-scoped; L1 LRU costs ~200KB per server and catches repeat-click bursts |
 | Analytics | Flink microbatch → ClickHouse rollups | Synchronous DB counter updates (write contention), raw event query scans (too slow at 360M/day) | Pre-aggregation shrinks 72GB/day raw to 10MB/day rollups; dashboard queries hit <10 rows |
 | Message queue | NSQ (no centralized broker) | Kafka (heavier ops, ZK dependency at the time) | NSQ is what Bitly built and runs; single binary, no runtime deps, Go-native; at-least-once is fine for analytics |
-| Primary store | Bigtable (wide-column, partition-per-code) | MySQL (manual sharding burnout at 80B rows) | Sub-10ms reads, native TTL, 99.999% SLA; MySQL sharding and backup took nearly a full day at 80B rows |
+| Primary store | Bigtable (wide-column, partition-per-code) | MySQL (manual sharding burnout at 80B rows) | Sub-10ms reads, age-based GC for retention bounds, 99.999% SLA; MySQL sharding and backup took nearly a full day at 80B rows |
 | Abuse detection | Async TDS + Google Web Risk → Redis cache on redirect path | Synchronous scan on create (adds latency), CAPTCHA on API (user-hostile) | Async crawl costs nothing on the hot path; cached abuse verdict adds <1ms per redirect |
 
 ## 8. References
