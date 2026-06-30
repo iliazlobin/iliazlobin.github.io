@@ -3,7 +3,7 @@ layout: post
 title: "System Design: Google News"
 date: 2026-06-29
 tags: [System Design, News Aggregation, Personalization, Distributed Systems]
-description: "Google News aggregates articles from ~50,000 publisher sources worldwide, clusters coverage of the same story, personalizes a feed for each of ~200M daily active users, and delivers breaking news within seconds of publication. A user opens the app or site, sees a ranked feed of story clusters with h"
+description: "Google News aggregates articles from ~50,000 publisher sources worldwide, clusters coverage of the same story, personalizes a feed for each of ~200M daily active users, and delivers breaking news within seconds of publication. A user opens the app or site, sees a ranked feed of story clusters with headlines, snippets, and source attribution, and can drill into full coverage."
 ---
 
 ## 1. Problem frame
@@ -446,7 +446,7 @@ graph TB
 
 ### DD3: Real-time ingestion pipeline — crawling millions of sources with freshness guarantees
 
-[Problem. The system must discover and ingest articles from ~50,000 publisher sources within 60 seconds of publication for breaking news and within 5 minutes for routine coverage. Publishers range from major outlets with structured sitemaps (nytimes.com, bbc.com — updated every 30 seconds) to small blogs with no sitemap (updated sporadically). A naive poll-everything approach generates 50K requests every 60 seconds → 72M requests/day — expensive and likely to trigger anti-bot defenses. The pipeline must be polite (respect robots.txt crawl delays), efficient (skip unchanged sources), and burst-tolerant (handle 10x traffic during a major story without falling behind).](http://nytimes.com/)
+**Problem.** The system must discover and ingest articles from ~50,000 publisher sources within 60 seconds of publication for breaking news and within 5 minutes for routine coverage. Publishers range from major outlets with structured sitemaps (nytimes.com, bbc.com — updated every 30 seconds) to small blogs with no sitemap (updated sporadically). A naive poll-everything approach generates 50K requests every 60 seconds → 72M requests/day — expensive and likely to trigger anti-bot defenses. The pipeline must be polite (respect robots.txt crawl delays), efficient (skip unchanged sources), and burst-tolerant (handle 10x traffic during a major story without falling behind).
 
 Approach 1: Uniform polling with fixed intervals
 
