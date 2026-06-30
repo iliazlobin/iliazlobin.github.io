@@ -217,6 +217,7 @@ HMGET dc:PHL-12:stock product:4821 product:1733 product:9012 ...
 ```
 
 1. Products with available_qty = 0 are either dropped or shown as "out of stock" (configurable per category). Results are paginated (30 items/page) and returned with availability flags.
+
 **Design consideration:** The DC lookup is the critical first touch. An address near the boundary of two DCs produces ambiguity — PostGIS chooses the closest by straight-line distance, but road-network drive time may favor the other DC. A 2-phase approach (straight-line candidate list → OSRM drive-time check before final assignment) is overkill for the browse path and adds 50–100ms. The chosen trade-off: assign to the closest DC by Haversine at browse time, re-verify with drive-time at checkout if the address is within 0.5 mi of another DC's boundary. 95%+ of addresses are unambiguously inside a single DC radius.
 
 #### FR2: Search products by name, category, or brand with real-time stock availability
@@ -245,6 +246,7 @@ HMGET dc:PHL-12:stock product:4821 product:1733 product:9012 ...
 
 1. Elasticsearch returns product_id + relevance score. Catalog Service pipeline-fetches availability from Redis for all matching product IDs in a single HMGET.
 1. Service merges availability into the response and ranks: in-stock items first within each relevance tier (configurable: some DCs show OOS items at the bottom, others hide them).
+
 **Design consideration:** Full-text search is expensive relative to category browse. Elasticsearch is deployed as a single-cluster secondary index — not the system of record. Product data is written to PostgreSQL first, then CDC'd into Elasticsearch via Kafka Connect with < 1s lag. If Elasticsearch is unavailable, the Catalog Service falls back to PostgreSQL ILIKE with pg_trgm trigram indexes — slower (~50ms vs ~5ms) but functional. This avoids a hard dependency on the search engine for basic operations.
 
 #### FR3: Place a multi-item order for delivery within a 30-minute window
@@ -282,6 +284,7 @@ COMMIT;
 1. If any line item fails reservation (insufficient stock), Inventory Service returns {status: "partial", unavailable: [{product_id, quantity_available}]}. Order Service returns this to the client so the user can adjust their cart — the order is NOT created.
 1. On full reservation success, Order Service calls Payment Service for a pre-authorization hold on the total amount. Payment Service returns auth_code.
 1. Order Service inserts the Order + OrderLineItem rows and publishes OrderCreated to Kafka. The client receives {order_id, status: "confirmed", estimated_delivery: <ISO8601>}.
+
 **Design consideration:** The reservation window (15 minutes) is the central fairness trade-off. Too short: checkout-abandoned users lose their cart items silently. Too long: popular SKUs (e.g., White Claw at 9pm on a Friday) become starved. GoPuff uses 10 minutes; Instacart uses 15. At 5 orders/min/DC, a 15-min window means ~75 active reservations per DC — negligible lock contention per SKU. The reservation TTL is enforced by the Inventory Service: a background sweeper (SELECT reservation_id FROM reservation WHERE expires_at < NOW() LIMIT 100 FOR UPDATE SKIP LOCKED) runs every 30 seconds within each DC partition and releases expired holds.
 
 ```mermaid
@@ -324,6 +327,7 @@ sequenceDiagram
 1. When all items are picked or substituted, the picker confirms the bag; status advances to packed. Fulfillment Service publishes OrderEvent {type: "packed"} and dispatches a driver via the routing system (out of scope).
 1. Driver marks pickup → status en_route. Driver marks delivery → status delivered. Payment Service captures the pre-auth.
 1. An SSE push worker consumes the Kafka topic, filters by order_id, and pushes events to the client via GET /v1/events/{order_id} SSE stream. The client subscribes on order confirmation and receives incremental status updates.
+
 **Design consideration:** The SSE worker filters Kafka at the consumer level — each worker subscribes to the full OrderEvents topic but only pushes events for actively-subscribed order_id values (tracked in a Redis set with TTL = max delivery time + 5 min). This avoids per-order Kafka partitions, which would create millions of partitions for historical data. At 42 orders/s peak and ~200 bytes/event, Kafka bandwidth is ~8 KB/s — negligible. The push path is the only customer-facing real-time component; the poll fallback is GET /v1/orders/{order_id}.
 
 #### FR5: Receive substitution recommendations when a picked item is out of stock
@@ -354,6 +358,7 @@ LIMIT 3;
 
 1. The picker selects one or taps "skip item." The choice is written to OrderLineItem and the customer sees the substitution in their order status (FR4).
 1. Post-delivery, the customer can rate the substitution (thumbs up/down). This feeds back into substitution_success_rate.
+
 **Design consideration:** Substitution is the UX moment where internal stock-count errors become visible to the customer. The substitution query is a point-read at picking time — no caching, always fresh. If Catalog Service is down, the picker can manually search or skip. The substitution data model (actual_product_id on OrderLineItem) means the original ordered item is never lost — analytics and reorder logic (FR6) can distinguish "they ordered X but got Y" from "they intentionally ordered Y."
 
 #### FR6: View order history and re-order from a past purchase in one tap
@@ -365,6 +370,7 @@ LIMIT 3;
 1. GET /v1/orders?user_id=<id>&page=1&limit=20 queries the Order table scoped to the user's partition. Results are ordered by created_at DESC.
 1. For re-order: POST /v1/orders/reorder/{previous_order_id}. Order Service:
 1. The returned order_id is now a live cart; the client transitions directly to checkout (FR3).
+
 **Design consideration:** Re-order is a convenience shortcut, not a guarantee. At the time of re-order, some items may be discontinued, out of stock, or unavailable at the user's current DC. The service does NOT silently drop OOS items — it returns them with available: false so the client can surface "these 2 items are currently unavailable" to the user before they check out. This avoids the surprise of a smaller-than-expected order.
 
 ## 6. Deep dives
@@ -531,6 +537,7 @@ Each service publishes domain events to Kafka. Downstream services react to even
 1. Payment Service consumes InventoryReserved, pre-auths, publishes PaymentAuthorized or PaymentDeclined.
 1. Order Service consumes PaymentAuthorized, advances status to confirmed, publishes OrderConfirmed.
 1. Fulfillment Service consumes OrderConfirmed, dispatches picker.
+
 **Failure handling:** If Payment Service crashes after pre-auth but before publishing PaymentAuthorized, the pre-auth is dangling. A reconciliation job (every 5 minutes) queries for orders in cart status older than 2 minutes and checks with the payment gateway — if an auth exists, it publishes PaymentAuthorized and the flow resumes. If Inventory Service reserves items but Payment Service declines, Inventory Service publishes PaymentDeclined → Inventory Service consumes its own event and releases the reservation. No orchestrator; each service owns its own compensation.
 
 ```mermaid

@@ -45,6 +45,7 @@ graph LR
 - FR4: Receive instant notification when a mutual match is formed
 - FR5: Send and receive messages with matched users
 - FR6: Unmatch or report a user from the match list
+
 **Non-functional**
 - NFR1: Swipe-to-match detection under 200ms p95 — a lost match is a lost connection
 - NFR2: Feed of candidate profiles loads in under 500ms including geo-query and rank
@@ -164,6 +165,7 @@ FR1: Create and edit a dating profile
 1. Client sends `POST /v1/profile/me` with `{name, gender, age, bio, photos: [url1, ...], lat, lon}`. API Gateway authenticates and rate-limits (max 3 profile creations per device per day to combat bot signups). User Service validates: age ≥ 18, photos ≤ 9, name ≤ 50 chars.
 1. User Service computes a 7-character geohash from lat/lon for location indexing. Writes the user row to Cassandra: `INSERT INTO users (user_id, name, gender, age, bio, photos, location, created_at, last_active) VALUES (...)`. The `user_id` partition key ensures all profile data is single-partition.
 1. For profile edits, the client sends the same `POST /v1/profile/me` with updated fields. User Service issues an upsert — Cassandra's `INSERT` with the same `user_id` overwrites existing columns. The edit is idempotent: repeated identical requests produce the same result.
+
 **Design consideration:** Photo uploads use a signed-URL pattern: User Service generates a time-limited (5 min) PUT URL pointing to the CDN bucket, the client uploads directly, and on completion reports the CDN URL. This keeps the User Service stateless (no multipart upload handling) and reduces bandwidth cost by 9× (photos bypass the application tier). Profile edits do not invalidate the geo-zone feed cache — the new profile data is visible on the next 5-minute refresh. The 7-char geohash (≈150m precision) is coarser than GPS but sufficient for dating — matching candidates within the same neighborhood is enough; pinpoint location is unnecessary and a privacy risk.
 
 FR2: Set discovery preferences
@@ -172,6 +174,7 @@ FR2: Set discovery preferences
 1. User opens the discovery settings screen and adjusts: preferred gender (men, women, everyone), age range (18–55+), and maximum distance (1–100 miles). Client sends `POST /v1/profile/me` (the same endpoint as profile creation) with `{preferences: {gender: "women", age_min: 25, age_max: 40, radius_km: 30}}`.
 1. User Service validates: `radius_km` must be 1–160 (≈1–100 miles), `age_min` ≥ 18 and ≤ `age_max`. Valid preferences are merged into the existing user row via a partial upsert on the `preferences` column. The write is a single-partition operation on `user_id`.
 1. Preferences take effect on the **next feed refresh** — no active notification or feed invalidation is sent to the client. When the user pulls to refresh, the Feed Service reads the updated preferences from the user row and applies them as filters on the candidate set (step 4 of FR3).
+
 **Design consideration:** Preferences are stored as a JSON blob on the User row rather than a separate table because they are always read alongside the user profile (feed filtering, match eligibility checks) and are never queried independently. Denormalizing into the user partition avoids a join. The `radius_km` preference interacts with the geo-zone feed: if the user's radius is 50km, the Feed Service may need to expand beyond the default 3×3 geohash grid to cover the full radius. The Feed Service computes the required grid expansion at serving time — the practical cap is a 50km radius covering a 5×5 grid, which is sufficient for dense urban areas; rural users see fewer candidates regardless of radius setting.
 
 FR3: View a stack of nearby profiles and swipe right or left
@@ -182,6 +185,7 @@ FR3: View a stack of nearby profiles and swipe right or left
 1. Feed Service loads the user's Bloom filter from Redis (`bf:{user_id}`), which encodes the set of all profile IDs this user has ever swiped on. It filters the candidate set to exclude any profile already swiped. With a 0.1% false-positive rate, ~1 in 1,000 unswiped profiles is incorrectly excluded — acceptable.
 1. The remaining candidates are filtered by the user's discovery preferences: gender, age range, and distance (using the geohash-to-lat/lon midpoint distance, a fast approximation). The Feed Service then re-ranks the result by a lightweight scoring function that blends the static desirability score with a recency bonus (profiles active in the last hour boosted +20%).
 1. The top 50 profiles are returned. Each entry includes: `user_id`, `name`, `age`, `photos[0]` (first photo URL, CDN-hosted), and approximate distance. The client renders the profile card stack. On each swipe action, the client calls `POST /v1/swipe` with `{swiped_id, decision, lat, lon}`.
+
 **Design consideration:** The candidate set is pre-computed by an offline job that runs every 5 minutes per geo-zone. The job queries active users (last_active within 7 days) in the zone and its 8 neighboring geohash cells (a 3×3 grid covering the zone plus a one-cell border in every direction). This border expansion ensures that users near zone boundaries still see candidates from the adjacent zone. The desirability score for ranking is a static or slowly-changing value computed nightly (see DD4). The 5-minute refresh interval means a newly-active user may wait up to 5 minutes to appear in feeds — acceptable given the asynchronous nature of the product.
 ### FR3 continued: Swipe write path & match detection
 **Components:** Client → API Gateway → Swipe Service → Cassandra → Notification Service
@@ -192,6 +196,7 @@ FR3: View a stack of nearby profiles and swipe right or left
 1. If matched: Swipe Service writes a row to the `matches` table with `match_id = concat('A','B')` (sorted so the pair is always the same string regardless of who swiped first). Both users' message channels are initialized. Swipe Service publishes a `MatchCreated` event to the Notification Service.
 1. Notification Service looks up the matched user's connection state. If user B is online (active WebSocket), it pushes the match event in real time. If offline, it dispatches a push notification via APNs (iOS) or FCM (Android) with payload `{type: "match", match_id, matched_user: {name, photo}}`.
 1. Swipe Service returns `{is_match: true, match_id: "A_B"}` to user A's client. The client immediately transitions to the "It's a Match!" screen.
+
 **Design consideration:** The separation of "write swipe" from "check match" is intentional. The write is always acknowledged — the match check is a read on the same partition that follows. If the match check fails (e.g., Cassandra timeout), the swipe is still durably stored; the match will be detected on the next read path (when user B opens their matches list, a reconciliation sweep catches it). This "write-first, check-second" approach avoids the classic distributed-transaction problem of needing atomicity across two users' partitions.
 
 FR4: Receive instant notification when a mutual match is formed
@@ -201,6 +206,7 @@ FR4: Receive instant notification when a mutual match is formed
 1. When `MatchCreated` is published (from FR3 step 4), Notification Service checks for an active WebSocket for the target user. If found, the match event is delivered in under 50ms via the open socket.
 1. If no WebSocket is active (user closed the app), Notification Service sends a push notification via the platform-specific channel. The push payload is optimized for rendering: `{aps: {alert: {title: "It's a Match!", body: "You and Taylor liked each other"}, badge: 3}, data: {match_id: "A_B"}}`. Tapping the notification deep-links into the match chat.
 1. If push delivery fails (device offline, token expired), the notification is queued for retry with exponential backoff (1s, 4s, 16s, 64s, then discard after 5 minutes). A match notification older than 5 minutes is stale — the user will discover the match next time they open the app anyway.
+
 **Design consideration:** WebSocket connections are managed by a connection registry backed by Redis. Each Notification Service instance maintains local in-memory connections, and the registry maps `user_id → {node_id, connection_id}` so any instance can route a notification to the correct node. On instance failure, connections are re-established by the client and the registry entry is updated. This avoids a single-point-of-failure for real-time delivery. The push fallback ensures offline users still receive match notifications.
 
 FR5: Send and receive messages with matched users
@@ -211,6 +217,7 @@ FR5: Send and receive messages with matched users
 1. After write, the `matches` table is updated: `last_message_at` is set to now, and a `preview_text` (first 100 chars) is denormalized into the match row so the match list screen can show a preview without joining to the messages table.
 1. Notification Service delivers the message to the recipient: via WebSocket if online (real-time chat experience), or via silent push notification if offline. The silent push wakes the app just long enough to fetch new messages and update the badge count — the user sees the notification as a message preview on their lock screen.
 1. Client polls `GET /v1/messages/{match_id}?before=<cursor>` with cursor-based pagination (20 messages per page). Messages are returned in reverse chronological order, newest first.
+
 **Design consideration:** Cassandra is chosen for messages because chat data access patterns fit its strengths: known partition key (`match_id`), time-ordered clustering, append-heavy writes, and bounded partition size (a typical match conversation has hundreds to low thousands of messages — well within Cassandra's per-partition limits). The `preview_text` denormalization on the match row is a classic read-time optimization: the match list (`GET /v1/matches`) renders 20–50 matches with their last message preview, avoiding 20–50 separate message-table queries.
 
 FR6: Unmatch or report a user
@@ -221,6 +228,7 @@ FR6: Unmatch or report a user
 1. For a report (blocking + reporting), the client sends `POST /v1/reports` with `{match_id, reason: "harassment" | "spam" | "inappropriate" | "offline_behavior"}`. Match Service writes a report record to a dedicated `reports` table in Cassandra, partitioned by `match_id`. It also increments a `report_count` on the reported user's profile.
 1. If `report_count` exceeds a threshold (3 reports within 7 days), an automated flag is raised: the reported user's profile is temporarily suspended from appearing in feeds (hidden from all zones, feed pre-computation excludes them). A moderation ticket is created in an admin queue for human review.
 1. The unmatch is immediate for the requesting user — the match disappears from their match list. For the other user, the match remains visible but shows "User has left the conversation" as a status indicator. No push notification is sent for an unmatch (to avoid encouraging retaliatory behavior), but a real-time WebSocket event updates the UI if the other user is online.
+
 **Design consideration:** Unmatch is a soft delete, never a hard delete, for safety reasons. If a user reports harassment, the match history (messages, swipe timestamps) is critical evidence for the moderation team. The 3-report threshold with automated suspension is a common anti-abuse pattern: it catches serial offenders without requiring immediate human review, while giving benign reports (accidental unmatches mis-tagged as reports) a buffer. The asymmetric visibility (unmatcher sees nothing, unmatched user sees a status indicator) prevents confusion — the unmatched user knows the conversation ended rather than wondering if the app is broken.
 
 ## 6. Deep dives
@@ -359,6 +367,7 @@ At serving time, the Feed Service:
 1. Filters through the Bloom filter to exclude swiped profiles
 1. Filters by user preferences (gender, age, max distance using geohash approximation)
 1. Returns top 50
+
 **Con:** Pre-computation introduces staleness — a user who becomes active at 12:01 may not appear in feeds until the 12:05 refresh. The 3×3 grid expansion means users near zone boundaries see candidates from adjacent zones (good for coverage) but also means each user appears in up to 9 zone buckets (9× storage). The Redis memory footprint for 1M geo-zones × 500 users × 100 bytes/user_id+score ≈ 50 GB — manageable but requires cluster-mode Redis.
 **Pro:** Serving-path latency is minimal — two Redis lookups (candidate set + bloom filter) and an in-memory filter pass. The offline pre-computation decouples feed generation from the read path, making the read path horizontally scalable (stateless Feed Service instances behind a load balancer). Geohash is computationally trivial (no Haversine on every candidate — use geohash prefix proximity as a fast distance proxy).
 **Approach 3: QuadTree with in-memory spatial index**
@@ -498,15 +507,19 @@ Training data: the Swipe table provides millions of labeled examples (like=1, pa
 1. [Tinder Engineering Blog: The Tinder Tech Stack](https://www.lifeattinder.com/engineering) — Go, Java, Kotlin, Swift; AWS + Kubernetes; Elasticsearch, Redis, Cassandra, DynamoDB in production
 1. [InfoQ: How Tinder Delivers Real-Time Experiences at Scale](https://www.infoq.com/presentations/tinder-stack/) — Cassandra for swipe data, Redis for caching, WebSocket for real-time messaging; 1B+ swipes/day
 1. [Tinder — HelloInterview System Design Article](https://www.hellointerview.com/learn/system-design/problem-breakdowns/tinder) — geo-spatial feed, swipe consistency deep-dive, bloom filter for re-show avoidance
+
 **Geo-spatial indexing**
 1. [Geohash: Encoding Geographic Locations](https://en.wikipedia.org/wiki/Geohash) — variable-precision encoding, prefix-based proximity, neighbor-cell calculation
 1. [Uber Engineering: H3 — A Hexagonal Hierarchical Geospatial Indexing System](https://eng.uber.com/h3/) — spherical geometry, hierarchical cells, comparison with geohash and S2; adopted by Tinder for internal analytics
+
 **Bloom filter & probabilistic data structures**
 1. [Bloom, B. H.: Space/Time Trade-offs in Hash Coding with Allowable Errors](https://doi.org/10.1145/362686.362692) — original Bloom filter paper; m, k, p formula derivation
 1. [Redis Stack: Bloom Filter Data Type](https://redis.io/docs/data-types/probabilistic/bloom-filter/) — BF.RESERVE, BF.ADD, BF.EXISTS; scalable Bloom filter with dynamic expansion
+
 **Consistency patterns**
 1. [Kleppmann, M.: Designing Data-Intensive Applications — Chapter 7: Transactions](https://dataintensive.net/) — weak isolation levels, write skew, compare-and-set, materializing conflicts
 1. [Cassandra Documentation: Lightweight Transactions](https://cassandra.apache.org/doc/latest/cassandra/dml/dmlLwt.html) — Paxos-based IF NOT EXISTS, serial consistency, LWT performance characteristics
+
 **Recommendation systems**
 1. [Covington et al.: Deep Neural Networks for YouTube Recommendations](https://dl.acm.org/doi/10.1145/2959100.2959190) — two-tower architecture, candidate generation vs. ranking separation, feature engineering for implicit feedback
 1. [Elo, A. E.: The Rating of Chessplayers, Past and Present](https://en.wikipedia.org/wiki/Elo_rating_system) — ELO rating formula, K-factor for convergence speed, expected score computation
