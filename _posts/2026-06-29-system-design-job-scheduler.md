@@ -4,6 +4,7 @@ title: "System Design: Job Scheduler"
 date: 2026-06-29 00:00:00 -0000
 tags: [system-design, distributed-systems, job-scheduler, cron, workflow, kafka, postgresql]
 description: "A distributed job scheduler that accepts work definitions and fans execution across a fleet of workers — on demand, at a future wall-clock time, or on a recurring cron schedule — with at-least-once guarantees, DAG workflow support, and horizontal scale to 10,000 jobs/sec."
+thumbnail: /images/posts/2026-06-29-system-design-job-scheduler.svg
 ---
 
 A distributed job scheduler that accepts work definitions and fans execution across a fleet of workers — on demand, at a future wall-clock time, or on a recurring cron schedule — with at-least-once guarantees, DAG workflow support, and horizontal scale to 10,000 jobs/sec.

@@ -23,7 +23,8 @@ title: "Designing a Serverless Event Ingestion Pipeline"
 date: 2026-06-24
 tags: [System Design, Serverless, AWS]
 description: "One-sentence summary used for SEO and the social share card."
-# image: /images/posts/my-custom-share-card.png   # optional; overrides the default OG card
+thumbnail: /images/posts/2026-06-24-serverless-event-ingestion-pipeline.svg  # the blog-index CARD image
+# image: /images/posts/my-custom-share-card.png   # optional; OG/social SHARE card only — NOT the index card
 ---
 ```
 
@@ -31,6 +32,9 @@ description: "One-sentence summary used for SEO and the social share card."
 - `tags` render as pills on the card and post header.
 - `description` feeds `<meta>` + the link preview. Write it.
 - Reading time and the formatted date are generated automatically.
+- **`thumbnail:` is the blog-index CARD image** — see §9. **`image:` is a different thing**: the Open-Graph /
+  social SHARE card (`<meta>`), defaulted site-wide to `/images/og-default.png`. **The index card reads
+  `thumbnail` ONLY** — it never falls back to `image`, so do **not** set `image:` to try to give a post a card.
 
 ## 3. Diagrams — Mermaid
 
@@ -137,3 +141,22 @@ For an engineering-blog / source-code entry, hyperlink the whole label:
 `[Twitter Algebird — CMS with TopCMS](https://github.com/twitter/algebird/blob/develop/algebird-core/src/main/scala/com/twitter/algebird/CountMinSketch.scala).`
 
 Never fabricate a link — drop a source you can't verify. Use real, resolvable URLs.
+
+## 9. Card thumbnail — the real diagram from the article (required)
+
+The blog-index card shows a **picture from the post itself: its main architecture diagram**, rendered to a
+static SVG. This is the `thumbnail:` front-matter field (§2), and it is **set automatically** — don't hand-pick it:
+
+```bash
+python3 ~/.hermes/scripts/render-post-diagram.py _posts/YYYY-MM-DD-kebab-title.md
+```
+
+The script renders the first `mermaid` block under `## 5` (the High-Level Design architecture diagram; falls
+back to the `## 1` overview) to `images/posts/<file>.svg` via kroki.io and writes `thumbnail: /images/posts/<file>.svg`.
+`git add` the generated SVG.
+
+- **The card reads `thumbnail` ONLY** — `blog.md` falls back to the gradient title-card, **never** to the
+  site-wide OG image (`image:` / `og-default.png`). A post with **no `thumbnail:` shows the gradient card**, not
+  a diagram — so always run the script and confirm the `thumbnail:` line landed before publishing.
+- If the diagram fails to render (a Mermaid syntax error), **fix the diagram** and re-run with `--force` —
+  don't ship the post on the gradient fallback.
