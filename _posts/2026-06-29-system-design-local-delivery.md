@@ -7,7 +7,9 @@ description: "A local-delivery platform lets customers order convenience-store g
 thumbnail: /images/posts/2026-06-29-system-design-local-delivery.svg
 ---
 
-## 1. Problem frame
+A local-delivery platform lets customers order convenience-store goods (snacks, drinks, household items) from nearby micro-fulfillment centers and receive them in 30 minutes. The operator runs ~500 dark stores across US metros, each stocking 2,000–4,000 SKUs within a 2–3 mile delivery radius.
+
+## 1. Problem
 
 A local-delivery platform lets customers order convenience-store goods (snacks, drinks, household items) from nearby micro-fulfillment centers and receive them in 30 minutes. The operator runs ~500 dark stores across US metros, each stocking 2,000–4,000 SKUs within a 2–3 mile delivery radius. A user opens the app, sees what's available from the DC that serves their address, builds a cart, and checks out — the system reserves inventory, charges payment, dispatches a picker, and routes a driver. The core tension is that inventory sitting on a physical shelf depletes in real time: a customer entering checkout can lose items to another checkout that completes first, yet holding inventory too long blocks other users. Every piece of the stack — catalog, availability, reservation, fulfillment — is scoped to a single DC, making the DC the natural partition boundary.
 
@@ -27,26 +29,35 @@ graph LR
     class A edge;
     class B,C,D,E,F svc;
     class G svc;
-
 ```
 
 ## 2. Requirements
 
-Functional
+**Functional**
 
 - FR1: Browse a product catalog filtered to the DC serving the user's delivery address
+
 - FR2: Search products by name, category, or brand with real-time stock availability
+
 - FR3: Place a multi-item order for delivery within a 30-minute window
+
 - FR4: Track an order from placement through picking, packing, and delivery in real time
+
 - FR5: Receive substitution recommendations when a picked item is out of stock
+
 - FR6: View order history and re-order from a past purchase in one tap
-Non-functional
+
+**Non-functional**
 
 - NFR1: Catalog reads with availability filtering return p95 under 200 ms
+
 - NFR2: 99.95% availability during peak evening hours (6pm–10pm local time)
+
 - NFR3: No customer is sold an item already allocated to another active checkout
+
 - NFR4: Order status events visible to the customer within 5 seconds of occurrence
-Out of scope: fleet routing and ETA optimization, driver onboarding and payouts, DC restocking and supply-chain forecasting, promotional pricing engines, subscription/membership tiers.
+
+*Out of scope: fleet routing and ETA optimization, driver onboarding and payouts, DC restocking and supply-chain forecasting, promotional pricing engines, subscription/membership tiers.*
 
 ## 3. Back of the envelope
 
@@ -58,62 +69,67 @@ Out of scope: fleet routing and ETA optimization, driver onboarding and payouts,
 
 ## 4. Entities & API
 
-```javascript
-DC
-  dc_id: string (PK)              ← short code, e.g. "PHL-12"
-  geo_hash: string (INDEX)        ← GeoHash-7 (~153m × 153m cell); spatial index key
-  center_lat: double              ← actual lat/lon for drive-time routing
-  center_lon: double
-  delivery_radius_mi: decimal(3,1)← configurable per-DC; typically 2.0–3.5
-  status: enum                    ← active | paused | closed (paused = weather/incident)
-  address_line: string
+```sql
+DC {
+  dc_id:             string PK    ← short code, e.g. "PHL-12"
+  geo_hash:          string INDEX ← GeoHash-7 (~153m × 153m cell); spatial index key
+  center_lat:        float        ← actual lat/lon for drive-time routing
+  center_lon:        float
+  delivery_radius_mi:decimal(3,1) ← configurable per-DC; typically 2.0–3.5
+  status:            enum         ← active | paused | closed (paused = weather/incident)
+  address_line:      string
+}
 
-Product
-  product_id: int64 (PK)          ← global catalog; shared across all DCs
-  name: string (TEXT INDEX)
-  category: enum                  ← snacks | beverages | household | frozen | alcohol
-  brand: string
+Product {
+  product_id:bigint PK    ← global catalog; shared across all DCs
+  name:      string INDEX
+  category:  enum         ← snacks | beverages | household | frozen | alcohol
+  brand:     string
   image_ref: string[]
-  is_alcohol: boolean             ← flags age-gating and compliance checks
-  is_active: boolean              ← soft-delete for discontinued products
+  is_alcohol:boolean      ← flags age-gating and compliance checks
+  is_active: boolean      ← soft-delete for discontinued products
+}
 
-Inventory
-  dc_id: string (PK)              ← partition key; co-located per DC
-  product_id: int64 (PK)          ← sort key; one row per SKU per DC
-  stock_on_hand: integer          ← physical count; updated on pick + restock
-  reserved_qty: integer           ← sum of active Reservation rows for this SKU
-  available_qty: integer          ← computed = stock_on_hand - reserved_qty; maintained by trigger
-  aisle: string                   ← picker-facing location, e.g. "A-4-2"
-  last_restock_at: timestamp
+Inventory {
+  dc_id:          string PK ← partition key; co-located per DC
+  product_id:     bigint PK ← sort key; one row per SKU per DC
+  stock_on_hand:  integer   ← physical count; updated on pick + restock
+  reserved_qty:   integer   ← sum of active Reservation rows for this SKU
+  available_qty:  integer   ← computed = stock_on_hand - reserved_qty; maintained by trigger
+  aisle:          string    ← picker-facing location, e.g. "A-4-2"
+  last_restock_at:timestamp
+}
 
-Reservation
-  reservation_id: uuid (PK)
-  dc_id: string (CK)              ← scoped to the same DC partition as Inventory
-  product_id: int64 (CK)
-  order_id: string (CK)           ← links to Order; key for idempotent release
-  quantity: integer
-  expires_at: timestamp           ← TTL; released after 15 min if order incomplete
-  created_at: timestamp
+Reservation {
+  reservation_id:uuid PK
+  dc_id:         string CK ← scoped to the same DC partition as Inventory
+  product_id:    bigint CK
+  order_id:      string CK ← links to Order; key for idempotent release
+  quantity:      integer
+  expires_at:    timestamp ← TTL; released after 15 min if order incomplete
+  created_at:    timestamp
+}
 
-Order
-  order_id: string (PK)           ← UUID, generated client-side for idempotency
-  user_id: string (CK)            ← partition key; user's order history is user-scoped
-  dc_id: string
-  delivery_address: jsonb         ← street, city, zip, lat, lon
-  status: enum                    ← cart | confirmed | picking | packed | en_route | delivered | cancelled
-  subtotal_cents: bigint
-  delivery_fee_cents: bigint
-  total_cents: bigint
-  created_at: timestamp
+Order {
+  order_id:          string PK ← UUID, generated client-side for idempotency
+  user_id:           string CK ← partition key; user's order history is user-scoped
+  dc_id:             string
+  delivery_address:  jsonb     ← street, city, zip, lat, lon
+  status:            enum      ← cart | confirmed | picking | packed | en_route | delivered | cancelled
+  subtotal_cents:    bigint
+  delivery_fee_cents:bigint
+  total_cents:       bigint
+  created_at:        timestamp
+}
 
-OrderLineItem
-  order_id: string (PK)
-  product_id: int64 (PK)
-  quantity: integer
-  unit_price_cents: bigint        ← snapshot at checkout; decoupled from live catalog price
-  actual_product_id: int64?       ← null if exact match; non-null if picker substituted
-  substitution_reason: enum?      ← oos | damaged | customer_requested | null
-
+OrderLineItem {
+  order_id:           string PK
+  product_id:         bigint PK
+  quantity:           integer
+  unit_price_cents:   bigint    ← snapshot at checkout; decoupled from live catalog price
+  actual_product_id:  int64?    ← null if exact match; non-null if picker substituted
+  substitution_reason:enum?     ← oos | damaged | customer_requested | null
+}
 ```
 
 API
@@ -185,7 +201,6 @@ graph TB
     class GW,CatalogSvc,OrderSvc,InvSvc,FulfillSvc,PaymentSvc,WSPush svc;
     class CatalogCache,GeoIdx,OrderStore,InvStore store;
     class EventBus async;
-
 ```
 
 #### FR1: Browse a catalog filtered to the DC serving the user's delivery address
@@ -205,7 +220,6 @@ AND status = 'active'
 ORDER BY earth_distance(ll_to_earth(center_lat, center_lon),
                         ll_to_earth(:lat, :lon))
 LIMIT 1;
-
 ```
 
 1. Gateway caches the user_id → dc_id mapping in a session cookie (TTL 1 hour) and returns dc_id to the client. Subsequent catalog requests carry the cookie.
@@ -213,7 +227,6 @@ LIMIT 1;
 
 ```javascript
 HMGET dc:PHL-12:stock product:4821 product:1733 product:9012 ...
-
 ```
 
 1. Products with available_qty = 0 are either dropped or shown as "out of stock" (configurable per category). Results are paginated (30 items/page) and returned with availability flags.
@@ -241,7 +254,6 @@ HMGET dc:PHL-12:stock product:4821 product:1733 product:9012 ...
   },
   "size": 30, "from": 0
 }
-
 ```
 
 1. Elasticsearch returns product_id + relevance score. Catalog Service pipeline-fetches availability from Redis for all matching product IDs in a single HMGET.
@@ -278,7 +290,6 @@ SET reserved_qty = reserved_qty + :qty
 WHERE dc_id = :dc_id AND product_id = :pid;
 
 COMMIT;
-
 ```
 
 1. If any line item fails reservation (insufficient stock), Inventory Service returns {status: "partial", unavailable: [{product_id, quantity_available}]}. Order Service returns this to the client so the user can adjust their cart — the order is NOT created.
@@ -313,7 +324,6 @@ sequenceDiagram
     else reservation failed
         OS-->>C: {error: "partial", unavailable: [...]}
     end
-
 ```
 
 #### FR4: Track an order from placement through picking, packing, and delivery in real time
@@ -353,7 +363,6 @@ ORDER BY
   ABS(i.unit_price_cents - :price_cents) ASC,
   i.substitution_success_rate DESC
 LIMIT 3;
-
 ```
 
 1. The picker selects one or taps "skip item." The choice is written to OrderLineItem and the customer sees the substitution in their order status (FR4).
@@ -389,7 +398,6 @@ SET reserved_qty = reserved_qty + :delta, version = version + 1
 WHERE dc_id = :dc_id AND product_id = :pid
 AND stock_on_hand - reserved_qty - :delta >= 0
 AND version = :read_version;
-
 ```
 
 If zero rows updated (version mismatch or stock exhausted), the caller retries from read. Under low contention (~5 orders/min per DC), retries rarely exceed 1. Under high contention (a flash sale on a popular item), retries spike and latency degrades non-deterministically — worst case, a customer sees a spinner for 3–5 seconds and bounces.
@@ -415,7 +423,6 @@ FOR UPDATE;            -- blocks concurrent checkouts on same SKU
 INSERT INTO reservation (...) VALUES (...), (...), ...;
 UPDATE inventory SET reserved_qty = reserved_qty + :qty WHERE ...;
 COMMIT;
-
 ```
 
 All rows are locked in a consistent order (by product_id ASC), which eliminates deadlocks — every checkout at DC #247 locks rows in the same sequence. The lock is held only for the duration of the reserve transaction (~5–10ms) and released on commit. The reservation itself carries a 15-minute TTL (FR3).
@@ -457,7 +464,6 @@ At checkout time (not browse), the Order Service calls an OSRM routing server wi
 ```javascript
 OSRM GET /table/v1/driving/{user_lon},{user_lat};{dc1_lon},{dc1_lat};{dc2_lon},{dc2_lat}
 → {durations: [[0, 680], [720, 0]]}   // 680s to DC1, 720s to DC2
-
 ```
 
 **Challenges:** OSRM table queries add 50–100ms to the checkout path. At 42 orders/s, the OSRM server handles this comfortably (a single OSRM instance does ~1,000 table queries/s on a loaded US Northeast graph). OSRM requires pre-loaded OpenStreetMap data for the service region. The graph must be refreshed weekly to reflect road closures.
@@ -501,7 +507,6 @@ def snapshot_dc(dc_id):
     pipe.hset(key, mapping={f"product:{r.product_id}": r.available_qty for r in rows})
     pipe.expire(key, 60)  # 60s TTL — next snapshot replaces before expiry
     pipe.execute()
-
 ```
 
 Catalog reads use HMGET dc:PHL-12:stock product:4821 product:1733 ... — a single Redis call, sub-millisecond, regardless of how many products are in the browse result.
@@ -560,7 +565,6 @@ sequenceDiagram
     OS->>K: OrderConfirmed
     K->>FS: consume
     FS->>FS: dispatch picker
-
 ```
 
 **Partial fulfillment path:** If the picker finds 3 of 5 items and substitutes 1, the Fulfillment Service publishes OrderPartiallyFulfilled {line_items: [{product_id, status: picked|substituted|oos}]}. Payment Service consumes this and adjusts the capture amount to match what was actually delivered. The customer is charged only for picked + accepted substitutions.

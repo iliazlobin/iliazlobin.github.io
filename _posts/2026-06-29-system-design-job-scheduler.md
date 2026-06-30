@@ -9,7 +9,7 @@ thumbnail: /images/posts/2026-06-29-system-design-job-scheduler.svg
 
 A distributed job scheduler that accepts work definitions and fans execution across a fleet of workers — on demand, at a future wall-clock time, or on a recurring cron schedule — with at-least-once guarantees, DAG workflow support, and horizontal scale to 10,000 jobs/sec.
 
-## 1. Problem frame
+## 1. Problem
 
 A distributed job scheduler accepts work definitions from users and fans their execution across a fleet of workers — on demand, at a future wall-clock time, or on a recurring cron schedule. It tracks dependencies between tasks so a DAG workflow advances only when all upstream steps succeed, and guarantees each job runs at least once through machine crashes, network partitions, and scheduler failovers. This is infrastructure that powers ETL pipelines at Shopify (10K+ DAGs, 150K Airflow runs/day), async compute at Pinterest (billions of Pacer tasks), and workflow automation at Uber (12B+ Cadence executions). The system targets 10,000 jobs/sec peak throughput with sub-2-second scheduling precision and no single-process SPOF.
 
@@ -38,7 +38,6 @@ graph LR
     class B,C,F svc;
     class D store;
     class E async;
-
 ```
 
 ## 2. Requirements
@@ -46,19 +45,29 @@ graph LR
 **Functional**
 
 - FR1: Schedule jobs — execute immediately, at a future UTC timestamp, or on recurring cron expression.
+
 - FR2: Define DAG workflows — tasks declare upstream parent dependencies resolved before downstream execution.
+
 - FR3: Execute reliably — at-least-once delivery with configurable retries and exponential backoff.
+
 - FR4: Monitor status — query job state, workflow progress, and per-execution event history.
+
 - FR5: Cancel jobs — cancel pending jobs; signal running workers to abort in-flight execution.
+
 - FR6: Retrieve execution history — append-only log of every state transition with timestamps and worker IDs.
+
 *Out of scope: multi-tenant quota enforcement, resource-aware bin-packing, visual DAG editor.*
 
 **Non-functional**
 
 - NFR1: 10,000 jobs/sec peak throughput — horizontal scaling beyond a single machine.
+
 - NFR2: ≤2s scheduling precision — job fires within 2 seconds of its scheduled wall-clock time.
+
 - NFR3: 99.9% availability — no single scheduler process is a SPOF; leader failover under 10 seconds.
+
 - NFR4: Durability — zero accepted jobs lost on crash; all jobs either execute or land in a dead-letter queue.
+
 ## 3. Back of the envelope
 
 - 10K jobs/sec × 86,400 sec/day = **864M jobs/day**. Each job record ~500 bytes (UUID, timestamps, status, params JSONB) → 432 GB raw daily. With 30-day retention, the `job` table hits ~13 TB. With PostgreSQL native partitioning by shard and BRIN indexes on timestamps, sequential scans of old partitions are cheap. Execution events (2 KB each) are heavier at 1.7 TB/day — store in a separate time-series store with 7-day hot window, archive cold.
@@ -66,54 +75,58 @@ graph LR
 - ≤2s scheduling precision means the scheduling hot path can't wait on a DB poll. A `FOR UPDATE SKIP LOCKED` scan at 500ms intervals gives 250ms average precision but P99 spikes under DB load. Decision: **in-memory timing wheel** for the near-future window (next 15 min) with O(1) tick cost; fall back to DB polling for jobs farther out.
 ## 4. Entities & API
 
-```javascript
-task
-  task_id: UUID (PK)
-  name: VARCHAR(255)
-  schedule_type: ENUM(IMMEDIATE, SCHEDULED, RECURRING)
-  cron_expr: VARCHAR(100)           ← NULL unless RECURRING; parsed once at create
-  max_retries: INT DEFAULT 3
-  timeout_sec: INT DEFAULT 3600
-  backoff_base_ms: INT DEFAULT 1000 ← first retry delay; exponential multiplier
-  created_at: TIMESTAMPTZ
+```sql
+task {
+  task_id:        uuid PK
+  name:           string
+  schedule_type:  enum      ← IMMEDIATE | SCHEDULED | RECURRING
+  cron_expr:      string    ← NULL unless RECURRING; parsed once at create
+  max_retries:    integer   ← default 3
+  timeout_sec:    integer   ← default 3600
+  backoff_base_ms:integer   ← default 1000; first retry delay; exponential multiplier
+  created_at:     timestamp
+}
 
-job
-  job_id: UUID (PK)
-  task_id: UUID (FK → task)
-  shard_id: INT                     ← hash(job_id) % 512; partition key
-  status: ENUM(PENDING, CLAIMED, RUNNING, SUCCESS, FAILED, CANCELLED)
-  scheduled_at: TIMESTAMPTZ
-  started_at: TIMESTAMPTZ
-  completed_at: TIMESTAMPTZ
-  params: JSONB
-  idempotency_key: UUID UNIQUE      ← client-gen; dedup across duplicate submissions
-  retry_count: INT DEFAULT 0
-  next_retry_at: TIMESTAMPTZ        ← computed from backoff_base × 2^retry_count
-  fence_token: BIGINT DEFAULT 0     ← monotonic; storage rejects lower-token writes
-  catch_up: BOOLEAN DEFAULT true    ← for recurring: fire for missed intervals?
-  worker_id: VARCHAR(255)           ← which worker claimed this job
+job {
+  job_id:         uuid PK
+  task_id:        uuid FK     ← → task
+  shard_id:       integer     ← hash(job_id) % 512; partition key
+  status:         enum        ← PENDING | CLAIMED | RUNNING | SUCCESS | FAILED | CANCELLED
+  scheduled_at:   timestamp
+  started_at:     timestamp
+  completed_at:   timestamp
+  params:         jsonb
+  idempotency_key:uuid UNIQUE ← client-gen; dedup across duplicate submissions
+  retry_count:    integer     ← default 0
+  next_retry_at:  timestamp   ← computed from backoff_base × 2^retry_count
+  fence_token:    bigint      ← default 0; monotonic; storage rejects lower-token writes
+  catch_up:       boolean     ← default true; for recurring: fire for missed intervals?
+  worker_id:      string      ← which worker claimed this job
+}
 
-workflow
-  workflow_id: UUID (PK)
-  name: VARCHAR(255)
-  status: ENUM(PENDING, RUNNING, SUCCESS, FAILED)
-  created_at: TIMESTAMPTZ
+workflow {
+  workflow_id:uuid PK
+  name:       string
+  status:     enum      ← PENDING | RUNNING | SUCCESS | FAILED
+  created_at: timestamp
+}
 
-workflow_edge
-  workflow_id: UUID (FK → workflow)
-  child_task_id: UUID (FK → task)
-  parent_task_id: UUID (FK → task)
-  pending_parents: INT DEFAULT 0    ← denormalized; enqueue child when reaches 0
+workflow_edge {
+  workflow_id:    uuid FK ← → workflow
+  child_task_id:  uuid FK ← → task
+  parent_task_id: uuid FK ← → task
+  pending_parents:integer ← default 0; denormalized; enqueue child when reaches 0
   PRIMARY KEY (workflow_id, child_task_id, parent_task_id)
+}
 
-execution_event
-  event_id: BIGSERIAL (PK)
-  job_id: UUID (FK → job)
-  event_type: ENUM(ENQUEUED, CLAIMED, STARTED, HEARTBEAT, COMPLETED, FAILED, RETRYING, CANCELLED)
-  occurred_at: TIMESTAMPTZ
-  worker_id: VARCHAR(255)
-  payload: JSONB                    ← error trace, heartbeat progress, retry reason
-
+execution_event {
+  event_id:   bigint PK
+  job_id:     uuid FK   ← → job
+  event_type: enum      ← ENQUEUED | CLAIMED | STARTED | HEARTBEAT | COMPLETED | FAILED | RETRYING | CANCELLED
+  occurred_at:timestamp
+  worker_id:  string
+  payload:    jsonb     ← error trace, heartbeat progress, retry reason
+}
 ```
 
 **API**
@@ -179,7 +192,6 @@ graph TB
     class LB,GW,SM,S0,S511,TW0,TW511,W svc;
     class J0,J511,ES,DQ store;
     class K0,K511,DLQ async;
-
 ```
 
 The **Shard Manager** holds a fixed 512-shard ring. Each shard elects one scheduler leader via an etcd lease (30s TTL, renewed at 10s). The shard count matches Temporal's proven default — 512 shards provides headroom from startup scale through Uber-sized workloads (12B+ executions). Leader failure causes a ≤10s election gap; jobs scheduled during the gap fire under the catch-up policy on the new leader's restart.
@@ -224,7 +236,6 @@ FROM workflow_edge
 WHERE workflow_id = $wf_id
   AND parent_task_id = $completed_task_id
   AND pending_parents = 0;
-
 ```
 
 1. Each child whose counter reached zero is enqueued as a new job, inheriting the workflow context.
@@ -385,7 +396,6 @@ graph TB
     classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
     class S0,S511,W1,W2,Wn svc;
     class J0,J511 store;
-
 ```
 
 **Edge cases:**
@@ -409,7 +419,6 @@ INSERT INTO job (job_id, idempotency_key, task_id, ...)
 VALUES ($job_id, $key, $task_id, ...)
 ON CONFLICT (idempotency_key) DO NOTHING
 RETURNING job_id, status;
-
 ```
 
 - **Edge case:** The retry arrives while the original is still `PENDING`. The handler returns the in-flight job. The client polls `GET /jobs/{job_id}` until a terminal status.
@@ -426,7 +435,6 @@ SET status = 'RUNNING',
 WHERE job_id = $job_id
   AND fence_token = $expected_token
 RETURNING fence_token;
-
 ```
 
 If the returned token does not match the expected token + 1, the claim fails — another worker got there first. Every subsequent status write includes the token. The storage layer (or application-level check) rejects writes with a token lower than the last committed value.
@@ -503,7 +511,6 @@ graph TD
     classDef running fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
     class A done;
     class B,C running;
-
 ```
 
 **Edge cases:**
