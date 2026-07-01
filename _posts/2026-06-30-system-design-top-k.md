@@ -105,7 +105,7 @@ VideoMetadata
 
 ```mermaid
 flowchart TB
-    subgraph Clients[""]
+    subgraph Clients["Clients"]
         Mobile["Mobile Apps"]
         Web["Web Player"]
         TV["TV Apps"]
