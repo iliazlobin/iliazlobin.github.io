@@ -85,7 +85,7 @@ BucketState {
   tat:          bigint?      ← theoretical arrival time in µs (GCRA)
 }
 
-```mermaid
+```
 
 ### API
 - `POST /ratelimit/check` — evaluate a request against all matching rules, returns `{allowed, remaining, reset_at}`
@@ -223,7 +223,7 @@ Distribute 16,384 hash slots across 10–20 Redis nodes. Each client key maps de
 # Key format embeds hash tag for slot co-location
 EVALSHA <sha> 1 rate_limiter:{user:42}:rule_abc <rate> <burst> <cost>
 
-```mermaid
+```
 - **Challenges:** Hot keys undermine the sharding. A single high-traffic client — an enterprise customer, a viral API key, or a coordinated attacker — pins one shard at near capacity while other shards are idle. Resharding during scale-out pauses requests on migrating slots. Connection pools still scale linearly with gateway count: 500 gateways maintain a connection pool to every shard, which is 500 × 20 × 20 = 200,000 open TCP connections cluster-wide.
 
 **Approach 3: Two-tier — local token chunks + centralized Redis**
@@ -443,7 +443,7 @@ Additionally, before failing, the middleware tries its local token cache first. 
 ## 7. Trade-offs
 
 | Decision | Rejected alternative | Why |
-|---|---|---|---|
+|---|---|---|
 | Two-tier (local cache + Redis) per FR5 | Centralized Redis only | 10x Redis traffic reduction keeps p99 latency sub-1ms and cluster size manageable; accuracy drift (~6%) is acceptable for fairness rules |
 | Lua EVALSHA for atomicity per FR2 | WATCH/MULTI/EXEC optimistic locking | Zero retry overhead under write contention; hot keys create exactly the high-conflict scenario where optimistic locking fails |
 | Multi-algorithm (token bucket + sliding window + GCRA) per FR4 | One algorithm for all rules | Different endpoints need different characteristics: burst tolerance for user APIs, strict per-IP for abuse prevention, low-memory GCRA for constrained deployments |
