@@ -160,3 +160,7 @@ back to the `## 1` overview) to `images/posts/<file>.svg` via kroki.io and write
   a diagram — so always run the script and confirm the `thumbnail:` line landed before publishing.
 - If the diagram fails to render (a Mermaid syntax error), **fix the diagram** and re-run with `--force` —
   don't ship the post on the gradient fallback.
+- **Overwriting a thumbnail is cache-safe.** `render-post-diagram.py --force` writes the new SVG to the
+  **same** `images/posts/<file>.svg` path. `blog.md` appends a build-time `?v=` to the card URL (same scheme
+  as CSS/JS), so each deploy serves a fresh URL — browsers and Cloudflare (`max-age=14400`) can't keep showing
+  a stale placeholder. Without that versioning a re-rendered diagram stays invisible for up to 4h behind cache.

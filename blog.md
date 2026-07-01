@@ -53,9 +53,14 @@ description: "System design write-ups, platform & AI engineering notes, and deep
         scripts/render-post-diagram.py. NEVER fall back to post.image — that is the site-wide
         og-default.png social card (set via _config.yml defaults) and would show the same banner
         on every post. No thumbnail → the gradient title-card below. {%- endcomment %}
+    {%- comment %} Cache-bust the thumbnail URL with the build timestamp (same ?v= scheme as CSS/JS
+        in the layouts). The pipeline OVERWRITES a post's thumbnail SVG in place when the diagram is
+        (re)rendered; without a versioned URL, browsers + Cloudflare keep serving the stale bytes
+        (max-age=14400) and the card shows an old placeholder even though the real diagram deployed. {%- endcomment %}
     {%- assign cover_img = post.thumbnail %}
     {%- if cover_img %}
-    <a class="pc-thumb" href="{{ cover_img | relative_url }}" target="_blank" rel="noopener noreferrer" aria-label="Open diagram for {{ post.title | escape }} (opens in a new tab)"><img src="{{ cover_img | relative_url }}" alt="{{ post.title | escape }} architecture diagram" loading="lazy"></a>
+    {%- assign cover_v = site.time | date: '%s' %}
+    <a class="pc-thumb" href="{{ cover_img | relative_url }}?v={{ cover_v }}" target="_blank" rel="noopener noreferrer" aria-label="Open diagram for {{ post.title | escape }} (opens in a new tab)"><img src="{{ cover_img | relative_url }}?v={{ cover_v }}" alt="{{ post.title | escape }} architecture diagram" loading="lazy"></a>
     {%- else %}
     <a class="pc-thumb cover g{{ seed }}" href="{{ post.url | relative_url }}" tabindex="-1" aria-hidden="true">
       <span class="pc-cover-title">{{ post.title | escape }}</span>
