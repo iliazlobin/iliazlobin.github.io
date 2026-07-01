@@ -309,7 +309,7 @@ Active = logged in within 7 days. The inactive-follower filter cuts fan-out volu
 redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])      -- insert post_id with ML score
 redis.call('ZREMRANGEBYRANK', KEYS[1], 0, -(ARGV[3] + 1))  -- trim to 800 entries
 
-```mermaid
+```
 At feed read time, the Feed Service assembles candidates from two sources:
 1. **Pre-built timeline** (normal users, active followers) — `ZREVRANGE feed:{user} 0 199 WITHSCORES`
 1. **Celebrity posts** (pull on read, 60s TTL cache) — fetch each celebrity's last 20 posts from a Redis list `celebrity_posts:{user_id}`, which is rebuilt every 60s by a background job
@@ -405,6 +405,7 @@ engagement_score = w_like  × P(like) + w_comment × P(comment)
 Weights are personalized per user via an online Bayesian optimization loop informed by explicit surveys (Facebook's "value model") and implicit signals (time spent, return rate). The model uses ~100 features per post-user pair:
 
 | Category | Features |
+|---|---|
 | User-author relationship | Interaction frequency, recency of engagement, search history for that author |
 | Content signals | Post type (text/photo/video/link), media quality score, embedding similarity to user's liked content |
 | Behavioral signals | Viewing history, time-of-day patterns, scroll velocity, dwell time per content type |
