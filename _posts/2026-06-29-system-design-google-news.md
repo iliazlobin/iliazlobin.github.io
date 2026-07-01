@@ -69,7 +69,7 @@ graph LR
 
 ## 4. Entities & API
 
-```sql
+```
 Article {
   article_id:      string PK       ← publisher domain + path hash, globally unique
   url:             string UNIQUE   ← canonical URL after normalization
