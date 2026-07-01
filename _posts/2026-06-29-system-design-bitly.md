@@ -72,7 +72,7 @@ graph LR
 - 40B links × ~650 bytes/link → ~26TB of row data → any single-node DB is out; distributed store with partition-per-short-code is the only path
 ## 4. Entities & API
 
-```sql
+```
 URL {
   short_code:   string PK ← base62-encoded ID, 7 characters
   long_url:     string    ← canonicalized, max 2048 chars

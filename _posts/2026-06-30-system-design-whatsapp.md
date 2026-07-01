@@ -64,7 +64,7 @@ graph LR
 
 ## 4. Entities & API
 
-```sql
+```
 User {
   user_id:     uuid PK          ← globally unique, shard key
   phone:       string UNIQUE    ← hashed at rest

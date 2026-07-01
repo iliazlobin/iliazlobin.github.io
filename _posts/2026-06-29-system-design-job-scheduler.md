@@ -75,7 +75,7 @@ graph LR
 - ≤2s scheduling precision means the scheduling hot path can't wait on a DB poll. A `FOR UPDATE SKIP LOCKED` scan at 500ms intervals gives 250ms average precision but P99 spikes under DB load. Decision: **in-memory timing wheel** for the near-future window (next 15 min) with O(1) tick cost; fall back to DB polling for jobs farther out.
 ## 4. Entities & API
 
-```sql
+```
 task {
   task_id:        uuid PK
   name:           string

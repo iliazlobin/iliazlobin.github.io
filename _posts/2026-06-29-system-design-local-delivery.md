@@ -69,7 +69,7 @@ graph LR
 
 ## 4. Entities & API
 
-```sql
+```
 DC {
   dc_id:             string PK    ← short code, e.g. "PHL-12"
   geo_hash:          string INDEX ← GeoHash-7 (~153m × 153m cell); spatial index key

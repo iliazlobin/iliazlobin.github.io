@@ -72,7 +72,7 @@ graph LR
 
 ## 4. Entities & API
 
-```sql
+```
 User {
   user_id:    string PK
   name:       string
