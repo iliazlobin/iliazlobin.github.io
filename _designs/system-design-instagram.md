@@ -7,6 +7,7 @@ description: "Instagram is a photo and video sharing platform where users post m
 thumbnail: /images/posts/2026-07-02-system-design-instagram.svg
 redirect_from:
   - /2026/07/02/system-design-instagram.html
+mvp_repo: https://github.com/iliazlobin/sd-instagram-backend-mvp
 ---
 
 Instagram is a photo and video sharing platform where users post media, follow others, and scroll through a personalized feed.

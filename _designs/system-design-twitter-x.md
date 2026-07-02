@@ -7,6 +7,7 @@ description: "Design a real-time social platform supporting 330M MAU that lets u
 thumbnail: /images/posts/2026-07-02-system-design-twitter-x.svg
 redirect_from:
   - /2026/07/02/system-design-twitter-x.html
+mvp_repo: https://github.com/iliazlobin/sd-twitter-x-backend-mvp
 ---
 
 Design a real-time social platform supporting 330M MAU that lets users post tweets (text + media), build timelines of tweets from followed users, search across all public tweets in real time, and discover trending topics.

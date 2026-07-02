@@ -7,6 +7,7 @@ description: "Google News aggregates articles from 50,000+ publishers worldwide,
 thumbnail: /images/posts/2026-06-29-system-design-google-news.svg
 redirect_from:
   - /2026/06/29/system-design-google-news.html
+mvp_repo: https://github.com/iliazlobin/sd-google-news-backend-mvp
 ---
 
 Google News aggregates articles from 50,000+ publishers worldwide, groups coverage of the same event into story clusters, and serves a ranked, personalized feed to over 150 million monthly users across 70+ regional editions in 30+ languages.

@@ -7,6 +7,7 @@ description: "Bitly turns long URLs into short ones and tracks every click. It l
 thumbnail: /images/posts/2026-06-29-system-design-bitly.svg
 redirect_from:
   - /2026/06/29/system-design-bitly.html
+mvp_repo: https://github.com/iliazlobin/sd-bitly-backend-mvp
 ---
 
 Bitly turns long URLs into short ones and tracks every click. It looks simple — take a URL, generate a 7-character code, store the mapping, redirect on lookup. But the real challenge is analytics: every redirect must record an event without slowing the redirect.

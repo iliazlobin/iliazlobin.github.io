@@ -7,6 +7,7 @@ description: "Online chess is a real-time two-player game where every half-secon
 thumbnail: /images/posts/2026-07-01-system-design-online-chess.svg
 redirect_from:
   - /2026/07/01/system-design-online-chess.html
+mvp_repo: https://github.com/iliazlobin/sd-online-chess-backend-mvp
 ---
 
 Online chess is a real-time two-player game where every half-second of latency feels like an eternity.

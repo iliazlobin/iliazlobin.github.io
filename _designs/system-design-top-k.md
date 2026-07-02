@@ -7,6 +7,7 @@ description: "A video platform ingests view events at massive scale — 70 billi
 thumbnail: /images/posts/2026-06-30-system-design-top-k.svg
 redirect_from:
   - /2026/06/30/system-design-top-k.html
+mvp_repo: https://github.com/iliazlobin/sd-top-k-backend-mvp
 ---
 
 A video platform ingests view events at massive scale — 70 billion per day across billions of videos — and must surface the most-viewed videos per time window at sub-50ms read latency.

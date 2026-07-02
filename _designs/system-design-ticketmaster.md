@@ -7,6 +7,7 @@ description: "Ticketmaster sells 500M tickets a year across 30 countries as the 
 thumbnail: /images/posts/2026-06-30-system-design-ticketmaster.svg
 redirect_from:
   - /2026/06/30/system-design-ticketmaster.html
+mvp_repo: https://github.com/iliazlobin/sd-ticketmaster-backend-mvp
 ---
 
 Ticketmaster sells 500M tickets a year across 30 countries as the dominant primary-ticketing marketplace. The hard problem is the flash onsale: 14M people compete for 60,000 seats when Taylor Swift or the Super Bowl goes on sale. Demand outstrips supply 83:1, browse traffic hits 2.

@@ -7,6 +7,7 @@ description: "Strava lets athletes record, share, and compete over GPS-tracked a
 thumbnail: /images/posts/2026-07-02-system-design-strava.svg
 redirect_from:
   - /2026/07/02/system-design-strava.html
+mvp_repo: https://github.com/iliazlobin/sd-strava-backend-mvp
 ---
 
 Strava lets athletes record, share, and compete over GPS-tracked activities at a scale where 10 million runs and rides arrive every day.

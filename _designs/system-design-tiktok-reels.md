@@ -7,6 +7,7 @@ description: "TikTok serves 71 billion video views daily to 1.9 billion monthly 
 thumbnail: /images/posts/2026-07-02-system-design-tiktok-reels.svg
 redirect_from:
   - /2026/07/02/system-design-tiktok-reels.html
+mvp_repo: https://github.com/iliazlobin/sd-tiktok-reels-backend-mvp
 ---
 
 TikTok serves 71 billion video views daily to 1.9 billion monthly users, with 34 million new uploads flowing through a GPU transcoding pipeline every 24 hours.

@@ -7,6 +7,7 @@ description: "A payment system moves money from a customer's funding source to a
 thumbnail: /images/posts/2026-07-02-system-design-payment-system.svg
 redirect_from:
   - /2026/07/02/system-design-payment-system.html
+mvp_repo: https://github.com/iliazlobin/sd-payment-system-backend-mvp
 ---
 
 A payment system moves money from a customer's funding source to a merchant's account through payment service providers (PSPs) like Stripe and Adyen. The system authorizes funds, captures them, and records every movement in a double-entry ledger so the books balance to the cent.

@@ -7,6 +7,7 @@ description: "A rate limiter controls how many requests a client can make within
 thumbnail: /images/posts/2026-07-01-system-design-rate-limiter.svg
 redirect_from:
   - /2026/07/01/system-design-rate-limiter.html
+mvp_repo: https://github.com/iliazlobin/sd-rate-limiter-backend-mvp
 ---
 
 A rate limiter controls how many requests a client can make within a time window. It sits in the request path for every API call, enforcing configurable limits — per user, per IP, or per API key — and rejecting excess traffic with HTTP 429.

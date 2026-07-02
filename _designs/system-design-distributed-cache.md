@@ -7,6 +7,7 @@ description: "A single-node cache (one Redis instance, one Memcached process) hi
 thumbnail: /images/posts/2026-07-02-system-design-distributed-cache.svg
 redirect_from:
   - /2026/07/02/system-design-distributed-cache.html
+mvp_repo: https://github.com/iliazlobin/sd-distributed-cache-backend-mvp
 ---
 
 A single-node cache (one Redis instance, one Memcached process) hits a hard wall: the server's RAM ceiling.
