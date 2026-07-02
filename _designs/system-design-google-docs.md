@@ -7,7 +7,6 @@ description: "Google Docs serves ~2B monthly active users editing documents coll
 thumbnail: /images/posts/2026-07-01-system-design-google-docs.svg
 redirect_from:
   - /2026/07/01/system-design-google-docs.html
-mvp_repo: https://github.com/iliazlobin/sd-google-docs-backend-mvp
 ---
 
 Google Docs serves ~2B monthly active users editing documents collaboratively in real time. A document open for editing draws 1–100 concurrent collaborators whose keystrokes must resolve to a single consistent document state with sub-200ms latency.
