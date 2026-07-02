@@ -5,6 +5,8 @@ date: 2026-07-02
 tags: [System Design, Social Media, Real-time]
 description: "Design a real-time social platform supporting 330M MAU that lets users post tweets (text + media), build timelines of tweets from followed users, search across all public tweets in real time, and discover trending topics."
 thumbnail: /images/posts/2026-07-02-system-design-twitter-x.svg
+redirect_from:
+  - /2026/07/02/system-design-twitter-x.html
 ---
 
 Design a real-time social platform supporting 330M MAU that lets users post tweets (text + media), build timelines of tweets from followed users, search across all public tweets in real time, and discover trending topics.
