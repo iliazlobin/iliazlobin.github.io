@@ -2,8 +2,8 @@
 layout: post
 title: "System Design: Dropbox"
 date: 2026-07-02
-tags: [System Design, Dropbox, File Storage]
-description: "Dropbox serves 700M+ users syncing 100B+ files across devices, handling 10K+ file operations per second with LAN sync, delta sync, and a billion-file namespace in a single block store."
+tags: [System Design]
+description: "Dropbox is a cloud file storage and sync service serving 700M+ registered users with exabytes of stored content. Users upload files from any device, access them everywhere, share folders with collaborators, and recover previous versions."
 thumbnail: /images/posts/2026-07-02-system-design-dropbox.svg
 ---
 
@@ -157,54 +157,45 @@ graph TB
 
 #### FR1: Upload a file
 
-**Components:** Client → API Gateway → Block Service → Block Index + Block Store; Metadata Service → Metadata DB.
-
-**Flow:**
-
-1. Client filesystem watcher detects a new or modified file.
-1. Client splits the file into fixed-size blocks and computes SHA-256 for each block.
-1. Client sends `POST /files/upload-init` with the ordered blocklist.
-1. Block Service queries the Block Index for each hash: existing blocks are deduplicated; only missing hashes are returned.
-1. Client uploads missing blocks via `PUT /blocks/{hash}` directly to the Block Store through presigned URLs.
-1. Block Store persists each block, updates the Block Index entry with `location` and increments `ref_count`.
-1. Client resubmits `POST /files/upload-init` with the full blocklist; all hashes now resolve.
-1. Metadata Service writes a new `FileRevision` row: `(namespace_id, journal_id, file_id, blocklist)`.
-
-**Design consideration:** The two-phase commit (blocklist check, upload missing, recheck) is the deduplication gate. If a block already exists in the Block Index, the upload is skipped entirely and the existing block is referenced. A new block is written once and the Block Index entry is the single source of truth for its location. If the client crashes between steps 5 and 7, the uploaded blocks persist — the recheck on step 7 finds them and the commit succeeds.
+- **Components:** Client → API Gateway → Block Service → Block Index + Block Store; Metadata Service → Metadata DB.
+- **Flow:**
+  1. Client filesystem watcher detects a new or modified file.
+  1. Client splits the file into fixed-size blocks and computes SHA-256 for each block.
+  1. Client sends `POST /files/upload-init` with the ordered blocklist.
+  1. Block Service queries the Block Index for each hash: existing blocks are deduplicated; only missing hashes are returned.
+  1. Client uploads missing blocks via `PUT /blocks/{hash}` directly to the Block Store through presigned URLs.
+  1. Block Store persists each block, updates the Block Index entry with `location` and increments `ref_count`.
+  1. Client resubmits `POST /files/upload-init` with the full blocklist; all hashes now resolve.
+  1. Metadata Service writes a new `FileRevision` row: `(namespace_id, journal_id, file_id, blocklist)`.
+- **Design consideration:** The two-phase commit (blocklist check, upload missing, recheck) is the deduplication gate. If a block already exists in the Block Index, the upload is skipped entirely and the existing block is referenced. A new block is written once and the Block Index entry is the single source of truth for its location. If the client crashes between steps 5 and 7, the uploaded blocks persist — the recheck on step 7 finds them and the commit succeeds.
 
 #### FR2: Download a file
 
-**Components:** Client → Metadata Service → Metadata DB → Block Service → CDN or Block Store.
-
-**Flow:**
-
-1. Client requests file metadata: `GET /files/changes?since={cursor}` returns new `FileRevision` rows.
-1. Client reads the `blocklist` from the revision and compares against its local block cache.
-1. For each missing block, client calls `GET /blocks/{hash}`.
-1. Block Service checks Block Index for the block's `location`, returns a presigned CDN URL (hot files) or direct Block Store URL (cold files).
-1. CDN serves the block from edge if cached; on miss, fetches from Block Store, caches, and returns.
-1. Client reassembles the file from blocks in order.
-
-**Design consideration:** Only frequently accessed blocks are promoted to the CDN. Cold blocks are served directly from the Block Store — the first-byte latency is higher but the storage cost is lower. The CDN uses short-lived signed URLs (5-minute TTL) so a leaked link is useless after expiry. For large files, the client fetches blocks in parallel and can begin reassembly before all blocks arrive.
+- **Components:** Client → Metadata Service → Metadata DB → Block Service → CDN or Block Store.
+- **Flow:**
+  1. Client requests file metadata: `GET /files/changes?since={cursor}` returns new `FileRevision` rows.
+  1. Client reads the `blocklist` from the revision and compares against its local block cache.
+  1. For each missing block, client calls `GET /blocks/{hash}`.
+  1. Block Service checks Block Index for the block's `location`, returns a presigned CDN URL (hot files) or direct Block Store URL (cold files).
+  1. CDN serves the block from edge if cached; on miss, fetches from Block Store, caches, and returns.
+  1. Client reassembles the file from blocks in order.
+- **Design consideration:** Only frequently accessed blocks are promoted to the CDN. Cold blocks are served directly from the Block Store — the first-byte latency is higher but the storage cost is lower. The CDN uses short-lived signed URLs (5-minute TTL) so a leaked link is useless after expiry. For large files, the client fetches blocks in parallel and can begin reassembly before all blocks arrive.
 
 #### FR3: Share a file or folder
 
-**Components:** Client → Sharing Service → Metadata DB (namespace ACL).
-
-**Flow:**
-
-1. Client calls `POST /shares` with the folder path and target users.
-1. Sharing Service creates a new `SharedFolder` namespace with the specified `policy` (ACL, who can invite, link settings).
-1. `Membership` rows are inserted: `(folder_id, user_id, access_level)` for each target user.
-1. The shared folder is mounted into each member's root namespace at a configurable path.
-1. On every metadata operation within the shared folder, the Metadata Service checks the namespace ACL: the caller's `access_level` is read from the `Membership` table.
-1. A change in one member's view (e.g., a new file) writes to the shared namespace's journal and appears in every member's sync cursor.
-
-**Design consideration:** The namespace model is the foundation of access control. Every account has a root namespace; every shared folder is a separate namespace. The Metadata DB is sharded on `namespace_id`, so a user's root namespace and all their joined shared folders may span shards. The common query "list changes in namespace N since cursor C" is a single-shard range scan. Permission checks are a read on the `Membership` table at operation time.
+- **Components:** Client → Sharing Service → Metadata DB (namespace ACL).
+- **Flow:**
+  1. Client calls `POST /shares` with the folder path and target users.
+  1. Sharing Service creates a new `SharedFolder` namespace with the specified `policy` (ACL, who can invite, link settings).
+  1. `Membership` rows are inserted: `(folder_id, user_id, access_level)` for each target user.
+  1. The shared folder is mounted into each member's root namespace at a configurable path.
+  1. On every metadata operation within the shared folder, the Metadata Service checks the namespace ACL: the caller's `access_level` is read from the `Membership` table.
+  1. A change in one member's view (e.g., a new file) writes to the shared namespace's journal and appears in every member's sync cursor.
+- **Design consideration:** The namespace model is the foundation of access control. Every account has a root namespace; every shared folder is a separate namespace. The Metadata DB is sharded on `namespace_id`, so a user's root namespace and all their joined shared folders may span shards. The common query "list changes in namespace N since cursor C" is a single-shard range scan. Permission checks are a read on the `Membership` table at operation time.
 
 #### FR4: Auto-sync file changes across devices
 
-**Components:** Client → Notification Service (long-poll) + Metadata Service (cursor poll).
+- **Components:** Client → Notification Service (long-poll) + Metadata Service (cursor poll).
 
 **Flow (Remote → Local):**
 
@@ -219,36 +210,29 @@ graph TB
 1. Client-side filesystem watcher (inotify/FSEvents) detects a local change.
 1. Client uploads the file (as in FR1) and the Metadata Service commits a new revision.
 1. All other devices on the same account receive the change via their long-poll connections.
-
-**Design consideration:** The long-poll is one per device, not per file. A single idle HTTP connection carries all notifications for that device. If the connection drops, the client falls back to periodic polling (`GET /files/changes?since={cursor}`) every 2 minutes, catching any missed events. The cursor is an opaque `journal_id` per namespace, so the client always knows exactly what it has seen.
+- **Design consideration:** The long-poll is one per device, not per file. A single idle HTTP connection carries all notifications for that device. If the connection drops, the client falls back to periodic polling (`GET /files/changes?since={cursor}`) every 2 minutes, catching any missed events. The cursor is an opaque `journal_id` per namespace, so the client always knows exactly what it has seen.
 
 #### FR5: Restore previous file versions
 
-**Components:** Client → Metadata Service → Metadata DB → Block Service.
-
-**Flow:**
-
-1. Client calls `GET /files/{file_id}/versions` to list all `FileRevision` rows for that file, ordered by `journal_id DESC`.
-1. User selects a previous version. Client reads its `blocklist`.
-1. Since blocks are immutable in the Block Store, old blocks remain accessible as long as their `ref_count` is above zero.
-1. Client downloads the old blocks (as in FR2) to reconstruct the version locally.
-1. Client can choose to restore, which creates a new `FileRevision` with the old `blocklist` — the restored version becomes the current one.
-
-**Design consideration:** Versioning is a natural side effect of the append-only `FileRevision` journal. Old revisions are never deleted by new writes — they accumulate rows. Retention is enforced by a periodic GC worker that scans `FileRevision` rows and drops those older than the retention window (30 days for free accounts, 180 days for paid), then decrements `ref_count` on the Block Index for the blocks those revisions referenced.
+- **Components:** Client → Metadata Service → Metadata DB → Block Service.
+- **Flow:**
+  1. Client calls `GET /files/{file_id}/versions` to list all `FileRevision` rows for that file, ordered by `journal_id DESC`.
+  1. User selects a previous version. Client reads its `blocklist`.
+  1. Since blocks are immutable in the Block Store, old blocks remain accessible as long as their `ref_count` is above zero.
+  1. Client downloads the old blocks (as in FR2) to reconstruct the version locally.
+  1. Client can choose to restore, which creates a new `FileRevision` with the old `blocklist` — the restored version becomes the current one.
+- **Design consideration:** Versioning is a natural side effect of the append-only `FileRevision` journal. Old revisions are never deleted by new writes — they accumulate rows. Retention is enforced by a periodic GC worker that scans `FileRevision` rows and drops those older than the retention window (30 days for free accounts, 180 days for paid), then decrements `ref_count` on the Block Index for the blocks those revisions referenced.
 
 #### FR6: Resolve sync conflicts
 
-**Components:** Client → sync engine (three-tree planner) → Metadata Service.
-
-**Flow:**
-
-1. Two devices edit the same file while offline. Each uploads a new `FileRevision` pointing at the same parent `journal_id`.
-1. Metadata Service detects the conflict: two revisions claim the same `(file_id, parent_journal_id)`.
-1. The first upload to commit wins the canonical path.
-1. The second upload is saved as a conflicted copy: a new file entry named "Conflicted Copy (Device Name)" with the second revision's `blocklist`.
-1. Both devices see both files on next sync.
-
-**Design consideration:** Last-writer-wins is the default for simple content changes — the second writer's blocks overwrite the first. When two revisions diverge from the same parent (true conflict), the conflicted-copy strategy preserves both versions so no user data is ever silently dropped. The sync engine on each client uses a three-tree model (Local, Remote, Synced) to detect divergence and plan the merge step.
+- **Components:** Client → sync engine (three-tree planner) → Metadata Service.
+- **Flow:**
+  1. Two devices edit the same file while offline. Each uploads a new `FileRevision` pointing at the same parent `journal_id`.
+  1. Metadata Service detects the conflict: two revisions claim the same `(file_id, parent_journal_id)`.
+  1. The first upload to commit wins the canonical path.
+  1. The second upload is saved as a conflicted copy: a new file entry named "Conflicted Copy (Device Name)" with the second revision's `blocklist`.
+  1. Both devices see both files on next sync.
+- **Design consideration:** Last-writer-wins is the default for simple content changes — the second writer's blocks overwrite the first. When two revisions diverge from the same parent (true conflict), the conflicted-copy strategy preserves both versions so no user data is ever silently dropped. The sync engine on each client uses a three-tree model (Local, Remote, Synced) to detect divergence and plan the merge step.
 
 ## 6. Deep dives
 
@@ -496,19 +480,7 @@ The rsync algorithm uses a weak rolling hash to find matching regions, then a st
 > [!TIP]
 > **Key insight:** Store blocks compressed once, serve them compressed forever. The compression cost is paid at upload time by the one user doing the write; every subsequent downloader (including the original user on another device) benefits from the smaller transfer without paying CPU again.
 
-## 7. Trade-offs
-
-| Decision | Rejected alternative | Why |
-|---|---|---|
-| Fixed-size block dedup (4 MiB) | Content-defined chunking (8-64 KiB) | CDC produces 500× more chunks, exploding metadata cost per byte stored. Fixed blocks capture the bulk of cross-file dedup with manageable metadata overhead. |
-| Append-only per-namespace journal | General-purpose relational schema with UPDATEs | Append-only gives free versioning, simple cursor-based sync, and avoids write amplification from UPDATEs. The journal is the sync protocol's source of truth. |
-| Long-poll HTTP for notifications | WebSocket | Long-poll is stateless on the server, trivially load-balanced, and firewall-friendly. WebSocket's bidirectional benefits are unused — the client only needs server-to-client push. |
-| Client-side block hashing and compression | Server-side processing | Keeps CPU cost on the client, where it scales with the user's own hardware. Server only validates, never transforms. |
-| Presigned URLs for block upload/download | Proxying all data through app servers | File bytes bypass application servers entirely. Bandwidth scales independently in the Block Store and CDN. |
-| Conflicted-copy conflict resolution | Automatic merge (CRDT/OT) | Preserves both versions with zero risk of silent data corruption. Users manually resolve conflicts they understand, rather than trusting an algorithm to get it right. |
-| Namespace-based sharing with ACLs | File-level permission flags | Namespaces cleanly isolate shared state. A folder shared with 10 people is one namespace with one journal — not 10 copies of permission metadata bolted onto individual files. |
-
-## 8. References
+## 7. References
 
 1. Cowling, J. (2016). ["Inside the Magic Pocket"](https://dropbox.tech/infrastructure/inside-the-magic-pocket). Dropbox Tech Blog.
 1. Dropbox Engineering. (2016). ["Scaling to exabytes and beyond"](https://dropbox.tech/infrastructure/magic-pocket-infrastructure). Dropbox Tech Blog.

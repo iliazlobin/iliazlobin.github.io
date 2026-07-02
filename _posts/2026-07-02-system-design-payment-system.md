@@ -2,8 +2,8 @@
 layout: post
 title: "System Design: Payment System"
 date: 2026-07-02
-tags: [System Design, Payments, Fintech]
-description: "A payment system processes millions of transactions per day with strict exactly-once semantics, handling $1B+ in daily volume across multiple payment methods while maintaining 99.99% availability."
+tags: [System Design]
+description: "A payment system moves money from a customer's funding source to a merchant's account through payment service providers (PSPs) like Stripe and Adyen. The system authorizes funds, captures them, and records every movement in a double-entry ledger so the books balance to the cent."
 thumbnail: /images/posts/2026-07-02-system-design-payment-system.svg
 ---
 
@@ -28,6 +28,7 @@ graph LR
     classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
     class Gateway,Payment,PSP svc
     class Ledger,Idem store
+    class Client edge
 ```
 
 ## 2. Requirements
@@ -54,7 +55,7 @@ graph LR
 
 - **Payment write rate:** 1M payments/day ÷ 86,400 seconds → ~12 payments/sec average; 10× peak → ~120 writes/sec peak load.
 - **Idempotency storage:** 1M idempotency keys/day × 320 bytes/key × 30-day TTL → ~9.6 GB of Redis storage.
-- **Ledger storage:** 2 ledger entries/payment × 1M/day × 365 days × 200 bytes → ~146 GB/year of ledger storage.
+- **Ledger storage:** 2 ledger entries/payment × 1M/day × 365 days × 200 bytes → ~146 MB/year of ledger storage.
 
 ## 4. Entities
 
@@ -76,7 +77,7 @@ LedgerEntry {
   side:           enum           -- debit, credit
   amount:         integer        -- always positive; side determines sign
   balance_after:  integer        -- running balance post-entry; enables point-in-time audit
-  description:   string         -- "authorization hold", "capture settlement", "refund"
+  description:    string         -- "authorization hold", "capture settlement", "refund"
   created_at:     timestamp
 }
 
@@ -160,6 +161,7 @@ graph TB
     class DB,Redis store
     class Queue,Webhook async
     class PSPs ext
+    class Web,Mobile edge
 ```
 
 #### FR1: Create a payment intent
@@ -412,7 +414,7 @@ FOR EACH ROW
 EXECUTE FUNCTION verify_batch_balance();
 ```
 
-```mermaid
+```plain text
 verify_batch_balance():
   SELECT batch_id,
          SUM(amount) FILTER (WHERE side = 'debit')  AS debits,
@@ -458,7 +460,7 @@ Rationale: The ledger is the system of record for money. A bug that violates the
 
 **Approach 1: Row-by-row matching with tolerance**
 
-```mermaid
+```plain text
 Reconciliation loop (runs hourly):
   report = fetch_settlement_report(psp, date_from, date_to)
   FOR EACH row IN report:
@@ -502,18 +504,7 @@ Rationale: At 1M payments/day, 99.9% of hourly settlement windows have zero disc
 - Duplicate settlement reports: The reconciliation worker is idempotent — it skips PSP rows already matched to a reconciled intent.
 - Orphan PSP references: A psp_reference with no matching PaymentIntent means the PSP collected money the system doesn't know about. This is a critical alert.
 
-## 7. Trade-offs
-
-| **Decision** | **Rejected** | **Why** |
-|---|---|---|
-| Idempotency via PSP-forwarded key + Redis cache | Database unique constraint alone | The PSP is outside the transactional boundary; a unique constraint on idempotency_key can't prevent a double charge if the first attempt reached the PSP before crashing. |
-| Polling outbox for async PSP calls | CDC with Kafka + Debezium | At 120 peak writes/sec, a 1-second poll interval on Postgres produces negligible load. Kafka adds two distributed systems whose operational cost exceeds the latency benefit until throughput grows 100x. |
-| Constraint-enforced ledger batches | Application-level pairing discipline | A bug in any code path can silently violate the zero-sum invariant. A database trigger covers all paths, present and future. |
-| Two-pass reconciliation (hash gate -> row-by-row) | Row-by-row on every window | 99.9% of settlement windows are clean. A hash gate completes in milliseconds vs a full scan; the detailed pass only runs on the ~0.1% of periods with mismatches. |
-| Redis for idempotency cache | Postgres UNLOGGED table | Redis gives sub-millisecond SET NX with built-in TTL eviction. A Postgres unlogged table requires manual TTL cleanup jobs. |
-| PSP adapter per provider | Unified PSP abstraction | Every PSP has different idempotency semantics. A unified abstraction either leaks PSP-specific concepts or forces a lowest-common-denominator. |
-
-## 8. References
+## 7. References
 
 1. [Stripe — Designing robust and predictable APIs with idempotency](https://stripe.com/blog/idempotency)
 1. [Stripe — Growing your Stripe integration with Event Destinations](https://stripe.dev/blog/growing-your-stripe-integration-with-event-destinations)

@@ -2,12 +2,12 @@
 layout: post
 title: "System Design: Bitly"
 date: 2026-06-29
-tags: [System Design, Distributed Systems, URL Shortener, Caching, Analytics]
-description: "How Bitly serves 360 million clicks per day at 200K redirects/second with a 4-layer cache pyramid, ZooKeeper range allocation for 7-character codes, and a fire-and-forget analytics pipeline — a deep dive into the system design of the internet's URL shortener."
+tags: [System Design]
+description: "Bitly turns long URLs into short ones and tracks every click. It looks simple — take a URL, generate a 7-character code, store the mapping, redirect on lookup. But the real challenge is analytics: every redirect must record an event without slowing the redirect."
 thumbnail: /images/posts/2026-06-29-system-design-bitly.svg
 ---
 
-How Bitly serves 360 million clicks per day at 200K redirects/second with a 4-layer cache pyramid, ZooKeeper range allocation for 7-character codes, and a fire-and-forget analytics pipeline — a deep dive into the system design of the internet's URL shortener.
+Bitly turns long URLs into short ones and tracks every click. It looks simple — take a URL, generate a 7-character code, store the mapping, redirect on lookup. But the real challenge is analytics: every redirect must record an event without slowing the redirect.
 
 <!--more-->
 
@@ -63,7 +63,7 @@ graph LR
 - `6M writes/day ÷ 86,400s` → ~70 creates/s → write path is low-pressure; the ID generator is the only coordination point worth optimizing
 - `40B links × ~650 bytes/link` → ~26TB of row data → any single-node DB is out
 
-## 4. Entities & API
+## 4. Entities
 
 ```
 URL {
@@ -161,99 +161,81 @@ graph TB
 
 #### FR1: Create Short URL
 
-**Components:** API Gateway, Create Service, ID Generator (ZooKeeper-backed range allocator), Threat Detection Service, Bigtable, Redis.
-
-**Flow:**
-
-1. Client `POST /api/urls` with `{long_url, custom_alias?, expires_at?}`
-2. Gateway rate-limits by API key; rejects if over quota (`429`)
-3. Create Service canonicalizes the long URL (lowercase scheme+host, strip default ports, remove fragment)
-4. On `custom_alias`: check collision via `INSERT IF NOT EXISTS` on Bigtable; on conflict return `409`
-5. On auto-generation: call ID Generator → base62-encode the 64-bit counter value → 7-char `short_code`
-6. Write `(short_code, long_url, expires_at, user_id, safety=pending)` to Bigtable
-7. Warm Redis: `SET url:{short_code} {long_url} EX 86400`
-8. Publish scan request to Crawler (async, non-blocking): Crawler fetches destination → TDS + Google Web Risk assess → Abuse API writes `safety_status`
-9. Return `200 {short_url: "https://bit.ly/aBcDeFg", safety_status: "pending"}`
-
-**Design consideration:** The ID Generator claims ranges of 1,000 IDs from ZooKeeper via atomic compareAndSet on a persistent counter node. Each Create Service instance burns through its range in-process with zero network calls on the hot path. At ~70 creates/sec, a single range lasts ~14 seconds. When 20% remains, the instance asynchronously fetches the next block. This collapses coordination traffic by 1,000× versus per-request counter increments. ZooKeeper itself handles ~10K ops/sec easily — well above what even a fleet of 100 create instances needs.
+- **Components:** API Gateway, Create Service, ID Generator (ZooKeeper-backed range allocator), Threat Detection Service, Bigtable, Redis.
+- **Flow:**
+  1. Client `POST /api/urls` with `{long_url, custom_alias?, expires_at?}`
+  1. Gateway rate-limits by API key; rejects if over quota (`429`)
+  1. Create Service canonicalizes the long URL (lowercase scheme+host, strip default ports, remove fragment)
+  1. On `custom_alias`: check collision via `INSERT IF NOT EXISTS` on Bigtable; on conflict return `409`
+  1. On auto-generation: call ID Generator → base62-encode the 64-bit counter value → 7-char `short_code`
+  1. Write `(short_code, long_url, expires_at, user_id, safety=pending)` to Bigtable
+  1. Warm Redis: `SET url:{short_code} {long_url} EX 86400`
+  1. Publish scan request to Crawler (async, non-blocking): Crawler fetches destination → TDS + Google Web Risk assess → Abuse API writes `safety_status`
+  1. Return `200 {short_url: "https://bit.ly/aBcDeFg", safety_status: "pending"}`
+- **Design consideration:** The ID Generator claims ranges of 1,000 IDs from ZooKeeper via atomic compareAndSet on a persistent counter node. Each Create Service instance burns through its range in-process with zero network calls on the hot path. At ~70 creates/sec, a single range lasts ~14 seconds. When 20% remains, the instance asynchronously fetches the next block. This collapses coordination traffic by 1,000× versus per-request counter increments. ZooKeeper itself handles ~10K ops/sec easily — well above what even a fleet of 100 create instances needs.
 
 #### FR2: Redirect Short URL
 
-**Components:** CDN Edge (Cloudflare/CloudFront), Load Balancer, Redirect Service, in-process LRU, Redis Cluster, Bigtable.
-
-**Flow:**
-
-1. User clicks `bit.ly/aBcDeFg` → the browser first checks its own HTTP cache (a prior `301` with `max-age=90`); on hit → reuses the redirect with zero network call
-2. On browser-cache miss → DNS resolves to the nearest CDN PoP, which terminates TLS and routes the request — `private` means the PoP does not cache the redirect, so every distinct client reaches origin at least once per 90s window
-3. CDN forwards to the origin Load Balancer → any Redirect Service instance
-4. Redirect Service checks in-process LRU (`map[short_code]url_cache`); on hit → `301`
-5. On LRU miss → query Redis: `GET url:aBcDeFg`; on hit → populate LRU + `301`
-6. On Redis miss → query Bigtable by partition key `short_code`; check `expires_at`; return `301` or `410 Gone`
-7. Populate Redis (`SET url:aBcDeFg {long_url} EX 86400`) and LRU
-8. Respond `HTTP 301 Moved Permanently` + `Location: {long_url}` + `Cache-Control: private, max-age=90`
-9. Async fire: publish `{short_code, timestamp, referrer, user_agent}` to NSQ topic `url.clicks`
-
-**Design consideration:** `301 + max-age=90` is Bitly's production choice over the more commonly cited `302`. A bare `302` gives perfect analytics fidelity — every click hits origin — but at 200K req/s peak, that's 200K origin hits per second that could have been absorbed by the browser. `301` tells the browser "this redirect is stable, cache it for 90 seconds." The first click in a 90s window hits origin; subsequent clicks from the same client are served from browser cache. The tradeoff: analytics for a link that's clicked 10 times in 90 seconds might show 1 click instead of 10. For a system where the core metric is unique reach rather than per-click billing, 90 seconds of lag is acceptable. The `private` directive stops shared caches — CDN PoPs, corporate proxies, ISP caches — from storing the redirect, so every distinct user still hits origin at least once per window and analytics stay user-scoped.
+- **Components:** CDN Edge (Cloudflare/CloudFront), Load Balancer, Redirect Service, in-process LRU, Redis Cluster, Bigtable.
+- **Flow:**
+  1. User clicks `bit.ly/aBcDeFg` → the browser first checks its own HTTP cache (a prior `301` with `max-age=90`); on hit → reuses the redirect with zero network call
+  1. On browser-cache miss → DNS resolves to the nearest CDN PoP, which terminates TLS and routes the request — `private` means the PoP does not cache the redirect, so every distinct client reaches origin at least once per 90s window
+  1. CDN forwards to the origin Load Balancer → any Redirect Service instance
+  1. Redirect Service checks in-process LRU (`map[short_code]url_cache`); on hit → `301`
+  1. On LRU miss → query Redis: `GET url:aBcDeFg`; on hit → populate LRU + `301`
+  1. On Redis miss → query Bigtable by partition key `short_code`; check `expires_at`; return `301` or `410 Gone`
+  1. Populate Redis (`SET url:aBcDeFg {long_url} EX 86400`) and LRU
+  1. Respond `HTTP 301 Moved Permanently` + `Location: {long_url}` + `Cache-Control: private, max-age=90`
+  1. Async fire: publish `{short_code, timestamp, referrer, user_agent}` to NSQ topic `url.clicks`
+- **Design consideration:** `301 + max-age=90` is Bitly's production choice over the more commonly cited `302`. A bare `302` gives perfect analytics fidelity — every click hits origin — but at 200K req/s peak, that's 200K origin hits per second that could have been absorbed by the browser. `301` tells the browser "this redirect is stable, cache it for 90 seconds." The first click in a 90s window hits origin; subsequent clicks from the same client are served from browser cache. The tradeoff: analytics for a link that's clicked 10 times in 90 seconds might show 1 click instead of 10. For a system where the core metric is unique reach rather than per-click billing, 90 seconds of lag is acceptable. The `private` directive stops shared caches — CDN PoPs, corporate proxies, ISP caches — from storing the redirect, so every distinct user still hits origin at least once per window and analytics stay user-scoped.
 
 #### FR3: Click Analytics
 
-**Components:** NSQ, Flink streaming, ClickHouse, Analytics API.
-
-**Flow:**
-
-1. Redirect Service publishes click event to NSQ topic `url.clicks` — fire-and-forget, zero blocking
-2. Flink consumer enriches events (geo-IP lookup, device parser, bot detection filter)
-3. Flink aggregates into 5-second microbatches: `COUNT(*) GROUP BY short_code, hour_bucket, country, referrer_domain`
-4. Upsert rollups into ClickHouse `click_rollups` table (MergeTree, partitioned by `toYYYYMM(date)`)
-5. Analytics API (`GET /api/urls/{short_code}/stats`) queries pre-aggregated rollups — `SELECT sum(clicks) WHERE short_code = ? AND hour BETWEEN ? AND ?` — O(log n) on sorted index, no full scan
-6. Raw events also archived to S3/GCS via separate NSQ channel for long-term cold storage
-
-**Design consideration:** The split between real-time rollups and raw archive is essential. ClickHouse runs on a small number of nodes because it only stores aggregated data — ~10MB/day at current scale — while the raw event stream (360M events/day × ~200 bytes = ~72GB/day uncompressed) goes straight to cheap object storage. The Flink job is tuned to drop bot traffic (HEAD requests, known crawler UAs, empty referrers from direct URL entry) before aggregation, cutting volume by ~30-40% before hitting ClickHouse. Old data ages out of ClickHouse after 90 days; queries beyond that window fall back to a slower Athena/Presto scan over the raw archives.
+- **Components:** NSQ, Flink streaming, ClickHouse, Analytics API.
+- **Flow:**
+  1. Redirect Service publishes click event to NSQ topic `url.clicks` — fire-and-forget, zero blocking
+  1. Flink consumer enriches events (geo-IP lookup, device parser, bot detection filter)
+  1. Flink aggregates into 5-second microbatches: `COUNT(*) GROUP BY short_code, hour_bucket, country, referrer_domain`
+  1. Upsert rollups into ClickHouse `click_rollups` table (MergeTree, partitioned by `toYYYYMM(date)`)
+  1. Analytics API (`GET /api/urls/{short_code}/stats`) queries pre-aggregated rollups — `SELECT sum(clicks) WHERE short_code = ? AND hour BETWEEN ? AND ?` — O(log n) on sorted index, no full scan
+  1. Raw events also archived to S3/GCS via separate NSQ channel for long-term cold storage
+- **Design consideration:** The split between real-time rollups and raw archive is essential. ClickHouse runs on a small number of nodes because it only stores aggregated data — ~10MB/day at current scale — while the raw event stream (360M events/day × ~200 bytes = ~72GB/day uncompressed) goes straight to cheap object storage. The Flink job is tuned to drop bot traffic (HEAD requests, known crawler UAs, empty referrers from direct URL entry) before aggregation, cutting volume by ~30-40% before hitting ClickHouse. Old data ages out of ClickHouse after 90 days; queries beyond that window fall back to a slower Athena/Presto scan over the raw archives.
 
 #### FR4: Custom Aliases
 
-**Components:** Create Service, Bigtable conditional write, Bloom filter.
-
-**Flow:**
-
-1. Client includes `custom_alias: "my-brand"` in `POST /api/urls`
-2. Create Service normalizes alias (lowercase, strip non-base62 chars)
-3. Check Bloom filter for likely absence — negative guarantees no collision, positive requires DB check
-4. `INSERT INTO urls (short_code, ...) IF NOT EXISTS` — Bigtable conditional mutation; appends `#collision` atomically
-5. On collision → `409 Conflict {existing: {short_url, created_at}}`
-6. On success → same write+cache flow as FR1
-
-**Design consideration:** Custom aliases share the same `short_code` namespace as auto-generated codes. Sub-4-character aliases are reserved for paid tiers — enforced at the API Gateway by checking alias length against the authenticated account's tier. The Bloom filter sits in each Create Service's memory (~10MB for 10M custom aliases at 1% false-positive rate) and absorbs ~99% of collision checks without a DB round-trip. When the Bloom filter returns positive, the conditional write is the source of truth.
+- **Components:** Create Service, Bigtable conditional write, Bloom filter.
+- **Flow:**
+  1. Client includes `custom_alias: "my-brand"` in `POST /api/urls`
+  1. Create Service normalizes alias (lowercase, strip non-base62 chars)
+  1. Check Bloom filter for likely absence — negative guarantees no collision, positive requires DB check
+  1. `INSERT INTO urls (short_code, ...) IF NOT EXISTS` — Bigtable conditional mutation; appends `#collision` atomically
+  1. On collision → `409 Conflict {existing: {short_url, created_at}}`
+  1. On success → same write+cache flow as FR1
+- **Design consideration:** Custom aliases share the same `short_code` namespace as auto-generated codes. Sub-4-character aliases are reserved for paid tiers — enforced at the API Gateway by checking alias length against the authenticated account's tier. The Bloom filter sits in each Create Service's memory (~10MB for 10M custom aliases at 1% false-positive rate) and absorbs ~99% of collision checks without a DB round-trip. When the Bloom filter returns positive, the conditional write is the source of truth.
 
 #### FR5: URL Expiration
 
-**Components:** Bigtable TTL, Redirect Service expiration check, background sweeper.
-
-**Flow:**
-
-1. On create: `expires_at` stored in the URL row
-2. On redirect: Redirect Service checks `expires_at` against `now()` at every cache-miss DB read; returns `410 Gone` if expired, and publishes a tombstone to Redis (`DEL url:{short_code}`)
-3. Bigtable column-family TTL configured to auto-GC rows whose `expires_at` is in the past — no sweeper needed
-4. A browser's `max-age=90` means its cached `301` self-expires within 90s of a link expiring; `private` keeps the redirect out of shared/CDN caches, so there's no edge cache to purge
-
-**Design consideration:** The only sharp edge is the race between `max-age=90` and `expires_at`. If a link expires at T+0 and a client cached the `301` at T-89, that browser keeps following it until T+1. The 90s window is small enough that no purge is needed — and `private` keeps the redirect out of shared/CDN caches, so there's no edge cache to invalidate. For systems without Bigtable's native TTL, a background sweeper queries `WHERE expires_at < now() LIMIT 1000` every 60 seconds — the same pattern Bitly ran on MySQL before the Bigtable migration.
+- **Components:** Bigtable TTL, Redirect Service expiration check, background sweeper.
+- **Flow:**
+  1. On create: `expires_at` stored in the URL row
+  1. On redirect: Redirect Service checks `expires_at` against `now()` at every cache-miss DB read; returns `410 Gone` if expired, and publishes a tombstone to Redis (`DEL url:{short_code}`)
+  1. Bigtable column-family TTL configured to auto-GC rows whose `expires_at` is in the past — no sweeper needed
+  1. A browser's `max-age=90` means its cached `301` self-expires within 90s of a link expiring; `private` keeps the redirect out of shared/CDN caches, so there's no edge cache to purge
+- **Design consideration:** The only sharp edge is the race between `max-age=90` and `expires_at`. If a link expires at T+0 and a client cached the `301` at T-89, that browser keeps following it until T+1. The 90s window is small enough that no purge is needed — and `private` keeps the redirect out of shared/CDN caches, so there's no edge cache to invalidate. For systems without Bigtable's native TTL, a background sweeper queries `WHERE expires_at < now() LIMIT 1000` every 60 seconds — the same pattern Bitly ran on MySQL before the Bigtable migration.
 
 #### FR6: Safety Warnings
 
-**Components:** Crawler, Threat Detection Service (TDS), Google Web Risk, Abuse API.
-
-**Flow:**
-
-1. On URL creation: Crawler is awakened async (see FR1 step 8) → fetches destination page, extracts title/headers/scripts
-2. TDS runs internal ML classifier + heuristic rules (domain age, redirect chains, known phishing patterns)
-3. Google Web Risk is queried in parallel — checks against 1M+ known unsafe URLs
-4. Abuse API aggregates scores from TDS, Google Web Risk, and trusted partner feeds into a single `safety_status: clean | warn | blocked`
-5. On redirect: Abuse API check at the Redirect Service level — `GET abuse:{short_code}` from a dedicated Redis cache (5-min TTL)
-6. `clean` → normal 301 redirect
-7. `warn` → interstitial page: "This link may be unsafe. \[Proceed anyway\] \[Go back\]"
-8. `blocked` → interstitial page with no destination revealed (destination itself is dangerous, e.g. auto-downloading malware)
-
-**Design consideration:** The Abuse API is consulted on every redirect but served from a small Redis instance — the key space is only the subset of URLs flagged as non-clean, and the TDS Google Web Risk pipeline processes URLs asynchronously within ~500ms of creation. The abuse check adds <1ms (local Redis read) to the redirect hot path. False positives are calibrated aggressively toward `warn` rather than `blocked` because an interstitial with a "proceed anyway" escape hatch is annoying but survivable; a false `blocked` kills a legitimate link entirely.
+- **Components:** Crawler, Threat Detection Service (TDS), Google Web Risk, Abuse API.
+- **Flow:**
+  1. On URL creation: Crawler is awakened async (see FR1 step 8) → fetches destination page, extracts title/headers/scripts
+  1. TDS runs internal ML classifier + heuristic rules (domain age, redirect chains, known phishing patterns)
+  1. Google Web Risk is queried in parallel — checks against 1M+ known unsafe URLs
+  1. Abuse API aggregates scores from TDS, Google Web Risk, and trusted partner feeds into a single `safety_status: clean | warn | blocked`
+  1. On redirect: Abuse API check at the Redirect Service level — `GET abuse:{short_code}` from a dedicated Redis cache (5-min TTL)
+  1. `clean` → normal 301 redirect
+  1. `warn` → interstitial page: "This link may be unsafe. [Proceed anyway] [Go back]"
+  1. `blocked` → interstitial page with no destination revealed (destination itself is dangerous, e.g. auto-downloading malware)
+- **Design consideration:** The Abuse API is consulted on every redirect but served from a small Redis instance — the key space is only the subset of URLs flagged as non-clean, and the TDS Google Web Risk pipeline processes URLs asynchronously within ~500ms of creation. The abuse check adds <1ms (local Redis read) to the redirect hot path. False positives are calibrated aggressively toward `warn` rather than `blocked` because an interstitial with a "proceed anyway" escape hatch is annoying but survivable; a false `blocked` kills a legitimate link entirely.
 
 ## 6. Deep dives
 
@@ -277,7 +259,7 @@ INCRBY url_counter 1000   → returns 5001
 
 **Approach 2: Snowflake-style 64-bit IDs**
 
-No central coordinator. Every instance generates IDs locally: 41 bits of millisecond timestamp + 10 bits of machine ID + 12 bits of sequence number. Guaranteed unique within the same millisecond on the same machine. This is what Twitter [t.co](http://t.co) uses.
+No central coordinator. Every instance generates IDs locally: 41 bits of millisecond timestamp + 10 bits of machine ID + 12 bits of sequence number. Guaranteed unique within the same millisecond on the same machine. This is what Twitter [t.co](http://t.co/) uses.
 
 ```javascript
 Snowflake ID (64 bits):
@@ -285,7 +267,7 @@ Snowflake ID (64 bits):
 = base62 → 11 characters (64 ÷ log₂(62) ≈ 10.7)
 ```
 
-**Challenges:** Base62-encoding a 64-bit integer produces 11 characters, not 7. For Twitter [t.co](http://t.co), this doesn't matter — every tweet link is auto-wrapped and the user never sees the short code. For Bitly, 7-character codes are the product. You could truncate, but then you're back to collision territory: a 42-bit truncated snowflake at 40B records has a birthday-paradox collision probability of ~90%.
+**Challenges:** Base62-encoding a 64-bit integer produces 11 characters, not 7. For Twitter [t.co](http://t.co/), this doesn't matter — every tweet link is auto-wrapped and the user never sees the short code. For Bitly, 7-character codes are the product. You could truncate, but then you're back to collision territory: a 42-bit truncated snowflake at 40B records has a birthday-paradox collision probability of ~90%.
 
 **Edge case:** Clock skew. If an instance's clock jumps backward (NTP step), it can produce duplicate IDs. Snowflake handles this by blocking until the clock catches up (`spinwait`), which kills throughput temporarily on that instance.
 
@@ -513,29 +495,14 @@ On create:
 
 **Rationale:** Bitly's Trust & Safety team runs Google Web Risk + internal TDS at "remarkably low" false positive rates on millions of URLs per day. The key design choice: the Abuse API result is checked on redirect (hot path) from a dedicated Redis cache with 5-min TTL, so the check adds <1ms. The expensive work — crawling, ML classification, Web Risk API — happens async and never blocks a redirect or a create response.
 
-## 7. Trade-offs
-
-| Decision | What we chose | What we rejected | Why |
-|---|---|---|---|
-| Redirect HTTP status | `301 + Cache-Control: private, max-age=90` | `302` (no caching, perfect analytics) | 90s browser cache cuts origin traffic ~50% at acceptable analytics lag; `private` prevents proxy caching so analytics remain user-scoped |
-| ID generation | ZooKeeper range allocation | Snowflake (11-char codes), pure Redis counter (SPOF) | Produces 7-char codes; 1 ZK call per 1,000 IDs; ZK already operated for service discovery |
-| Cache architecture | 4-layer pyramid: browser → LRU → Redis → Bigtable | Single Redis layer (hot key saturation) | Each layer absorbs a fraction of misses; L1 LRU costs ~200KB per server and catches repeat-click bursts |
-| Analytics | Flink microbatch → ClickHouse rollups | Synchronous DB counter updates (write contention), raw event query scans (too slow at 360M/day) | Pre-aggregation shrinks 72GB/day raw to 10MB/day rollups; dashboard queries hit <10 rows |
-| Message queue | NSQ (no centralized broker) | Kafka (heavier ops, ZK dependency at the time) | NSQ is what Bitly built and runs; single binary, no runtime deps, Go-native; at-least-once is fine for analytics |
-| Primary store | Bigtable (wide-column, partition-per-code) | MySQL (manual sharding burnout at 80B rows) | Sub-10ms reads, native TTL, 99.999% SLA; MySQL sharding and backup took nearly a full day at 80B rows |
-| Abuse detection | Async TDS + Google Web Risk → Redis cache on redirect path | Synchronous scan on create (adds latency), CAPTCHA on API (user-hostile) | Async crawl costs nothing on the hot path; cached abuse verdict adds <1ms per redirect |
-
-## 8. References
-
-### Primary sources
+## 7. References
 
 1. [Bitly Migrates Link Data from MySQL to Bigtable (Google Cloud Blog, 2023)](https://cloud.google.com/blog/products/databases/bitly-migrates-link-data-from-mysql-to-bigtable-for-scalability)
-2. [Why We Write Everything in Go (Bitly Engineering Blog, 2023)](https://bitly.com/blog/why-we-write-everything-in-go/)
-3. [Bitly Lessons Learned: Building a Distributed System (High Scalability, 2014)](https://highscalability.com/bitly-lessons-learned-building-a-distributed-system-that-han/)
-4. [Clickatron: Bitly's Real-Time Metrics System (Bitly Engineering, 2012)](https://word.bitly.com/post/21721687297/clickatron)
-5. [Spray Some NSQ On It (Bitly Engineering, 2013)](https://word.bitly.com/post/38385370762/spray-some-nsq-on-it)
-6. [NSQ Official Documentation](https://nsq.io/)
-7. [Bitly Trust & Safety: Abuse System Deep Dive](https://bitly.com/blog/trust-safety-abuse-system/)
-8. [Bitly + Google Web Risk: Real-Time Link Safety (Google Cloud Case Study)](https://cloud.google.com/blog/topics/partners/bitly-ensuring-real-time-link-safety-with-web-risk-to-protect-people)
-9. [Twitter Snowflake: Announcing Unique ID Generation (Twitter Engineering, 2010)](https://blog.twitter.com/engineering/en_us/a/2010/announcing-snowflake)
-10. [URL Shortener System Design (CrackingWalnuts, 2026)](https://crackingwalnuts.com/post/url-shortener-system-design)
+1. [Why We Write Everything in Go (Bitly Engineering Blog, 2023)](https://bitly.com/blog/why-we-write-everything-in-go/)
+1. [Bitly Lessons Learned: Building a Distributed System (High Scalability, 2014)](https://highscalability.com/bitly-lessons-learned-building-a-distributed-system-that-han/)
+1. [Clickatron: Bitly's Real-Time Metrics System (Bitly Engineering, 2012)](https://word.bitly.com/post/21721687297/clickatron)
+1. [Spray Some NSQ On It (Bitly Engineering, 2013)](https://word.bitly.com/post/38385370762/spray-some-nsq-on-it)
+1. [NSQ Official Documentation](https://nsq.io/)
+1. [Bitly Trust & Safety: Abuse System Deep Dive](https://bitly.com/blog/trust-safety-abuse-system/)
+1. [Bitly + Google Web Risk: Real-Time Link Safety (Google Cloud Case Study)](https://cloud.google.com/blog/topics/partners/bitly-ensuring-real-time-link-safety-with-web-risk-to-protect-people)
+1. [Twitter Snowflake: Announcing Unique ID Generation (Twitter Engineering, 2010)](https://blog.twitter.com/engineering/en_us/a/2010/announcing-snowflake)

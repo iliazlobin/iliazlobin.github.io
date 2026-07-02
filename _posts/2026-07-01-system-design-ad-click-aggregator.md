@@ -1,13 +1,13 @@
 ---
 layout: post
-thumbnail: /images/posts/2026-07-01-system-design-ad-click-aggregator.svg
 title: "System Design: Ad Click Aggregator"
 date: 2026-07-01
-tags: [System Design, Data Engineering, Analytics]
-description: "An ad platform processes clicks from millions of users across thousands of publisher sites. Advertisers need near-real-time visibility into campaign performance — clicks per ad, minute by minute, s..."
+tags: [System Design]
+description: "An ad platform processes clicks from millions of users across thousands of publisher sites."
+thumbnail: /images/posts/2026-07-01-system-design-ad-click-aggregator.svg
 ---
 
-An ad platform processes clicks from millions of users across thousands of publisher sites. Advertisers need near-real-time visibility into campaign performance — clicks per ad, minute by minute, sliced by geography and device — so they can adjust bids, pause underperforming creatives, and enforce daily budgets. At ~200K clicks/sec peak (~10B clicks/day), the system must ingest, deduplicate, aggregate, and serve queries under one minute of freshness while maintaining exactly-once financial accuracy for billing. Fraud is pervasive: a significant fraction of clicks are bots, click farms, or accidental double-taps that must be filtered before they inflate advertiser bills.
+An ad platform processes clicks from millions of users across thousands of publisher sites.
 
 <!--more-->
 
@@ -25,6 +25,15 @@ graph LR
     F -->|verdicts| C
     C -.->|raw archive| G[Data Lake<br/>Iceberg on S3]
     G -.->|reconciliation| E
+
+    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
+    classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a
+    class A,B edge
+    class F svc
+    class E,G store
+    class C,D async
 ```
 
 ## 2. Requirements
@@ -91,7 +100,7 @@ campaign_budget {
 }
 ```
 
-## API
+### API
 
 - `POST /click` — record a click event; redirects browser to landing page URL. Request body: `click_id`, `ad_id`, `impression_id`, `timestamp`, `user_id`, `geo`. Returns `302 Found` with `Location` header.
 - `GET /metrics?campaign_id={id}&start={ts}&end={ts}&geo={cc}&device={type}&granularity={1m|1h|1d}` — aggregated click counts with dimension filters. Returns array of `{minute, clicks}`.
@@ -152,87 +161,71 @@ graph TB
     class DEDUP,AGG,FRAUD process
     class REDIS,OLAP serve
     class LAKE,SPARK batch
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    class Ingest svc
 ```
 
 #### FR1: Click tracking and redirect
 
-**Components:** `Client Browser → Load Balancer → Click API → Kafka`
-
-**Flow:**
-
-1. Browser sends `POST /click` with `{click_id, ad_id, timestamp, ...}` to the Click API.
-1. API validates HMAC signature on `click_id` (prevents spoofed events) and rejects malformed payloads with `400`.
-1. API produces the event to `raw-clicks` Kafka topic, keyed by `ad_id`. Messages use `acks=all` and `enable.idempotence=true`.
-1. API returns `302 Found` with landing page URL in `Location` header — browser follows redirect immediately; click tracking completes in background.
-
-**Design consideration:** Server-side redirect adds one network hop (~50ms intra-region) but guarantees every click is tracked. Client-side redirect (browser POSTs tracking pixel in parallel) is faster but ~2-5% of clicks are lost to ad blockers and connection drops on mobile. For billing-grade accuracy, server-side redirect is the safe default. The API layer is stateless — any instance can handle any request — so horizontal scaling behind a round-robin load balancer is straightforward.
+- **Components:** `Client Browser → Load Balancer → Click API → Kafka`
+- **Flow:**
+  1. Browser sends `POST /click` with `{click_id, ad_id, timestamp, ...}` to the Click API.
+  1. API validates HMAC signature on `click_id` (prevents spoofed events) and rejects malformed payloads with `400`.
+  1. API produces the event to `raw-clicks` Kafka topic, keyed by `ad_id`. Messages use `acks=all` and `enable.idempotence=true`.
+  1. API returns `302 Found` with landing page URL in `Location` header — browser follows redirect immediately; click tracking completes in background.
+- **Design consideration:** Server-side redirect adds one network hop (~50ms intra-region) but guarantees every click is tracked. Client-side redirect (browser POSTs tracking pixel in parallel) is faster but ~2-5% of clicks are lost to ad blockers and connection drops on mobile. For billing-grade accuracy, server-side redirect is the safe default. The API layer is stateless — any instance can handle any request — so horizontal scaling behind a round-robin load balancer is straightforward.
 
 #### FR2: Aggregate clicks per ad per minute
 
-**Components:** `Kafka → Flink Dedup Job → Flink Aggregation Job → Redis + OLAP`
-
-**Flow:**
-
-1. Flink Dedup Job consumes `raw-clicks`, keyed by `ad_id`. For each event, it checks a local RocksDB-backed Bloom filter (keyed on `click_id`, TTL 5 minutes).
-1. If `click_id` is already in the filter, the event is a duplicate — drop it. Otherwise, insert into filter and forward to the aggregation downstream.
-1. Flink Aggregation Job applies a 60-second tumbling window on event time. Each window emits per-`ad_id` counts.
-1. Window results are written to Redis (key: `ad:{id}:minute:{ts}`, value: count, TTL 120s) for sub-millisecond dashboard reads, and to the OLAP store for persistent querying.
-1. Watermark advances at `max_event_time - 30s`. Events arriving after their window closes are routed to a side-output for late-event reconciliation, not dropped.
-
-**Design consideration:** RocksDB state in Flink grows with the product of unique `click_id`s in the dedup window × partition count. At 200K events/sec, a 5-minute dedup window contains ~60M unique IDs. With Bloom filter at 1% false-positive rate (~10 bits per entry), that's ~75 MB per Flink task manager — easily fits in memory.
+- **Components:** `Kafka → Flink Dedup Job → Flink Aggregation Job → Redis + OLAP`
+- **Flow:**
+  1. Flink Dedup Job consumes `raw-clicks`, keyed by `ad_id`. For each event, it checks a local RocksDB-backed Bloom filter (keyed on `click_id`, TTL 5 minutes).
+  1. If `click_id` is already in the filter, the event is a duplicate — drop it. Otherwise, insert into filter and forward to the aggregation downstream.
+  1. Flink Aggregation Job applies a 60-second tumbling window on event time. Each window emits per-`ad_id` counts.
+  1. Window results are written to Redis (key: `ad:{id}:minute:{ts}`, value: count, TTL 120s) for sub-millisecond dashboard reads, and to the OLAP store for persistent querying.
+  1. Watermark advances at `max_event_time - 30s`. Events arriving after their window closes are routed to a side-output for late-event reconciliation, not dropped.
+- **Design consideration:** RocksDB state in Flink grows with the product of unique `click_id`s in the dedup window × partition count. At 200K events/sec, a 5-minute dedup window contains ~60M unique IDs. With Bloom filter at 1% false-positive rate (~10 bits per entry), that's ~75 MB per Flink task manager — easily fits in memory.
 
 #### FR3: Query metrics with multi-dimensional filtering
 
-**Components:** `OLAP (Druid/ClickHouse) → Query API`
-
-**Flow:**
-
-1. Advertiser dashboard calls `GET /metrics?campaign_id=42&start=...&end=...&geo=US&device=mobile`.
-1. Query API rewrites the request into a range scan on the `click_aggregates` table, filtering on the partition key `(ad_id)` and the dimension columns `(geo, device_type)`.
-1. OLAP engine returns pre-aggregated rows. For time ranges spanning multiple granularities (e.g., 3 hours), the engine picks the coarsest available pre-aggregation — hourly rollups rather than scanning 180 minute buckets.
-1. If the time range includes the current incomplete minute, the Query API merges OLAP results (for completed minutes) with Redis real-time counters (for the current minute) before returning.
-
-**Design consideration:** Pre-aggregation at write time (Flink computes minute buckets before landing in OLAP) trades query flexibility for read speed. Advertisers seldom need arbitrary dimension combinations — the subset of `{geo, device, ad_id}` covers 95%+ of real queries. Maintaining pre-aggregated tables for all 2^3 = 8 dimension combinations costs ~8× storage but eliminates scan-time GROUP BY entirely, keeping P99 query latency under 50ms even at 10K QPS.
+- **Components:** `OLAP (Druid/ClickHouse) → Query API`
+- **Flow:**
+  1. Advertiser dashboard calls `GET /metrics?campaign_id=42&start=...&end=...&geo=US&device=mobile`.
+  1. Query API rewrites the request into a range scan on the `click_aggregates` table, filtering on the partition key `(ad_id)` and the dimension columns `(geo, device_type)`.
+  1. OLAP engine returns pre-aggregated rows. For time ranges spanning multiple granularities (e.g., 3 hours), the engine picks the coarsest available pre-aggregation — hourly rollups rather than scanning 180 minute buckets.
+  1. If the time range includes the current incomplete minute, the Query API merges OLAP results (for completed minutes) with Redis real-time counters (for the current minute) before returning.
+- **Design consideration:** Pre-aggregation at write time (Flink computes minute buckets before landing in OLAP) trades query flexibility for read speed. Advertisers seldom need arbitrary dimension combinations — the subset of `{geo, device, ad_id}` covers 95%+ of real queries. Maintaining pre-aggregated tables for all 2^3 = 8 dimension combinations costs ~8× storage but eliminates scan-time GROUP BY entirely, keeping P99 query latency under 50ms even at 10K QPS.
 
 #### FR4: Top-N popular ads
 
-**Components:** `Flink Top-N Job → Redis Sorted Set`
-
-**Flow:**
-
-1. A separate Flink job consumes the aggregated minute counts and maintains a sliding-window Top-100 per geo region.
-1. Internally, it uses Flink's `KeyedProcessFunction` with a min-heap of size N per key. Each new count updates the heap; the heap is emitted every 10 seconds.
-1. Results are written to a Redis Sorted Set: `ZADD top-ads:US:hour <clicks> <ad_id>`. The set is trimmed to N entries after each write.
-1. `GET /top-ads` reads directly from Redis — no OLAP query needed. The Sorted Set's `ZREVRANGE` returns the Top-N in O(log N + N).
-
-**Design consideration:** A dedicated Top-N Flink job is cleaner than querying the OLAP store at read time, which would require a windowed `ORDER BY clicks DESC LIMIT 100` scan across all ads — expensive at 10M+ active ads. The in-process heap approach keeps the hot path purely in Flink state and Redis, with sub-10ms read latency.
+- **Components:** `Flink Top-N Job → Redis Sorted Set`
+- **Flow:**
+  1. A separate Flink job consumes the aggregated minute counts and maintains a sliding-window Top-100 per geo region.
+  1. Internally, it uses Flink's `KeyedProcessFunction` with a min-heap of size N per key. Each new count updates the heap; the heap is emitted every 10 seconds.
+  1. Results are written to a Redis Sorted Set: `ZADD top-ads:US:hour <clicks> <ad_id>`. The set is trimmed to N entries after each write.
+  1. `GET /top-ads` reads directly from Redis — no OLAP query needed. The Sorted Set's `ZREVRANGE` returns the Top-N in O(log N + N).
+- **Design consideration:** A dedicated Top-N Flink job is cleaner than querying the OLAP store at read time, which would require a windowed `ORDER BY clicks DESC LIMIT 100` scan across all ads — expensive at 10M+ active ads. The in-process heap approach keeps the hot path purely in Flink state and Redis, with sub-10ms read latency.
 
 #### FR5: Fraud detection
 
-**Components:** `Kafka → Fraud Flink Job → Rules Engine → ML Model → Kafka (verdicts)`
-
-**Flow:**
-
-1. A parallel Flink job consumes `raw-clicks` — it does not block the main aggregation pipeline. Both jobs read from the same topic independently.
-1. Phase 1 (rules, <10ms): check IP blocklist, user-agent bot patterns, geo-impossible velocity (same user clicking from two continents in 5 seconds), click-to-impression time under 100ms (accidental double-tap proxy).
-1. Phase 2 (ML scoring, <100ms): extract feature vector from in-memory feature store (publisher CTR history, IP velocity, device fingerprint entropy) and score with a pre-loaded XGBoost model.
-1. Verdicts (`clean`, `bot`, `suspicious`) are written to `fraud-verdicts` Kafka topic, keyed by `click_id`.
-1. The Aggregation Job asynchronously joins fraud verdicts. Clean clicks are counted normally; bot clicks are dropped; suspicious clicks are flagged but not dropped (human review later). Budget pacing always uses clean-only counts.
-
-**Design consideration:** Fraud runs in parallel because the fraud pipeline's latency budget (~100ms for ML scoring) must not gate the <1-minute freshness target for dashboard metrics. Verdicts arrive asynchronously — the dashboard may briefly show clicks that a few seconds later are classified as bot and retroactively excluded. This is acceptable because dashboards are operational, not financial. Billing always runs against batch-reconciled, fraud-excluded counts.
+- **Components:** `Kafka → Fraud Flink Job → Rules Engine → ML Model → Kafka (verdicts)`
+- **Flow:**
+  1. A parallel Flink job consumes `raw-clicks` — it does not block the main aggregation pipeline. Both jobs read from the same topic independently.
+  1. Phase 1 (rules, <10ms): check IP blocklist, user-agent bot patterns, geo-impossible velocity (same user clicking from two continents in 5 seconds), click-to-impression time under 100ms (accidental double-tap proxy).
+  1. Phase 2 (ML scoring, <100ms): extract feature vector from in-memory feature store (publisher CTR history, IP velocity, device fingerprint entropy) and score with a pre-loaded XGBoost model.
+  1. Verdicts (`clean`, `bot`, `suspicious`) are written to `fraud-verdicts` Kafka topic, keyed by `click_id`.
+  1. The Aggregation Job asynchronously joins fraud verdicts. Clean clicks are counted normally; bot clicks are dropped; suspicious clicks are flagged but not dropped (human review later). Budget pacing always uses clean-only counts.
+- **Design consideration:** Fraud runs in parallel because the fraud pipeline's latency budget (~100ms for ML scoring) must not gate the <1-minute freshness target for dashboard metrics. Verdicts arrive asynchronously — the dashboard may briefly show clicks that a few seconds later are classified as bot and retroactively excluded. This is acceptable because dashboards are operational, not financial. Billing always runs against batch-reconciled, fraud-excluded counts.
 
 #### FR6: Budget pacing
 
-**Components:** `Flink Aggregation Job → Campaign Budget State (RocksDB) → Budget API`
-
-**Flow:**
-
-1. The Aggregation Job maintains per-campaign `spent_micros` in Flink keyed state (RocksDB).
-1. Each minute's clean click count is multiplied by the campaign's CPC bid to compute incremental spend. Spend is applied to the running counter.
-1. When `spent_micros` exceeds 80% of `daily_limit`, the job emits a pacing alert to a Kafka topic consumed by the ad serving system (out of scope for this design, but the signal is available).
-1. `GET /campaigns/{id}/budget` reads from a materialized view in the OLAP store, refreshed from Flink state every 10 seconds via a changelog stream.
-
-**Design consideration:** Budget state lives in Flink RocksDB rather than an external database because it needs transactional consistency with the click aggregation itself — a checkpoint that includes both the click count and the budget deduction is trivially atomic within a single Flink operator. Integer micros (e.g., $0.01 CPC = 10,000 micros) avoid the float accumulation errors that plagued early ad platforms running on MySQL `DECIMAL(10,4)` over billions of rows.
+- **Components:** `Flink Aggregation Job → Campaign Budget State (RocksDB) → Budget API`
+- **Flow:**
+  1. The Aggregation Job maintains per-campaign `spent_micros` in Flink keyed state (RocksDB).
+  1. Each minute's clean click count is multiplied by the campaign's CPC bid to compute incremental spend. Spend is applied to the running counter.
+  1. When `spent_micros` exceeds 80% of `daily_limit`, the job emits a pacing alert to a Kafka topic consumed by the ad serving system (out of scope for this design, but the signal is available).
+  1. `GET /campaigns/{id}/budget` reads from a materialized view in the OLAP store, refreshed from Flink state every 10 seconds via a changelog stream.
+- **Design consideration:** Budget state lives in Flink RocksDB rather than an external database because it needs transactional consistency with the click aggregation itself — a checkpoint that includes both the click count and the budget deduction is trivially atomic within a single Flink operator. Integer micros (e.g., $0.01 CPC = 10,000 micros) avoid the float accumulation errors that plagued early ad platforms running on MySQL `DECIMAL(10,4)` over billions of rows.
 
 ## 6. Deep dives
 
@@ -434,22 +427,7 @@ Late-event pipeline:   watermark 60min → corrects aggregates → dashboard sel
 - **Clock skew between client and server:** A user's device clock is set 5 minutes ahead. Events arrive with timestamps from the future, pushing the watermark forward artificially and closing windows prematurely. Mitigation: the Click API normalizes timestamps — if `event.timestamp > server_time + 60s`, the timestamp is clamped to `server_time`. The original timestamp is preserved in the raw event for audit.
 - **Zero-event partitions and idle watermarks:** A Kafka partition with no events produces no watermark advancement. If the Flink job's watermark is the minimum across all partitions, a single idle partition stalls the entire job. Mitigation: Flink's `withIdleness(Duration.ofSeconds(30))` marks a partition as idle after 30 seconds of inactivity, excluding it from the watermark calculation.
 
-## 7. Trade-offs
-
-| Decision | What we chose | What we rejected | Why |
-|---|---|---|---|
-| Architecture pattern | Kappa (streaming-only) with batch reconciliation | Lambda (parallel batch + stream codepaths) | Single codepath for daily operations; batch reconciliation is a nightly safety net, not a live path. A streaming-only architecture eliminates one of the two pipelines and the team that maintained it. |
-| Stream processor | Apache Flink | Kafka Streams, Spark Streaming | Flink's event-time watermarks, checkpoint-based exactly-once, and broadcast state for ML model distribution are purpose-built for this workload. Kafka Streams lacks broadcast state; Spark Streaming's micro-batch model adds 500ms+ latency per batch. |
-| OLAP engine | Apache Druid with Kafka indexing service | ClickHouse, Apache Pinot | Druid's native Kafka indexing service provides exactly-once ingestion without a separate connector; its segment-based architecture handles time-range queries with sub-50ms P99 at 10K QPS. ClickHouse's `ReplacingMergeTree` is close but requires manual dedup; Pinot's upsert compaction latency (~10s) conflicts with the <60s freshness target. |
-| Exactly-once approach | Kafka transactions + Flink checkpoints | At-least-once + daily reconciliation | Daily reconciliation alone means dashboard numbers change by 2-5% overnight — unacceptable for advertiser trust. Transactional exactly-once is 30-40% more overhead but gives correct numbers in real time. |
-| Hot shard fix | Salted key with in-stream hot-ad detection | Dynamic re-partitioning via control plane | In-stream detection is self-contained and reacts in milliseconds; a control plane adds a new failure mode and reaction latency. |
-| Fraud architecture | Inline rules (ingest) + async ML (Flink) | Synchronous fraud service at ingest | Fraud must never block click ingestion. Inline rules catch 70% of fraud with <1ms overhead; async ML handles the rest without gating the pipeline. |
-| Watermark policy | Fixed 30s watermark + 60s grace period | Adaptive per-source watermark | Per-source watermarks create a 10K-entry state space and couple pipeline internals to query semantics. Simplicity wins: 95% of events arrive within 30 seconds. |
-| Budget precision | Integer micros in Flink RocksDB | Float in external PostgreSQL | Integer math avoids float drift over billions of transactions. Flink state keeps budget updates transactional with click counting. |
-
-## 8. References
-
-**Primary sources**
+## 7. References
 
 1. [MillWheel: Fault-Tolerant Stream Processing at Internet Scale](https://research.google/pubs/millwheel-fault-tolerant-stream-processing-at-internet-scale/) — Akidau et al., VLDB 2013
 1. [Photon: Fault-tolerant and Scalable Joining of Continuous Data Streams](https://research.google/pubs/photon-fault-tolerant-and-scalable-joining-of-continuous-data-streams/) — Ananthanarayanan et al., SIGMOD 2013

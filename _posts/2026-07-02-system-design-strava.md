@@ -2,7 +2,7 @@
 layout: post
 title: "System Design: Strava"
 date: 2026-07-02
-tags: [System Design, Strava]
+tags: [System Design]
 description: "Strava lets athletes record, share, and compete over GPS-tracked activities at a scale where 10 million runs and rides arrive every day."
 thumbnail: /images/posts/2026-07-02-system-design-strava.svg
 ---
@@ -22,6 +22,15 @@ graph LR
     SVC --> DB[(Relational Store)]
     SVC --> OBJ[Object Storage]
     SVC --> QUEUE[Message Queue]
+
+    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
+    classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a
+    class M,GW edge
+    class SVC svc
+    class DB,OBJ store
+    class QUEUE async
 ```
 
 ## 2. Requirements
@@ -492,20 +501,7 @@ def match_activity(activity_polyline):
 > [!WARNING]
 > **Cost:** The H3 index on 30M segments adds ~2 GB of index storage (30M rows x ~30 H3 cells x 8 bytes + GIN overhead). The DTW computation at 10M activities/day x 100 candidates x ~500 point pairs x 1 microsecond = ~500 CPU-seconds/day — easily handled by a few worker instances. The real cost is the engineering complexity of tuning: the DTW threshold, the Frechet cutoff, the drift-weighting parameters, and the false-positive flagging workflow are all empirical calibrations that require production data and athlete feedback to get right.
 
-## 7. Trade-offs
-
-| Decision | Pros | Cons |
-|---|---|---|
-| **Staged async pipeline over sync upload** | Fast upload response (P99 under 1s); decoupled scaling of accept vs process; durability via Kafka | Stale reads: an athlete's activity may not appear in the leaderboard for 30s after upload |
-| **Stream-processed leaderboards over Redis-only** | 4x cost reduction ($6K vs $20K+/month); supports filtered views without memory multiplier; no lock contention | Write amplification (4-8 leaderboard rows per effort); eventual consistency (cache TTL means leaderboard updates lag ~5 seconds) |
-| **Hybrid fan-out with static cutoff over pure push/pull** | Bounded write amplification; fast reads for median user; simple threshold vs ML-driven engagement scoring | Celebrities' activities appear slower for their followers (pulled at read time); cutoff is a manual tuning knob, not self-adjusting |
-| **H3 + DTW over bounding-box pre-filter** | 150,000x candidate reduction vs 600x; handles dense urban geometry; GIN index gives sub-ms spatial queries | H3 cell computation on segment creation adds latency; resolution choice is a fixed design parameter, not adaptive to GPS quality |
-| **ScyllaDB over Cassandra for leaderboard store** | No GC pause latency spikes; higher throughput per node; fewer nodes needed | Smaller ecosystem; fewer operational tools and experienced engineers available |
-| **Chronological feed over ML-ranked feed** | Predictable; no cold-start problem for new users; preserves the event-driven nature of athletic activities | Cannot surface "highlights" or prioritize close friends; no personalization beyond follow graph |
-
-## 8. References
-
-**Primary sources**
+## 7. References
 
 1. Jeff Pollard. [Rebuilding the Segment Leaderboards Infrastructure (4-part series)](https://medium.com/strava-engineering/rebuilding-the-segment-leaderboards-infrastructure-part-1-background-13d8850c2e77). Strava Engineering Blog, 2017.
 1. Lindy Zeng. [Tessa: 1,000,000,000 Strava Activities, 1 Spatiotemporal Dataset](https://medium.com/strava-engineering/tessa-1-000-000-000-strava-activities-1-spatiotemporal-dataset-d54c1eb0b600). Strava Engineering Blog, 2017.

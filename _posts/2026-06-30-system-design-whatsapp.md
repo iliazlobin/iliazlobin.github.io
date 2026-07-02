@@ -2,487 +2,548 @@
 layout: post
 title: "System Design: WhatsApp"
 date: 2026-06-30
-tags: [System Design, Messaging, Real-time, Distributed Systems, End-to-End Encryption]
-description: "How WhatsApp delivers 100B+ end-to-end-encrypted messages a day to 2 billion users over unreliable mobile networks with sub-second delivery, offline queuing up to 30 days, three-tier delivery receipts, and 1,024-member group fan-out — a deep dive into the world's largest messaging platform."
+tags: [System Design]
+description: "A global messaging platform serving 3B+ users who exchange over 100B messages and 10 PB of media daily."
 thumbnail: /images/posts/2026-06-30-system-design-whatsapp.svg
 ---
 
-How WhatsApp delivers 100B+ end-to-end-encrypted messages a day to 2 billion users over unreliable mobile networks with sub-second delivery, offline queuing up to 30 days, three-tier delivery receipts, and 1,024-member group fan-out — a deep dive into the world's largest messaging platform.
+A global messaging platform serving 3B+ users who exchange over 100B messages and 10 PB of media daily.
 
 <!--more-->
 
 ## 1. Problem
 
-WhatsApp is a real-time messaging platform serving 2 billion monthly active users who exchange over 100 billion messages daily — text, images, video, and audio — across unreliable mobile networks worldwide. Every message must be end-to-end encrypted so that no intermediary, including the platform itself, can read it. Messages must reach recipients within one second whether they are online or offline (up to 30 days), and delivery acknowledgements must propagate back to senders reliably. Groups of up to 1,024 members compound the fan-out challenge: a single message in a large group can spawn a thousand delivery operations.
+A global messaging platform serving 3B+ users who exchange over 100B messages and 10 PB of media daily. Users expect sub-second delivery to online recipients, durable delivery to offline ones, end-to-end encryption that keeps all plaintext inaccessible to the server, and presence indicators for contacts. The system must handle 450M concurrent connections at peak with a small operational footprint.
 
 ```mermaid
-graph LR
-    A[Mobile Clients<br/>iOS / Android] --> B[Chat Servers<br/>WebSocket + TCP]
-    B --> C[Message Store<br/>Durable Inbox]
-    A --> D[Media Store<br/>S3 + CDN]
-    B --> E[Presence Service<br/>Online / Offline]
-    B --> F[Push Gateway<br/>APNs / FCM]
+graph TB
+    Client[Client] --- Edge[Connection Edge]
+    Edge --- Chat[Chat Routing]
+    Edge --- Media[Media Transfer]
+    Chat --- Stores[(Durable Stores)]
+    Media --- Stores
+
     classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a;
     classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
     classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
-    class A,F edge;
-    class B,E svc;
-    class C,D store;
+    class Edge edge;
+    class Chat,Media svc;
+    class Stores store;
+    class Client edge
 ```
 
 ## 2. Requirements
 
 **Functional**
 
-- FR1: Send and receive text messages in real time.
-- FR2: Receive messages sent while offline for up to 30 days.
-- FR3: Create and participate in group chats with up to 1,024 members.
-- FR4: Send and receive media including images, video, and audio.
-- FR5: View three-tier delivery status: sent, delivered, and read.
-- FR6: See when contacts are online, offline, or were last seen.
+- FR1: Send and receive text messages in 1:1 chats.
+- FR2: Send and receive messages in group chats (up to 1,024 members).
+- FR3: Share media attachments (images, video, voice, documents).
+- FR4: View message delivery and read receipts.
+- FR5: View contact online presence and last-seen status.
 
 **Non-functional**
 
-- NFR1: End-to-end encrypt all messages and media by default.
-- NFR2: Deliver messages within 1 second at the 99.99th percentile.
-- NFR3: Support 2 billion monthly active users globally.
-- NFR4: Operate reliably over unreliable low-bandwidth 2G/3G networks.
+- NFR1: End-to-end encrypted — server never accesses message plaintext.
+- NFR2: At-least-once delivery; no accepted message is permanently lost.
+- NFR3: Sub-second delivery latency for online recipients.
+- NFR4: Survive 2M concurrent connections per server; scale horizontally.
 
-*Out of scope: voice and video calling, status/stories, payments, the business/API platform, and full-text message search.*
+*Out of scope: Multi-device sync, audio/video calling, status stories, business interactions.*
 
 ## 3. Back of the envelope
 
-- 100B messages/day ÷ 86,400 seconds ≈ **1.16M msgs/sec** average, peak ~3M/sec → a write-fan-out message to a 1,024-member group would require 3B inbox writes/sec if done synchronously per recipient → the write path is the bottleneck.
-- ~1% of messages carry media averaging 1 MB → **~1 PB of new media uploaded daily** → media storage dwarfs text by orders of magnitude; the storage layer is the tightest resource.
-- Production WhatsApp ran 1M+ concurrent TCP connections per commodity server (Erlang/BEAM, per-process connection model). At 1B DAU with ~50% online concurrently, that is **~500 servers for the real-time tier** → connection density is not the limiting factor; the message delivery path drives cost.
+- **Message peak:** ~100B msgs/day ÷ 86.4k s × 3 (peak multiplier) ≈ 3.5M msgs/sec → the write and fan-out path is the bottleneck.
+- **Concurrent connections:** ~3B users × 15% online at peak ≈ 450M → ~225 servers at 2M connections each; server count stays a manageable operational concern.
+- **Media ingestion:** ~10 PB/day → the media store is the storage bottleneck; media dwarfs text payloads by ~1000x.
 
-## 4. Entities & API
+## 4. Entities
 
 ```
-User {
-  user_id:     uuid PK          ← globally unique, shard key
-  phone:       string UNIQUE    ← hashed at rest
-  display_name:string
-  identity_key:blob             ← Curve25519 public key
-  prekey_bundle:blob            ← signed pre-key + one-time pre-keys (refreshed by client)
-  created_at:  timestamp
-}
-
 Message {
-  message_id:  uuid PK
-  chat_id:     uuid             ← partition key; for 1:1 = sorted(user_a, user_b)
-  sender_id:   uuid
-  ciphertext:  blob             ← E2E encrypted; server never decrypts
-  content_type:enum             ← text | image | video | audio | system
-  media_ref:   string?          ← content-hash reference to media store
-  client_seq:  bigint           ← per-chat monotonic, set by sender
-  created_at:  timestamp
+  message_id:   uuid PK
+  chat_id:      uuid CK        ← partitions conversation history
+  sender_id:    uuid FK
+  ciphertext:   blob           ← encrypted body, opaque to server
+  seq_num:      bigint         ← monotonic per-chat ordering
+  created_at:   timestamp
 }
 
 InboxEntry {
-  user_id:     uuid PK          ← partition key
-  device_id:   uuid SK          ← sort key; one entry per device
-  message_id:  uuid
-  chat_id:     uuid
-  global_seq:  bigint           ← global monotonic for efficient reconnect sync (range scan)
-  status:      enum             ← pending | delivered | read
-  ttl:         timestamp        ← auto-expire after 30 days
+  user_id:      uuid CK        ← partition key for per-user queue
+  message_id:   uuid PK
+  chat_id:      uuid
+  sender_id:    uuid
+  status:       enum           ← pending, delivered, read
+  created_at:   timestamp
+  ttl:          30 days        ← auto-expire undelivered messages
 }
 
 Chat {
-  chat_id:     uuid PK
-  chat_type:   enum             ← direct | group
-  group_name:  string?
-  created_by:  uuid
-  created_at:  timestamp
-  last_msg_at: timestamp        ← denormalized for inbox sort order
+  chat_id:      uuid PK
+  chat_type:    enum           ← direct, group
+  member_ids:   uuid[]         ← denormalized for fan-out
+  group_name:   string?
+  created_at:   timestamp
 }
 
-ChatMember {
-  chat_id:     uuid PK
-  user_id:     uuid SK
-  role:        enum             ← member | admin
-  joined_at:   timestamp
+MediaBlob {
+  media_id:     uuid PK
+  content_hash: string         ← SHA-256; dedup key
+  blob_ref:     string         ← S3 object key
+  ref_count:    integer        ← garbage-collect at zero
+  size_bytes:   bigint
+  ttl:          30 days
+}
+
+User {
+  user_id:      uuid PK
+  phone_hash:   string
+  last_seen:    timestamp
+  created_at:   timestamp
+}
+
+PreKeyBundle {
+  user_id:      uuid CK
+  device_id:    uuid CK
+  identity_key: blob
+  signed_prekey: blob
+  one_time_prekeys: blob[]
 }
 ```
 
-**API**
+### API
 
-- `POST /v1/messages` — send a message; returns `message_id` + server-assigned `global_seq`
-- `GET /v1/inbox?since=<global_seq>&limit=<n>` — sync messages since last acknowledged sequence; returns ordered batch of `InboxEntry` + `Message` payloads
-- `POST /v1/chats` — create a 1:1 or group chat; returns `chat_id`
-- `GET /v1/chats/<chat_id>/messages?before=<cursor>` — paginated chat history for a loaded conversation
-- `POST /v1/media/upload` — request a presigned upload URL; returns `upload_url` + `media_ref` (content hash)
-- `GET /v1/media/<media_ref>` — download media; 302 redirect to CDN edge with short-lived signed URL
-- `WS /v1/ws` — persistent WebSocket for real-time message push, presence events, and delivery receipts
+- `CONNECT` via persistent WebSocket — establish bidirectional session; server returns assigned `session_id`
+- `SEND_MESSAGE {chat_id, ciphertext, message_id}` — send encrypted message to chat
+- `SEND_ACK {message_id, status}` — confirm delivery (`delivered`) or read (`read`)
+- `POST /media/upload` — upload encrypted media blob; returns `media_id`
+- `GET /media/{media_id}` — download encrypted media blob
+- `PUT /presence` — update online/offline status; server publishes to contacts
 
 ## 5. High-Level Design
 
 ```mermaid
 graph TB
     subgraph Clients
-        A[Mobile App<br/>iOS / Android]
-        B[Web / Desktop<br/>Companion Devices]
+        App[Mobile App]
     end
+
     subgraph Edge
-        C[CDN<br/>Media Cache]
-        D[TCP LB<br/>Layer-4 Load Balancer]
+        LB[Load Balancer]
+        TLS[TLS Termination]
     end
+
     subgraph Services
-        E[Chat Server<br/>WebSocket + Message Routing]
-        F[Group Service<br/>Membership + Fan-out]
-        G[Media Service<br/>Upload + Transcode]
-        H[Presence Service<br/>Heartbeat + Status]
+        CS[Chat Server<br/>stateful<br/>2M conns each]
+        GS[Group Service]
+        MS[Media Server]
+        PS[Presence Service]
     end
+
     subgraph Stores
-        I[(Inbox DB<br/>Cassandra)]
-        J[(Media Store<br/>S3)]
-        K[(Presence Store<br/>Redis)]
-        L[(Key Store<br/>Prekey Bundles)]
-        M[(Chat DB<br/>Metadata)]
+        Mnesia[(Mnesia<br/>routing + queue)]
+        S3[(Object Store)]
+        PreKeys[(PreKey Store)]
     end
+
     subgraph Async
-        N[Push Gateway<br/>APNs / FCM]
-        O[Transcode Queue<br/>ffmpeg Workers]
+        Push[APNs<br/>FCM]
     end
-    A --> D
-    B --> D
-    D --> E
-    E --> I
-    E --> K
-    E --> F
-    E --> L
-    F --> I
-    F --> M
-    G --> J
-    G --> O
-    H --> K
-    E --> N
-    A --> C
-    B --> C
-    C --> J
+
+    App -->|TLS/TCP WebSocket| LB
+    LB --> TLS
+    TLS --> CS
+    CS --- Mnesia
+    CS --> GS
+    GS --> CS
+    App -->|HTTP upload| MS
+    MS --> S3
+    CS --> Push
+    CS --- PreKeys
+    CS --- PS
+
     classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a;
     classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
     classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
     classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a;
-    class A,B,D,C edge;
-    class E,F,G,H svc;
-    class I,J,K,L,M store;
-    class N,O async;
+    class LB,TLS edge;
+    class CS,GS,MS,PS svc;
+    class Mnesia,S3,PreKeys store;
+    class Push async;
+    class App edge
 ```
 
-#### FR1: Send and receive text messages in real time
+#### FR1: Send and receive text messages in 1:1 chats
 
-**Components:** Sender Client → Chat Server (sender-side) → Chat Server (recipient-side) → Recipient Client
-
-**Flow:**
-
-1. Client establishes a persistent WebSocket to a Chat Server via L4 load balancer. On connect, the Chat Server subscribes to the user's pub/sub channel (`user:<user_id>:messages`) in Redis.
-2. Sender's client encrypts the plaintext message body using the Double Ratchet-derived message key (see DD4). The ciphertext is opaque to the server.
-3. Sender sends `{"cmd":"send","chat_id":"<id>","ciphertext":"<blob>","client_seq":<n>}` over WebSocket.
-4. Chat Server writes a `Message` row to Cassandra keyed by `chat_id`, then inserts one `InboxEntry` per recipient device (partitioned by `user_id`).
-5. The server returns `{"status":"sent","message_id":"<uuid>","global_seq":<n>}` — this is the single-check (✓) receipt.
-6. For each online recipient, the Chat Server publishes the message envelope to `user:<recipient_id>:messages` in Redis Pub/Sub. The recipient's Chat Server (subscribed to that channel) receives the publish, looks up the recipient's active WebSocket connections from a local connection map, and pushes the envelope to each device.
-7. The recipient's client decrypts the ciphertext and sends a delivery ACK: `{"cmd":"ack_delivery","message_id":"<uuid>"}`. The ACK propagates to the sender's server, which pushes a double-check (✓✓) receipt.
-
-**Design consideration:** The key routing problem is that the sender's Chat Server does not inherently know which server hosts the recipient's connection. At WhatsApp's scale, a fully-connected mesh of servers (N² connections) breaks down. Redis Pub/Sub solves this efficiently — each server subscribes only to channels for its currently-connected users, and unsubscribes on disconnect. Pub/Sub is at-most-once, so it is paired with the durable Inbox as the source of truth (see FR2). A server crash during delivery loses the pub/sub event but the message survives in the Inbox and is delivered on the next reconnect sync.
-
-#### FR2: Receive messages sent while offline for up to 30 days
-
-**Components:** Chat Server → Inbox DB (Cassandra) → Push Gateway → Reconnecting Client → Inbox DB (sync)
+**Components:** Mobile App → Load Balancer → Chat Server (stateful Erlang process) → Mnesia (routing table + offline queue) → Recipient's Chat Server → Recipient App
 
 **Flow:**
 
-1. When the Chat Server determines a recipient has no active WebSocket connections (checked via the local connection map), it skips the Pub/Sub publish step from FR1.
-2. The `InboxEntry` already written in step 4 of FR1 remains with `status = pending` and a TTL of 30 days.
-3. The Chat Server triggers a push notification via APNs (iOS) or FCM (Android). The push payload is a silent wake-up containing no message content — only a badge count increment and a flag to reconnect.
-4. When the device reconnects and opens a WebSocket, it sends a sync request: `{"cmd":"sync","last_ack_seq":<global_seq>}`.
-5. The Chat Server queries Cassandra: `SELECT * FROM inbox_entries WHERE user_id = ? AND device_id = ? AND global_seq > ? ORDER BY global_seq ASC LIMIT 500`. Because `InboxEntry` is partitioned by `(user_id, device_id)`, this is a single-partition range scan — no scatter-gather.
-6. The server streams each pending message to the client and awaits a delivery ACK for each. On ACK, it updates the `InboxEntry.status` to `delivered` and deletes the row after a short grace period (or leaves it to TTL-expire).
-7. If the device goes offline again mid-sync, the `last_ack_seq` cursor ensures the next sync picks up exactly where it left off.
+1. Sender app encrypts plaintext with the recipient's Signal Protocol session key, producing a `ciphertext` blob.
+1. App sends `SEND_MESSAGE {chat_id, ciphertext, message_id}` over the persistent WebSocket.
+1. Chat Server looks up the recipient's server assignment from the Mnesia routing table (`user_id → server_id`).
+1. **Hot path (recipient online, server reachable):** Chat Server forwards the message directly to the recipient's Chat Server process, which pushes it over the recipient's persistent WebSocket. No disk I/O.
+1. **Cold path (recipient offline):** Chat Server writes an `InboxEntry` row (ciphertext, sender_id, chat_id, status=pending) to the durable offline queue, then dispatches a push notification via APNs or FCM to wake the recipient's device.
+1. On reconnect, the recipient's Chat Server reads all `InboxEntry` rows for that user with `status=pending`, ordered by `created_at`, and streams them over the WebSocket.
+1. Recipient app decrypts the ciphertext, displays the message, and sends `SEND_ACK {message_id, status=delivered}`.
+1. Server deletes the `InboxEntry` on `delivered` ACK; the message data now lives only on the client devices.
 
-**Design consideration:** The `global_seq` is a cluster-wide monotonic sequence (e.g., Twitter Snowflake or a sequence service). It is critical because a per-chat `client_seq` can't be used for reconnect sync — a user belongs to hundreds of chats, and scanning each one on reconnect would be an N-way scatter-gather. A single global sequence per `(user_id, device_id)` means one efficient range scan restores the full state. The tradeoff is that `global_seq` gaps appear when a message is sent to a group but not all members download it — the sequence still increments, and the client simply skips gaps.
+**Design consideration:** The two-path delivery (direct server-to-server for online, offline queue for disconnected) keeps the hot path pure in-memory, with zero persistence or disk I/O, so delivery is sub-millisecond within the same cluster. The offline queue acts as a 30-day buffer; entries expire via TTL if the recipient never reconnects. The `message_id` (sender-generated UUID) serves as the idempotency key: a duplicate `SEND_MESSAGE` with the same `message_id` is silently dropped.
 
-#### FR3: Create and participate in group chats with up to 1,024 members
+#### FR2: Send and receive messages in group chats
 
-**Components:** Client → Group Service → Chat Server (fan-out) → Inbox DB → Recipient Chat Servers → Recipient Clients
-
-**Flow:**
-
-1. User A creates a group via `POST /v1/chats` with `{"type":"group","name":"...","members":[...]}` (up to 1,024). The Group Service writes a `Chat` row and `ChatMember` rows for each participant.
-2. On the first message to the group, the sender's client generates a random 32-byte Chain Key and a Curve25519 Signature Key pair (the "Sender Key"). The client encrypts this Sender Key distribution message individually to each group member using their existing pairwise Double Ratchet session — this is N encryption operations, done once.
-3. The sender's client derives a Message Key from the Chain Key via HKDF, encrypts the ciphertext with AES-256-CBC, signs with the Signature Key, and transmits a single ciphertext blob to the Chat Server.
-4. The Chat Server forwards the request to the Group Service, which queries `ChatMember` to retrieve the full member list.
-5. The Group Service performs **server-side fan-out**: for each member, it writes one `InboxEntry` row (partitioned by `member.user_id`). For online members, it publishes to `user:<member_id>:messages` in Redis Pub/Sub; for offline members, it triggers a push notification.
-6. Each recipient's Chat Server delivers the message via its existing WebSocket (as in FR1). Recipients decrypt using the same Sender Key.
-
-**Design consideration:** Without Sender Keys, every group message would require N asymmetric encryption operations (one per member) — for a 1,024-member group, that is 1,024 Curve25519 operations per message. With Sender Keys, the O(N) cost is paid once at key distribution; every subsequent message costs O(1) symmetric encryption. The trade-off surfaces when a member leaves the group: all active Sender Keys must be rotated and re-distributed. WhatsApp handles this by having the Group Service coordinate a key rotation epoch — when a member leaves, the epoch increments, and all senders re-derive and re-distribute their Sender Keys on their next message.
-
-```sql
--- Fan-out: single INSERT per member, async
-INSERT INTO inbox_entries (user_id, device_id, message_id, chat_id, global_seq, status, ttl)
-VALUES (?, ?, ?, ?, next_global_seq(), 'pending', NOW() + INTERVAL '30 days');
--- Executed once per group member (up to 1,024 times) inside an async batch
-```
-
-For groups larger than ~256 members, the fan-out-on-write approach (1,024 inbox writes per message) can be replaced with a fan-out-on-read hybrid: the message is written once to a group feed partition, and members fetch it on their next reconnect sync. The threshold is adaptive and configurable.
-
-#### FR4: Send and receive media including images, video, and audio
-
-**Components:** Sender Client → Media Service (presigned URL) → Object Store (S3) → Transcode Queue → CDN → Recipient Client
+**Components:** Sender App → Chat Server → Group Service → Per-member Chat Server fan-out → Member Apps
 
 **Flow:**
 
-1. The sender's client requests an upload slot: `POST /v1/media/upload` with `{"content_type":"image/jpeg","byte_size":2450000,"sha256":"<hash>"}`.
-2. The Media Service checks the SHA-256 hash against the dedup index. If the hash already exists, it returns the existing `media_ref` immediately — no upload needed; reference count incremented.
-3. If the hash is new, the Media Service generates a presigned S3 PUT URL (valid for 5 minutes, scoped to the exact object key `media/<sha256>`) and returns `{"upload_url":"<presigned_url>","media_ref":"<sha256>","expires_in":300}`.
-4. The client uploads the encrypted media blob directly to S3 via HTTP PUT. The Chat Server never touches the large payload.
-5. On upload completion, S3 triggers a notification (via SQS or webhook) to the Transcode Queue. ffmpeg workers generate device-appropriate variants: 720p/480p/240p for video, thumbnail for images, Opus/AAC for audio.
-6. The sender's client includes `"media_ref":"<sha256>"` in the message envelope sent via `POST /v1/messages`.
-7. When a recipient's client renders the message, it requests `GET /v1/media/<sha256>`. The Media Service generates a short-lived signed CDN URL (or S3 presigned URL) and responds with a 302 redirect. The CDN edge caches the variant and serves it from the nearest POP.
+1. Sender app encrypts the message once using the group's Sender Key (see DD2 and DD4), producing a single `ciphertext`.
+1. App sends `SEND_MESSAGE {chat_id, ciphertext, message_id}` over the WebSocket.
+1. Chat Server forwards to the Group Service process responsible for this `chat_id`.
+1. Group Service reads the member list from the `Chat.member_ids` field (loaded in Mnesia memory), resolves each member's current Chat Server from the routing table, and fans out the ciphertext concurrently to all online members' Chat Servers.
+1. Each recipient's Chat Server pushes the ciphertext over the persistent WebSocket.
+1. For offline members: Group Service writes one `InboxEntry` per offline member (same ciphertext, same message_id).
+1. Each member's app decrypts independently with the group Sender Key and sends individual `delivered`/`read` ACKs back.
 
-**Design consideration:** Client-direct upload via presigned URLs keeps the Chat Servers' network bandwidth free for message routing. A single Chat Server handling 1M concurrent connections at WhatsApp's scale would saturate its NIC if media passed through it — 214M images/day at 29 Gb/sec would require dedicated hardware. The Media Service itself is a lightweight metadata layer: it owns the reference-counting table (`media_ref → {byte_size, content_type, ref_count, variants[], created_at}`) and the SHA-256 dedup index, but never stores or proxies blob data. Reference counting ensures storage is reclaimed when all referring messages are TTL-expired.
+**Design consideration:** The sender encrypts once regardless of group size (O(1) client-side work). Server-side fan-out uses lightweight concurrent processes — each member delivery is an independent fire-and-forget push, so a single slow recipient does not block the others. The Group Service process holds the member list in memory for microsecond lookups. On membership change, the member list is updated and all participants rotate their Sender Keys (see DD2 and DD4).
 
-#### FR5: View three-tier delivery status: sent, delivered, and read
+#### FR3: Share media attachments
 
-**Components:** Sender Client → Chat Server (sender) → Chat Server (recipient) → Recipient Client → reverse path for ACKs
-
-**Flow:**
-
-1. **Sent ✓:** The sender's Chat Server acknowledges receipt and persistence of the message (step 5 in FR1). The sender's UI renders a single grey checkmark.
-2. **Delivered ✓✓:** When the recipient's Chat Server successfully pushes the message to at least one of the recipient's devices, the recipient's Chat Server sends a delivery ACK. This ACK does NOT route back through Pub/Sub — it follows the reverse server-to-server path. The sender's Chat Server pushes a receipt update to the sender's WebSocket. The sender's UI renders a double grey checkmark.
-3. **Read ✓✓ (blue):** When the recipient opens the chat, the recipient's client sends `{"cmd":"ack_read","chat_id":"<id>","up_to_global_seq":<n>}`. The server updates `InboxEntry.status = 'read'` for all messages in that chat up to the given sequence, then propagates the read receipt to the sender's Chat Server. The sender's UI renders blue double checkmarks.
-
-**Design consideration:** Exactly-once delivery semantics require client-side deduplication. The sender generates a `client_msg_id` (UUID) and includes it in every send request. The Chat Server checks a short-lived dedup cache (Redis, TTL 24 hours): if `client_msg_id` already exists, the server returns the original `message_id` and `global_seq` without reprocessing. This handles the case where the server persisted the message and sent the ACK, but the ACK was dropped before the client received it — the client retries, and the server deduplicates. Without this, a TCP-level retry after a successful server-side write would produce a duplicate message.
-
-#### FR6: See when contacts are online, offline, or were last seen
-
-**Components:** Client → Chat Server (heartbeat) → Presence Store (Redis) → Presence Pub/Sub → Subscribed Clients
+**Components:** Sender App → Media Server → Object Storage (media path); Sender App → Chat Server (message path)
 
 **Flow:**
 
-1. Every 30 seconds, the client sends a heartbeat frame over its WebSocket: `{"cmd":"heartbeat"}`. The Chat Server updates the user's presence record in Redis: `SET user:<user_id>:presence '{"status":"online","last_seen":<ts>}' EX 90` — the TTL of 90 seconds means if three heartbeats are missed, the key expires and the user is considered offline.
-2. When a user opens a chat (or their contact list), the client subscribes to presence for those contacts: `{"cmd":"sub_presence","user_ids":[...]}`. The Chat Server subscribes to Redis Pub/Sub channels `presence:<each_user_id>`.
-3. On each user's presence state change (online → offline via TTL expiry, or explicit offline when the client sends `{"cmd":"go_offline"}` before disconnecting), the Chat Server publishes to `presence:<user_id>`. All subscribed servers receive the event and push a presence update to their respective clients.
-4. "Last seen" is a secondary read: when a client requests presence for a user who is offline, the server reads the last known `last_seen` timestamp from a secondary Redis key that persists beyond the TTL.
+1. Sender app generates a random AES-256 key, encrypts the media file client-side.
+1. App uploads the encrypted blob to the Media Server via `POST /media/upload`.
+1. Media Server computes the SHA-256 hash of the encrypted blob and checks for an existing `MediaBlob` with that `content_hash`. If found, it increments `ref_count` and returns the existing `media_id`. Otherwise, it stores the blob in S3, creates a new `MediaBlob` row with `ref_count=1`, and returns the new `media_id`.
+1. App sends a thin text message over the chat path (FR1 or FR2) containing the `media_id` and the AES-256 key (encrypted within the Signal Protocol ciphertext).
+1. Recipient app receives the thin message, extracts `media_id`, and downloads the encrypted blob via `GET /media/{media_id}`.
+1. Recipient decrypts with the AES-256 key, renders the media.
 
-**Design consideration:** Full-contact-list presence subscription creates quadratic fan-out — if 500M users are online and each has 200 contacts, every heartbeat tick generates 100B presence events. WhatsApp mitigates this with **on-demand subscriptions**: the client subscribes only to presence for currently visible contacts (e.g., the 10–20 chats on screen) and the chat list's top contacts. When the user scrolls or navigates away, the client unsubscribes. This reduces the fan-out multiplier from the full contact graph (~200) to the viewport (~20), a 10× reduction. Heartbeats themselves are batched server-side — the Chat Server buffers presence state changes and flushes every 5 seconds, so a flapping connection (connect/disconnect/connect) produces one aggregated event rather than a storm.
+**Design consideration:** The media path is fully separated from the chat path. The Chat Server never touches media bytes — it only routes the thin message containing the `media_id`. This keeps the message hot path (3.5M msgs/sec) unburdened by multi-MB blob transfers. Client-side encryption ensures the Media Server stores only ciphertext. Content-hash deduplication means a forwarded meme stored once serves thousands of recipients; `ref_count` tracks how many chat threads reference the blob, and the blob is eligible for deletion when `ref_count` reaches zero.
+
+> [!WARNING]
+> **Dedup on encrypted blobs:** Two users who independently upload the same image will produce different ciphertexts (different AES keys, different IVs), so dedup works only on forwarded media — where the same ciphertext blob is reused. This is an inherent trade-off of client-side encryption: the server cannot see the plaintext to do semantic dedup.
+
+#### FR4: View message delivery and read receipts
+
+**Components:** Recipient App → Chat Server → Sender's Chat Server → Sender App
+
+**Flow:**
+
+1. On receiving a message push over WebSocket, the recipient app sends `SEND_ACK {message_id, status=delivered}`.
+1. Recipient's Chat Server forwards the ACK to the sender's Chat Server (via routing table lookup).
+1. Sender's Chat Server pushes the `delivered` status update to the sender's WebSocket; sender's app displays a "delivered" indicator.
+1. When the recipient opens the conversation, the app sends `SEND_ACK {message_id, status=read}`.
+1. The read ACK follows the same routing path; sender's app updates the indicator to "read."
+
+**Design consideration:** ACKs are fire-and-forget at each hop — a lost ACK between servers is recovered by the durability layer (the `InboxEntry` still exists with `status=pending` and is re-delivered on reconnect; the recipient re-ACKs). The `message_id` on the ACK lets the sender's server match it to the original send. The three states (sent, delivered, read) are tracked entirely in-memory on the Chat Servers — only the initial message write to the offline queue is durable, and that row is deleted on the `delivered` ACK.
+
+#### FR5: View contact online presence and last-seen status
+
+**Components:** App → Chat Server → Presence Service → Contact Apps
+
+**Flow:**
+
+1. App sends a heartbeat over the WebSocket every 30 seconds. The Chat Server forwards `{user_id, timestamp}` to the Presence Service.
+1. Presence Service stores each user's last heartbeat timestamp in a sorted in-memory structure and publishes a status change (`online`) to the pub/sub channels of that user's contacts when they first connect.
+1. When a user's heartbeats stop (TTL expires after 90 seconds), Presence Service marks the user `offline`, updates `User.last_seen` to the last heartbeat timestamp, and publishes the status change to contacts.
+1. On connect, the Chat Server subscribes to presence updates for the user's contact list and pushes any initial statuses to the app.
+
+**Design consideration:** Presence is soft-state — heartbeats are best-effort UDP-style notifications. If a heartbeat is dropped, the 90-second TTL window absorbs the gap before marking a user offline. The 30-second interval and 90-second TTL balance responsiveness against server load: at 450M concurrent connections, 15M heartbeats/sec. A per-user sorted set with TTL-based eviction keeps the working set in memory while auto-purging stale entries.
 
 ## 6. Deep dives
 
-### DD1: Connection routing at scale (2 billion users, millions of concurrent connections)
+### DD1: Message delivery and durability
 
-**Problem.** A chat server that receives a message from the sender must locate the server holding the recipient's WebSocket connection. A naive broadcast ("does anyone have user B?") floods every server for every message. A server-to-server mesh (every server knows every other server) requires N² connections. At 500 servers, that is 125,000 persistent TCP links — and connection state churn (deployments, crashes) makes this fragile. The routing mechanism must answer "which server has user B?" in O(1) time with minimal coordination.
+**Problem.** Messages must reach recipients reliably across flaky mobile networks, multi-hour offline periods, and server failures. At 3.5M msgs/sec peak, every redundant disk write or retransmission multiplies infrastructure cost. The server must delete messages after confirmed delivery since plaintext is never available server-side. The challenge is at-least-once delivery without the server holding plaintext, while keeping the hot path at sub-millisecond latency for the 50%+ of messages where both parties are online.
 
-**Approach 1: Global routing table in a coordination service (ZooKeeper/etcd)**
+**Approach 1: In-memory offline queue with per-user partition**
 
-Every server registers its connected users in a shared key-value store. On `sendMessage`, the sender's server queries the store for the recipient's server address, then forwards directly.
+Each Chat Server holds a partition of the offline queue as an in-memory table, keyed by `{user_id, message_id}`, backed by an append-only commit log for crash recovery. The queue is an LSM-tree on SSD — writes are sequential appends (fast), reads are point lookups by `user_id` (fast with a bloom filter).
 
-- **Challenges:** a coordination service with 500M ephemeral keys (one per online user) becomes the bottleneck — ZK's watch mechanism is designed for config, not per-user-connection churn. A server restart re-registers 500K+ users and creates a thundering-herd of watches.
+- **Online path (hot):** Both parties connected to servers within the same cluster — the message is forwarded directly between Erlang processes with no disk writes or persistence, so delivery is sub-millisecond.
+- **Offline path (cold):** Recipient's server is unreachable or the recipient is disconnected. The sender's server writes the message to the recipient's offline queue partition. A push notification is dispatched to wake the device.
+- **Reconnect path:** Recipient's app connects with its last known `seq_num`. The server scans the offline queue for entries with `seq_num > last_seen`, streams them in order, and the client ACKs each. ACKed entries are deleted from the queue.
+- **Challenges:** The offline queue working set must fit in RAM for low-latency scans on reconnect. A 30-day TTL keeps the queue bounded — messages older than 30 days are reclaimed at compaction time. The 98% cache-hit rate for recent messages (most reconnects happen within hours) means the working set is small relative to total capacity.
 
-**Approach 2: Consistent hashing ring with direct server-to-server mesh**
+**Approach 2: Three-state ACK pipeline for exactly-once delivery**
 
-Users are assigned to servers by hashing `user_id` onto a ring. Every server maintains a full mesh connection to every other server. On message send, the sender's server hashes the recipient's `user_id` to find the owning server and forwards directly.
+Each message progresses through three server-tracked states:
 
-- **Challenges:** the full mesh grows as O(N²). At 1,000 servers (WhatsApp's scale with redundancy), that is ~500K connections. Every server restart requires re-establishing 999 connections. Consistent hashing rebalancing (adding/removing servers) triggers mass reconnection storms. This is fragile at scale.
+1. **SENT:** Server has accepted the message from the sender and written it to the recipient's offline queue. Sender sees a "sent" indicator.
+1. **DELIVERED:** Recipient's app has received the message over WebSocket and sent an ACK. The server deletes the offline queue entry. Sender sees a "delivered" indicator.
+1. **READ:** Recipient opened the conversation and the app sent a read ACK. Sender sees a "read" indicator. The read state is a lightweight metadata flag — the message content is already gone from the server.
 
-**Approach 3: Redis Pub/Sub per user channel**
+```sql
+-- Write on message receipt
+INSERT INTO inbox (user_id, message_id, chat_id, sender_id, ciphertext, status, created_at)
+VALUES ($recipient, $msg_id, $chat_id, $sender, $ct, 'pending', now());
 
-Each server subscribes to Redis Pub/Sub channels ONLY for its currently-connected users. On connect: `SUBSCRIBE user:<user_id>:messages`. On disconnect: `UNSUBSCRIBE`. On message send: `PUBLISH user:<recipient_id>:messages <envelope>`. Redis routes the publish to every subscriber (exactly the one server holding the recipient's connection). No global routing table, no server mesh, no coordination service.
+-- On delivered ACK
+DELETE FROM inbox WHERE user_id = $recipient AND message_id = $msg_id;
 
-**Decision:** Redis Pub/Sub as the real-time delivery channel, paired with a durable Inbox for reliability.
-
-**Rationale:** This pattern is battle-tested: Canva scaled Redis Pub/Sub to 100K events/sec at 27% CPU utilization on a single host. The key insight is that pub/sub is intentionally at-most-once — it is an optimization for latency, not a durability guarantee. The Inbox (Cassandra) is the system of record. If Redis drops a publish (network partition, subscriber lag, server crash), the message is already in the recipient's Inbox and will be delivered on the next reconnect sync. This decoupling means Redis can run without persistence (pure in-memory, no AOF/RDB), maximizing throughput. At 500 servers × ~500K connected users each = 250M subscriptions, Redis Cluster with 10–20 shards handles the subscription set comfortably (subscriptions are per-node metadata, not per-message overhead).
-
-**Edge cases:**
-
-- **Redis partition:** If a Chat Server loses its Redis connection, it cannot receive publishes. The server's health check detects the partition, marks all locally-connected users as "degraded," and stops accepting sends for them until the Redis connection heals. Messages already in the Inbox are safe.
-- **Server crash:** The crashed server's subscriptions are cleaned up by Redis when the TCP connection drops. Users reconnect to a different server (L4 LB re-routes), which subscribes to their channels on the new server. The reconnect sync (FR2) delivers any messages missed during the failover window.
-- **Subscription lag:** If a server subscribes to a user's channel but the user's WebSocket has already disconnected (race condition), the publish is silently dropped by the server (local connection map miss). The Inbox covers this — the message is delivered on next sync.
-
-```mermaid
-sequenceDiagram
-    participant SA as Sender App
-    participant CS1 as Chat Server 1<br/>(sender-side)
-    participant Redis as Redis Pub/Sub
-    participant CS2 as Chat Server 2<br/>(recipient-side)
-    participant RA as Recipient App
-    participant DB as Inbox DB
-
-    CS2->>Redis: SUBSCRIBE user:B:messages
-    SA->>CS1: sendMessage (encrypted)
-    CS1->>DB: Write Message + InboxEntry
-    CS1-->>SA: ACK: sent 
-    CS1->>Redis: PUBLISH user:B:messages <envelope>
-    Redis->>CS2: deliver <envelope>
-    CS2->>CS2: lookup WebSocket for user:B
-    CS2->>RA: push <envelope>
-    RA-->>CS2: ACK: delivered 
-    CS2-->>CS1: fwd delivery ACK
-    CS1-->>SA: push delivery receipt
+-- On read ACK (lightweight metadata only)
+UPDATE message_status SET read_at = now()
+WHERE message_id = $msg_id AND sender_id = $sender;
 ```
 
-> [!TIP]
-> **What the WhatsApp team actually did:** Instead of Redis, they used Erlang's built-in distribution protocol — process mailboxes are the pub/sub channel. One Erlang process per connection means `Pid ! Msg` is the "publish." The routing table lives in Mnesia (distributed in-memory table): querying which server owns a user is a local Mnesia read, not a network call. This collapses the routing + pub/sub layers into the runtime itself — no external Redis, no Kafka. The cost is that you must run Erlang/BEAM, and you must patch the VM to fix contention at 2M connections/server.
+- **Challenges:** A lost ACK between servers means the inbox entry persists and is re-delivered on the next reconnect. The client uses `message_id` as a dedup key — if it sees a message it has already processed, it sends the ACK again and discards the duplicate. This gives at-least-once delivery with client-side dedup approximating exactly-once.
 
-### DD2: Group messaging fan-out (1,024-member groups)
+**Approach 3: Binary wire protocol for bandwidth efficiency**
 
-**Problem.** A message sent to a 1,024-member group must be delivered to every member's inbox. A naive fan-out-on-write performs 1,024 inbox INSERTs and up to 1,024 Pub/Sub publishes — per message. At scale, a single popular group with 1,024 members sending 1,000 messages/day generates 1M inbox writes/day from that group alone. Encryption compounds this: encrypting the message individually to each member requires 1,024 asymmetric operations (Curve25519) per message, which is ~50ms of CPU time even on modern hardware — a throughput ceiling of ~20 messages/sec per sender in that group.
+A compact binary framing replaces verbose text-based protocols. Common tokens (stanza types, attribute names, JID domains) are encoded as single-byte dictionary codes. A short text message compresses from ~180 bytes in XML to ~20 bytes on the wire.
 
-**Approach 1: Fan-out on write (simple, N inbox writes)**
+- **Challenges:** The token dictionary is shared between client and server — adding new tokens requires coordinated rollout. The benefit is a 50-70% bandwidth reduction, which is critical for users on 2G networks and metered data plans.
 
-Every group message writes one InboxEntry per member. Works well for small groups (≤100 members).
+**Decision:** In-memory offline queue (Approach 1) plus the three-state ACK pipeline (Approach 2) plus binary wire encoding (Approach 3). The three mechanisms are complementary layers, not alternatives.
 
-- **Challenges:** write amplification is O(N). For 1,024 members at 1,000 msgs/day, that is 1,024,000 writes/day for one group. For 100 such groups (a fraction of WhatsApp's total), that is 100M writes/day just for fan-out. Cassandra can handle this, but the cost is proportional to group size — it doesn't scale economically.
-
-**Approach 2: Fan-out on read (single write, N reads on fetch)**
-
-Write the message once to a group feed partition (`chat_id` as partition key). Members fetch messages from the group feed on their next sync.
-
-- **Challenges:** latency suffers — a message isn't pushed; the recipient discovers it on their next poll/sync. For real-time messaging, this is unacceptable for active groups. Also, 1,024 members independently querying the same partition creates a hot partition — the group feed becomes a read bottleneck.
-
-**Approach 3: Sender Keys + adaptive fan-out**
-
-Encryption: Sender Keys reduce the per-message encryption to O(1). The sender distributes a symmetric Chain Key to all members once (O(N) encryption, paid once). Every subsequent message is encrypted with a single symmetric operation.
-
-Delivery: For groups ≤ ~256 members, fan-out on write (N inbox writes). For groups > 256, hybrid — fan-out on write for members currently online (push via Pub/Sub) plus a group feed for offline members (read on reconnect). The threshold is adaptive based on observed group activity.
-
-**Decision:** Sender Keys for encryption, server-side fan-out with adaptive write/read threshold.
-
-**Rationale:** WhatsApp uses Sender Keys in production for groups up to 1,024 members. The O(N) one-time cost of key distribution is amortized over the lifetime of the group. For delivery, the majority of groups are small (median group size is < 30 members), so fan-out-on-write is the common case and is fast. For the long tail of large groups, the hybrid approach caps write amplification at the cost of slightly higher latency for offline members — an acceptable tradeoff. Signal Protocol's Double Ratchet + Sender Keys together provide both forward secrecy and scalable encryption.
+**Rationale:** At 3.5M msgs/sec, the architecture's key insight is keeping the common case (both parties online) at zero I/O — direct process-to-process forwarding. The offline queue exists only for the minority of messages where the recipient is disconnected. The ACK pipeline bounds the server's retention window: a message lives on the server for seconds (online) to hours (offline reconnection), then is deleted. The binary protocol reduces the per-message tax on bandwidth, CPU, and battery. Together, these three layers let ~225 servers handle 3B users.
 
 **Edge cases:**
 
-- **Member leaves the group:** Security requires that the departed member can no longer read future messages. The Group Service increments the key epoch for the group. Every active sender must rotate their Sender Key — they generate a new Chain Key, encrypt it to every remaining member, and distribute. This is O(N²) in the worst case (every sender rotates for every leave), so key rotation is batched: a member removal queues a rotation, and senders rotate lazily on their next message. There is a brief window (one message) where the departed member could theoretically decrypt if they intercepted the ciphertext before their client enforced the epoch change. WhatsApp accepts this window as a pragmatic tradeoff.
-- **Concurrent sends:** Two members send messages simultaneously in a large group. Fan-out workers are per-group serialized (ordered by `client_seq` or server arrival time) to avoid InboxEntry sequence gaps. The Group Service uses a single-threaded writer per `chat_id` (actor model or partition-level lock) to ensure deterministic Inbox ordering across all recipients.
-- **Sender Key server storage:** The `GroupSenderKey` table stores each member's encrypted copy of each sender's key. When a member gets a new device, all Sender Keys must be re-encrypted for that device — the Group Service triggers a background fan-out to re-encrypt all active keys for the new device.
-
-### DD3: Media sharing at planetary scale (1 PB uploaded daily)
-
-**Problem.** Media files are 1,000–100,000× larger than text messages. If media transits through Chat Servers, they become a bandwidth and memory bottleneck — a server handling 1M text-message connections cannot also proxy multi-megabyte uploads. Uploads to a single origin create a geographic bottleneck: a user in Mumbai uploading to a Virginia data center adds 200ms of latency to every byte. Downloads suffer the same — streaming a video from a single origin to 1,024 group members in different regions saturates inter-region links.
-
-**Approach 1: Chat Server as media proxy**
-
-Clients upload media to the Chat Server, which stores it and serves it to recipients.
-
-- **Challenges:** the Chat Server's NIC is the bottleneck. At WhatsApp's peak (214M images/day, 29 Gb/sec), even dedicated hardware struggles to proxy both uploads and downloads. Memory pressure from buffering large uploads degrades message routing latency for other users on the same server.
-
-**Approach 2: Dedicated media servers behind a CDN**
-
-Uploads go to a fleet of media servers (YAWS/nginx) that write to attached storage. Downloads are served through a CDN.
-
-- **Challenges:** still requires running and scaling a separate server fleet; upload bandwidth is server-side; geographic distribution is tied to data center locations.
-
-**Approach 3: Client-direct upload via presigned URLs + CDN download**
-
-Upload: the Media Service issues a time-limited presigned S3 PUT URL. The client uploads directly to the nearest S3 region (or multi-region bucket with latency-based routing). Download: the Media Service issues a short-lived signed CDN URL redirect. The CDN edge caches the object and serves it from the nearest POP.
-
-**Decision:** Presigned S3 uploads + CDN download + content-addressable deduplication.
-
-**Rationale:** This pattern removes the platform's servers from the media data path entirely. S3 handles the upload bandwidth (horizontally scalable, multi-region). The CDN handles download bandwidth (tens of thousands of edge POPs with CloudFront/Cloudflare). The Media Service is a lightweight metadata layer that only handles control-plane operations: issuing presigned URLs, tracking reference counts, and orchestrating transcoding. At 1 PB/day of uploads with 60% dedup, this design stores ~400 TB/day net-new. Content addressing (SHA-256 as the object key) makes dedup implicit — the PUT to `s3://media/<sha256>` is idempotent; if the object already exists, S3 returns 200 OK without overwriting. Reference counting in the metadata table (`ref_count++` on new use, `ref_count--` on message TTL expiry, delete when `ref_count = 0`) ensures storage is reclaimed.
-
-**Edge cases:**
-
-- **Upload interrupted:** The client uploads in chunks (multipart S3 upload). If the connection drops, the client resumes from the last completed chunk. The presigned URL is scoped to the object key, and S3's multipart API handles partial uploads natively.
-- **Transcoding backlog:** If the Transcode Queue depth grows (viral video spike), the system degrades gracefully — the original-quality media is available immediately via the `media_ref`, while transcoded variants arrive later. Clients request a specific variant and fall back to original if unavailable.
-- **CDN cache stampede:** When a popular media item (viral video) is requested simultaneously by thousands of group members, the CDN edge for that region may not have the object cached. The CDN collapses concurrent requests to the origin (request coalescing) — only one request fetches from S3; the others block until the object is cached. This is a built-in CDN feature (e.g., CloudFront's regional edge caches, Cloudflare's Tiered Cache).
-
-```mermaid
-sequenceDiagram
-    participant SC as Sender Client
-    participant MS as Media Service
-    participant S3 as Object Store (S3)
-    participant TQ as Transcode Queue
-    participant CDN as CDN Edge
-    participant RC as Recipient Client
-
-    SC->>MS: POST /media/upload {sha256, size}
-    MS->>MS: Check dedup index
-    alt hash exists
-        MS-->>SC: {media_ref: "<sha256>"} (no upload)
-    else hash new
-        MS-->>SC: {upload_url: "<presigned>", media_ref: "<sha256>"}
-        SC->>S3: PUT <presigned_url> (encrypted blob)
-        S3-->>MS: upload-complete notification
-        MS->>TQ: enqueue transcode job
-    end
-    SC->>SC: Embed media_ref in message
-    Note over RC,CDN: Later, when recipient views message
-    RC->>MS: GET /media/<sha256>
-    MS-->>RC: 302 redirect to signed CDN URL
-    RC->>CDN: GET <signed URL>
-    alt cache hit
-        CDN-->>RC: media variant
-    else cache miss
-        CDN->>S3: GET /media/<sha256>/720p
-        S3-->>CDN: media variant
-        CDN-->>RC: media variant
-    end
-```
+- **Duplicate delivery (lost ACK):** Client deduplicates by `message_id`. Only the first delivery is processed; subsequent deliveries trigger a re-ACK.
+- **Reconnection storm:** When a network partition heals, thousands of clients reconnect simultaneously. Each Chat Server applies per-user exponential backoff with jitter on the reconnect handshake to smooth the load spike.
+- **Server crash:** The offline queue is backed by an append-only commit log. On restart, the server replays the log to rebuild the in-memory queue state. Messages written but not yet fanned out to recipient servers are replayed as well.
 
 > [!TIP]
-> **What the WhatsApp team actually did:** Before S3/CDN, WhatsApp ran their own media servers on FreeBSD with directly-attached JBOD storage (6×800 GB SSD for images, 4 TB SATA for audio/video). Their key optimization was a hashed directory tree — no more than 1,000 files per leaf directory — to avoid filesystem directory-entry contention. They also hit a `sendfile()` bug on FreeBSD where async I/O threads caused long BEAM stalls, so they disabled kernel-level sendfile entirely and used userspace async threads (`+A 1024`). This is the cost of running your own storage layer: you inherit kernel and filesystem bugs.
+> **Key insight:** The offline queue is the durability anchor. Real-time delivery (process-to-process, pub/sub) is a best-effort nudge — if it fails, the message is still in the inbox and arrives on the next reconnect. This decouples latency from durability.
 
-### DD4: End-to-end encryption (Signal Protocol — X3DH + Double Ratchet)
+> [!TIP]
+> **Why not a message broker?** Kafka would persist every message — even the 50%+ delivered instantly — adding disk I/O and replication overhead to the hot path. The inbox pattern persists only the minority of messages that need it, keeping the fast path pure in-memory.
 
-**Problem.** Messages must be readable only by sender and recipient — not by the server, not by an attacker who compromises the server, not by law enforcement with a subpoena. This constraint fundamentally changes the architecture: the server cannot index message content (no full-text search), cannot perform server-side spam/content filtering on plaintext, cannot transcode or resize media server-side (media is encrypted before upload), and cannot generate read receipts by inspecting message content. Encryption must work asynchronously — the recipient may be offline when the sender composes the first message.
+### DD2: Group messaging at scale
 
-**Approach 1: TLS everywhere, server decrypts and re-encrypts**
+**Problem.** A message to a 1,024-member group requires 1,024 deliveries. With pairwise encryption (Double Ratchet per recipient), the sender would encrypt the message 1,024 times and transmit 1,024 distinct ciphertexts — O(n) client CPU and bandwidth. Server-side fan-out must be concurrent to avoid head-of-line blocking where one slow recipient stalls the entire group.
 
-Client→Server communication is encrypted with TLS. The server decrypts, processes (stores, indexes, spam-checks), then re-encrypts for delivery to the recipient.
+**Approach 1: Server-side fan-out via lightweight concurrent processes**
 
-- **Challenges:** the server sees plaintext. A server compromise, insider threat, or government subpoena exposes all messages. This is how email (SMTP) and most pre-2016 chat systems worked. It fails the core requirement.
-
-**Approach 2: Pairwise shared secret per conversation**
-
-Sender and recipient establish a shared AES key (via Diffie-Hellman) and use it for all messages in the conversation.
-
-- **Challenges:** one key for all messages means that compromising the key reveals the entire conversation history. No forward secrecy. Key distribution requires both parties to be online simultaneously — impossible for asynchronous messaging.
-
-**Approach 3: Signal Protocol — X3DH + Double Ratchet**
-
-*Session establishment (X3DH):* The initiator downloads the recipient's prekey bundle from the server: Identity Key (long-term), Signed Pre-Key (medium-term, rotated weekly), and one One-Time Pre-Key (single-use, replenished in batches). The initiator computes:
+The Group Service fans out each group message to members' Chat Servers as concurrent, independent sends. Each member delivery is its own lightweight process — if one member's server is slow or unreachable, the other 1,023 deliveries proceed unimpeded.
 
 ```javascript
-master_secret = ECDH(I_A, S_B) || ECDH(E_A, I_B) || ECDH(E_A, S_B) || ECDH(E_A, O_B)
+Sender App → Chat Server → Group Service
+                                │
+                    ┌───────────┼───────────┐
+                    ▼           ▼           ▼
+               Member A     Member B     Member C
+               CS Process   CS Process   CS Process
 ```
 
-This is four Diffie-Hellman operations that together produce a shared secret even though the recipient is offline. The server stores and serves prekey bundles but never sees the resulting secret. The master secret is fed through HKDF to produce a Root Key and initial Chain Key.
+- **Normal path:** Group Service reads the member list (cached in memory), resolves each member's Chat Server from the routing table (microsecond Mnesia lookup), and dispatches the ciphertext to each member's server via Erlang message passing. For offline members, the ciphertext goes to the offline queue (see DD1).
+- **Edge case (partial failure):** If a member's Chat Server is unreachable, the Group Service writes the message to that member's offline queue and moves on. The delivery retries on reconnect.
 
-*Message encryption (Double Ratchet):* For every message, a symmetric ratchet derives a fresh Message Key: `MK = HKDF(CK, constant)`. The Chain Key is then ratcheted forward: `CK = HKDF(CK, different_constant)`. Each Message Key encrypts exactly one message with AES-256-CBC and is then discarded. Additionally, a DH ratchet is performed periodically (every N messages or on direction change): the sender generates a new ephemeral keypair, performs DH with the recipient's current public key, and derives a new Root Key and Chain Key from the result. This DH ratchet provides post-compromise security — if an attacker steals the current Chain Key, they can decrypt future messages only until the next DH ratchet, after which the stolen key is useless.
+**Approach 2: Sender Keys for O(1) encryption**
 
-**Decision:** Signal Protocol (X3DH for asynchronous session establishment, Double Ratchet for per-message forward secrecy).
+Instead of encrypting the message N times with N pairwise Double Ratchet sessions, the sender encrypts once with a symmetric Sender Key shared with all group members.
 
-**Rationale:** WhatsApp deployed the Signal Protocol to all users in 2016 (in partnership with Open Whisper Systems), making it the largest E2E-encrypted messaging platform at the time. X3DH's key property — enabling encryption without both parties online — is what makes E2E viable for asynchronous messaging. The Double Ratchet's per-message key derivation means that compromising a single Message Key reveals only that one message. The DH ratchet layer means that even a full state compromise (all current keys) is healed after one round-trip — the attacker is "ratcheted out." This "self-healing" property is why security researchers consider the Signal Protocol the gold standard for asynchronous messaging encryption.
+```python
+# Setup: distribute Sender Key to each member's devices
+# (runs once per member-add, using pairwise Double Ratchet)
+def distribute_sender_key(group_id, sender_id, member_devices):
+    chain_key = os.urandom(32)           # 32-byte seed
+    sign_key = nacl.sign.SigningKey.generate()
+    sender_key_msg = pack(chain_key, sign_key.verify_key)
+
+    for device in member_devices:
+        session = get_double_ratchet_session(device)
+        device.send(session.encrypt(sender_key_msg))
+
+# Each subsequent message: encrypt once, ratchet forward
+def encrypt_group_message(plaintext, chain_key, sign_key):
+    msg_key = HKDF(chain_key, salt=b"msg")      # derive per-message key
+    chain_key = HKDF(chain_key, salt=b"chain")   # advance chain
+    iv = os.urandom(16)
+    ciphertext = AES_CBC_encrypt(plaintext, msg_key, iv)
+    signature = sign_key.sign(ciphertext)
+    return ciphertext, signature, chain_key      # single blob for all members
+```
+
+- **Forward secrecy:** The hash ratchet on the Chain Key is one-way — compromising the current Chain Key reveals future message keys but never past ones.
+- **Member removal:** When a member leaves, all remaining participants discard their Sender Keys and re-establish. The new Sender Key is distributed only to remaining members via pairwise Double Ratchet — the departed member cannot decrypt new messages.
+
+**Approach 3: Read-based fan-out for very large groups**
+
+For groups above ~1,024 members, fan-out on write becomes expensive: the sender's Group Service process must touch thousands of member servers. An alternative is fan-out on read: write the message once to a group feed, and have members pull on reconnect or poll periodically.
+
+- **Pro:** Write cost is O(1) regardless of group size.
+- **Con:** Adds latency — online members don't get an instant push. Requires a polling infrastructure. Breaks the real-time expectation for smaller groups.
+
+**Decision:** Server-side fan-out (Approach 1) with Sender Keys (Approach 2) for groups up to 1,024. Read-based fan-out (Approach 3) is reserved for broadcast-style channels if needed beyond the 1,024 limit.
+
+**Rationale:** At WhatsApp's scale, the vast majority of groups have fewer than 256 members. Server-side fan-out via lightweight processes handles 256-member groups comfortably — 256 concurrent Erlang message sends complete in microseconds. Sender Keys make the client-side cost O(1) per message regardless of group size, which is critical on mobile where CPU and battery are constrained. The 1,024-member cap keeps Sender Key re-distribution (on member churn) bounded: a member join/leave triggers at most 1,023 pairwise Double Ratchet encryptions to distribute the new key.
 
 **Edge cases:**
 
-- **Pre-key pool exhaustion:** If a recipient's one-time pre-keys are exhausted (all 100 consumed without replenishment), the server returns a "last-resort" pre-key. The initiator still computes DH4 with the last-resort key. Security is slightly weakened (the last-resort key is reused), but the session still establishes. The recipient is notified to replenish their pre-key pool.
-- **Device change / re-install:** When a user reinstalls the app or gets a new phone, their Identity Key changes. Senders are notified of a "security code change" and must explicitly verify the new key before sending. Messages sent during the key-change window are held until the sender confirms or the new prekey bundle is fetched.
-- **Group key rotation:** When a member leaves, all Sender Keys are rotated (see DD2). During the rotation window, the departing member could theoretically decrypt one more message. WhatsApp accepts this as a pragmatic tradeoff — the alternative (blocking the group during rotation) is worse for user experience. Signal mitigates this more aggressively with "Post-Compromise Security via Puncture" in newer group protocols, but WhatsApp's Sender Key implementation has not adopted this yet.
-- **Server compromise:** Even if an attacker gains full access to the server's database, they see only ciphertext blobs — unreadable without the private keys that exist only on user devices. The attacker could serve malicious prekey bundles to future session establishments (a man-in-the-middle attack), but this requires active interference and is detectable if users verify security codes out-of-band.
+- **Member churn (join):** New member gets the current Sender Key encrypted over a pairwise Double Ratchet session. Existing members continue using the current key.
+- **Member churn (leave):** All remaining members discard their Sender Keys. Everyone re-establishes — each remaining member distributes a new Sender Key to the other members. For a 256-member group, this is ~256 × 255 pairwise encryptions, amortized across all members.
+- **Large fan-out skew:** A member on a slow 2G connection does not block the group — the Group Service sends concurrently and the slow member's message lands in the offline queue for later delivery.
 
-## 7. Trade-offs
+> [!TIP]
+> **Key insight:** The combination of server fan-out and Sender Keys decouples the sender's cost from group size. The sender does O(1) work; the server does O(n) fan-out in parallel. This is the only arrangement that keeps group messaging fast on the sender's device while handling groups of hundreds.
 
-| Decision | Chosen | Rejected | Why |
-|---|---|---|---|
-| Connection routing | Redis Pub/Sub per-user channels | Consistent hashing + server mesh | Pub/Sub eliminates N² server connections and coordination service bottleneck; at-most-once semantics are acceptable because the durable Inbox is the system of record |
-| Message queue | None — Pub/Sub + direct DB write | Kafka per user or per chat | Kafka imposes ~50 KB metadata per topic; 2B users → 100 TB of topic metadata before storing a single message. BEAM process mailboxes are the queue in production WhatsApp |
-| Group fan-out | Sender Keys + adaptive write/read | Fan-out on write for all groups | Write amplification becomes untenable above ~256 members; Sender Keys amortize encryption cost over group lifetime |
-| Media path | Presigned S3 upload + CDN download | Server-proxied media | Chat Servers must not touch large blobs — NIC saturation degrades message latency for all users on the server; presigned URLs push bandwidth to S3/CDN |
-| Storage engine | Cassandra for Inbox, S3 for media, Redis for presence | Single monolithic store | Each workload has different access patterns: high-write sequential (Inbox), large-blob read-heavy (Media), ephemeral TTL (Presence) |
-| Encryption | Signal Protocol (X3DH + Double Ratchet) | TLS-only or static per-conversation keys | Server must never see plaintext; X3DH enables async session establishment; Double Ratchet provides per-message forward secrecy and post-compromise security |
-| Sequence numbers | Global monotonic sequence per (user, device) | Per-chat sequence | Reconnect sync with per-chat sequences requires N range scans (one per chat); a single global sequence enables one efficient range scan |
-| Connection density | 1M+ connections per server (Erlang/BEAM) | 50K–100K connections (thread-per-connection) | Thread/goroutine-per-connection models hit memory and scheduling walls at ~100K; BEAM's lightweight processes (~2.7 KB each) enable 10–20× density — WhatsApp's ~10 server engineers managed 550 servers |
+### DD3: Media sharing
 
-## 8. References
+**Problem.** Media bandwidth dwarfs text messaging: 10 PB ingested daily, with peak output bandwidth of ~30 Gbps. Routing multi-MB blobs through the Chat Server saturates the message hot path, which is tuned for sub-millisecond text delivery at 3.5M msgs/sec. The media path must be separated, and storage cost must be controlled through deduplication.
 
-1. [WhatsApp Encryption Overview — Technical Whitepaper](https://files.catbox.moe/fopl6w.pdf) — Signal Protocol integration, X3DH, Double Ratchet, Sender Keys
-2. [Open Whisper Systems: WhatsApp's Signal Protocol Integration Complete](https://signal.org/blog/whatsapp-complete/) — E2E rollout to 1B+ users
-3. [Meta Engineering: How WhatsApp Enables Multi-Device Capability](https://engineering.fb.com/2021/07/14/security/whatsapp-multi-device/) — Device identity keys, client-fanout sending
-4. [Rick Reed, Erlang Factory SF 2012 — Scaling WhatsApp (PDF)](http://www.erlang-factory.com/upload/presentations/558/efsf2012-whatsapp-scaling.pdf) — 2M connections/server, contention fixes
-5. [Rick Reed, Erlang Factory SF 2013 — Multimedia Galore (PDF)](http://www.erlang-factory.com/upload/presentations/752/reed-efsf2013-whatsapp.pdf) — 214M images/day, media storage architecture
-6. [Rick Reed, Erlang Factory SF 2014 — WhatsApp Scaling (PDF)](http://www.erlang-factory.com/static/upload/media/1394350183453526efsf2014whatsappscaling.pdf) — Mnesia island architecture, meta-clustering, BEAM patches
-7. [Igors Istocniks, Code BEAM SF 2019 — How WhatsApp Moved 1.5B Users Across Data Centers (PDF)](https://codemesh.io/uploads/media/activity_slides/0001/01/f9539fb9fd3565db0de255bbbb0289ad5fe17414.pdf) — Per-prefix failover, db_module abstraction, C++ gateway
-8. [WhatsApp/warts on GitHub](https://github.com/WhatsApp/warts) — WhatsApp's open-source Erlang runtime fork (Apache 2.0)
+**Approach 1: Separate media path with direct-to-storage upload**
 
+The client uploads media directly to a dedicated Media Server over HTTP, bypassing the Chat Server entirely. The Chat Server sees only a thin message containing a `media_id` reference.
+
+```javascript
+Sender App ──HTTP POST /media/upload──→ Media Server ──→ Object Storage
+     │
+     └──WebSocket SEND_MESSAGE {media_id, key}──→ Chat Server ──→ Recipient
+                                                                      │
+                              Recipient App ←──HTTP GET /media/{id}───┘
+```
+
+- **Upload:** App encrypts the media file with a random AES-256 key, uploads the ciphertext to the Media Server. The server stores the blob in object storage, records the content hash for dedup, and returns a `media_id`.
+- **Download:** Recipient app fetches the blob via HTTP GET, decrypts with the key from the thin message. The Media Server can serve directly or redirect to a CDN edge for popular content.
+- **Challenges:** The Media Server becomes a bandwidth funnel if every download hits it directly. CDN caching (with short-lived signed URLs) distributes the load for popular blobs. For unpopular blobs (the long tail), direct serve from object storage with an edge cache is sufficient.
+
+**Approach 2: Client-side encryption with server-opaque blobs**
+
+The server stores and forwards ciphertext it cannot decrypt. This preserves the E2E guarantee: a compromised Media Server yields zero plaintext.
+
+- **Normal path:** Sender generates a fresh AES-256 key per upload, encrypts the file, uploads the ciphertext. The key is transmitted inside the Signal Protocol ciphertext over the chat path — the Chat Server cannot read it either.
+- **Edge case (key loss):** If the thin message with the AES key is lost (recipient offline, message expires), the media blob is unrecoverable. The `MediaBlob` has a 30-day TTL; if no thin message references it within that window, the blob is garbage-collected.
+
+**Approach 3: Content-hash deduplication**
+
+When multiple users share the same media (forwarded memes, viral videos), the server stores one copy and reference-counts it. The dedup key is the SHA-256 hash of the encrypted blob.
+
+```python
+def handle_upload(encrypted_blob):
+    h = sha256(encrypted_blob)
+    existing = db.query("SELECT media_id, ref_count FROM media WHERE content_hash = ?", h)
+    if existing:
+        db.execute("UPDATE media SET ref_count = ref_count + 1 WHERE content_hash = ?", h)
+        return existing.media_id
+    else:
+        media_id = uuid4()
+        s3.put_object(Key=media_id, Body=encrypted_blob)
+        db.execute("INSERT INTO media (...) VALUES (...)", media_id, h, ref_count=1)
+        return media_id
+```
+
+- **Challenges:** The dedup works only on identical ciphertext blobs — two users who independently photograph the same scene will produce different ciphertexts (different AES keys, different IVs). The effective dedup rate applies primarily to forwarded media, where the same ciphertext blob is reused.
+
+**Decision:** Separate media path (Approach 1) with client-side encryption (Approach 2) and content-hash dedup (Approach 3). All three are kept as complementary layers.
+
+**Rationale:** Removing the Chat Server from the media path is the non-negotiable starting point — at 10 PB/day, media traffic would overwhelm the message routing infrastructure. Client-side encryption follows from the E2E requirement (NFR1). Dedup by content hash reclaims significant storage on forwarded content without the server needing plaintext access.
+
+**Edge cases:**
+
+- **Upload interrupted:** Client retries with a fresh upload. If the first upload partially completed, the orphaned blob is garbage-collected when no `MediaBlob` row points to it and TTL expires.
+- **Chunked upload for large files:** Files above ~10 MB are split into chunks, each uploaded independently with a manifest. The thin message carries the manifest reference.
+- **Reference count races:** Two simultaneous uploads of the same content hash both see `ref_count=0` and both create a `MediaBlob` row. The unique constraint on `content_hash` ensures only one row survives; the duplicate blob in S3 is garbage-collected.
+
+> [!TIP]
+> **Key insight:** The media path and chat path are independent failure domains. If the Media Server is degraded, text messaging continues unaffected. The thin message (under 1 KB) is the only coupling point — it carries the `media_id` and the decryption key, both opaque to the Chat Server.
+
+> [!TIP]
+> **Why not stream through the chat server?** At 3.5M msgs/sec for text, the Chat Server processes are CPU-bound on message routing. Adding 30 Gbps of media pass-through would require 10× the servers and introduce head-of-line blocking where a 5 MB video delays the text messages queued behind it.
+
+### DD4: End-to-end encryption
+
+**Problem.** Messages must be unreadable to the server, the network, and the storage infrastructure. The encryption must work asynchronously (Alice can message Bob while Bob is offline), provide forward secrecy (compromising today's keys does not expose yesterday's messages), and scale to groups without O(n) per-message overhead.
+
+**Approach 1: X3DH for asynchronous key agreement**
+
+Every client generates a long-term Identity Key, a medium-term Signed Prekey (rotated periodically), and a pool of one-time Prekeys (100 per batch). These are uploaded to the PreKey Store as a bundle.
+
+When Alice first messages Bob (who may be offline):
+
+```javascript
+Alice fetches Bob's prekey bundle from server
+  ┌─────────────────────────────────────────┐
+  │ IK_B (identity), SPK_B (signed prekey), │
+  │ OPK_B (one-time prekey, if available)   │
+  └─────────────────────────────────────────┘
+
+Alice computes shared secret via 3-4 DH operations:
+  DH1 = DH(IK_A, SPK_B)
+  DH2 = DH(EK_A, IK_B)       ← EK_A is fresh ephemeral
+  DH3 = DH(EK_A, SPK_B)
+  DH4 = DH(EK_A, OPK_B)      ← if OPK available
+  RootKey = KDF(DH1 || DH2 || DH3 || DH4)
+```
+
+The `RootKey` seeds the Double Ratchet. Bob, on receiving Alice's initial message (which includes her ephemeral public key `EK_A`), performs the same DH operations using his private keys to derive the same `RootKey`.
+
+- **Asynchronous:** Bob does not need to be online. Alice fetches his prekey bundle from the server, performs the handshake, and sends the first message — Bob computes the shared secret when he comes online and receives it.
+- **Deniability:** Either party could have generated the ephemeral keys used in the handshake. Neither side can cryptographically prove the other participated.
+
+**Approach 2: Double Ratchet for per-message forward secrecy**
+
+After X3DH establishes the `RootKey`, the Double Ratchet derives a unique key for every message. It combines two mechanisms:
+
+**Symmetric ratchet (hash chain) — forward secrecy:**
+
+```python
+def symmetric_ratchet(chain_key):
+    msg_key = HMAC_SHA256(chain_key, b"\x01")     # per-message key
+    next_chain_key = HMAC_SHA256(chain_key, b"\x02")  # advance
+    return msg_key, next_chain_key
+```
+
+Each message consumes one `msg_key` and advances the chain. Since the hash is one-way, compromising the current `chain_key` reveals future keys but never past ones — hence forward secrecy.
+
+**DH ratchet — post-compromise security:**
+
+Every message from Alice includes a fresh DH public key. When Bob receives it, he performs a DH with his own keypair, mixing the output into the root key:
+
+```python
+def dh_ratchet(their_dh_public, our_dh_private, root_key):
+    dh_output = DH(our_dh_private, their_dh_public)
+    new_root = HMAC_SHA256(root_key, dh_output || b"\x01")
+    new_chain = HMAC_SHA256(root_key, dh_output || b"\x02")
+    return new_root, new_chain
+```
+
+After one round trip, fresh DH entropy is introduced that an attacker who compromised the previous state cannot derive — the session "heals."
+
+- **Message encryption:** `ciphertext = AES-256-CBC(plaintext, msg_key, random_iv)`, authenticated with an HMAC.
+- **Out-of-order delivery:** The Double Ratchet handles skipped messages by advancing the chain key forward and storing skipped message keys (up to a configurable window) for later decryption.
+
+**Approach 3: Sender Keys for O(1) group encryption**
+
+Groups use Sender Keys (see DD2 for the fan-out side, here for the cryptographic side): each sender generates a per-group Chain Key and Signing Key pair, distributes them to all group members via pairwise Double Ratchet sessions, then encrypts each subsequent group message once with the Chain Key.
+
+```python
+# Per-message encryption (identical mechanism to symmetric ratchet)
+msg_key = HMAC_SHA256(chain_key, b"\x01")
+chain_key = HMAC_SHA256(chain_key, b"\x02")
+ciphertext = AES-256-CBC(plaintext, msg_key, iv)
+signature = Ed25519_Sign(sign_key, ciphertext)
+```
+
+- **Forward secrecy:** Same hash ratchet as the Double Ratchet — compromising the current Chain Key cannot recover past `msg_key` values.
+- **Member removal:** On member departure, all participants discard their Sender Keys. The departing member can no longer decrypt new messages because the new Sender Key is distributed only to remaining members.
+- **Sender authentication:** The Ed25519 signature on each ciphertext proves the message came from the claimed sender, preventing in-group impersonation.
+
+**Decision:** Full Signal Protocol: X3DH (Approach 1) for session establishment, Double Ratchet (Approach 2) for 1:1 forward secrecy, and Sender Keys (Approach 3) for O(1) group encryption.
+
+**Rationale:** X3DH is the only asynchronous key agreement that provides forward secrecy and deniability without requiring both parties to be online simultaneously — essential for mobile messaging. The Double Ratchet's combination of symmetric hash ratchet (forward secrecy) and DH ratchet (post-compromise security) gives both properties with per-message granularity. Sender Keys keep group encryption O(1) at the sender, critical for mobile battery and CPU. The server stores only ciphertext and public key material — a full server compromise yields no plaintext.
+
+**Edge cases:**
+
+- **Prekey exhaustion:** If Bob's one-time prekey pool is depleted (Alice is the 101st person to message him since his last upload), the handshake falls back to 3-DH without the one-time prekey. Forward secrecy still holds via the ephemeral key.
+- **Identity key change:** If Bob reinstalls the app (new Identity Key), Alice sees a "security code changed" notification. She must manually verify the new identity before the session continues.
+- **Group key rotation on member leave:** All remaining members discard Sender Keys and re-establish with each other. The departing member's pairwise Double Ratchet sessions are also terminated, preventing them from being re-added silently.
+
+> [!TIP]
+> **Key insight:** The encryption architecture is layered: X3DH establishes the session, Double Ratchet rotates keys per message for 1:1 chats, and Sender Keys abstract groups into a single symmetric session per sender. The server's role is limited to storing and forwarding ciphertext blobs and public key material — it is cryptographically excluded from the plaintext at every layer.
+
+> [!TIP]
+> **Why not server-side encryption?** If the server held the keys, a compromise would expose every message ever sent. Client-held keys with per-message ratcheting mean the server stores only ciphertext — even a total infrastructure breach yields no plaintext. This is the fundamental difference between privacy-by-policy and privacy-by-cryptography.
+
+## 7. References
+
+1. Rick Reed. (2014). ["That's Billion with a B: Scaling WhatsApp"](https://www.infoq.com/presentations/whatsapp-scalability/). Erlang Factory SF.
+1. Rick Reed. (2012). ["Scaling to Millions of Simultaneous Connections"](http://www.erlang-factory.com/upload/presentations/558/efsf2012-whatsapp-scaling.pdf). Erlang Factory SF.
+1. WhatsApp Security Whitepaper. (2026). ["WhatsApp Encryption Overview"](https://www.whatsapp.com/security/WhatsApp-Security-Whitepaper.pdf).
+1. Meta Engineering. (2021). ["How WhatsApp enables multi-device capability"](https://engineering.fb.com/2021/07/14/security/whatsapp-multi-device/).
+1. Signal Protocol. ["The X3DH Key Agreement Protocol"](https://signal.org/docs/specifications/x3dh/).
+1. Signal Protocol. ["The Double Ratchet Algorithm"](https://signal.org/docs/specifications/doubleratchet/).
+1. Maxim Fedorov. (2020). [Erlang OTP 23: pg module replaces pg2](https://erlang.org/download/OTP-23.0). Erlang OTP Team.

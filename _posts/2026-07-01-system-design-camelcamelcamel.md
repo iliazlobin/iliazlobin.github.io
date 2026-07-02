@@ -1,13 +1,13 @@
 ---
 layout: post
-thumbnail: /images/posts/2026-07-01-system-design-camelcamelcamel.svg
 title: "System Design: CamelCamelCamel"
 date: 2026-07-01
-tags: [System Design, Price Tracking]
-description: "Design a price tracking service that lets users monitor product prices across online retailers, view historical price charts, and receive alerts when prices drop to a target threshold. The system m..."
+tags: [System Design]
+description: "Design a price tracking service that lets users monitor product prices across online retailers, view historical price charts, and receive alerts when prices drop to a target threshold."
+thumbnail: /images/posts/2026-07-01-system-design-camelcamelcamel.svg
 ---
 
-Design a price tracking service that lets users monitor product prices across online retailers, view historical price charts, and receive alerts when prices drop to a target threshold. The system must acquire price data at scale (100M+ products), store it efficiently for interactive chart rendering, enforce crawl politeness to avoid being blocked, and deliver timely notifications without spam.
+Design a price tracking service that lets users monitor product prices across online retailers, view historical price charts, and receive alerts when prices drop to a target threshold.
 
 <!--more-->
 
@@ -23,12 +23,12 @@ flowchart LR
     A --> DB[(Datastores)]
     W --> DB
     W --> Q[Kafka Queue]
-    style C fill:#e1f5fe
-    style G fill:#fff3e0
-    style A fill:#e8f5e9
-    style W fill:#f3e5f5
-    style DB fill:#ffccbc
-    style Q fill:#fff9c4
+    style C fill:#81D4FA,stroke:#0288D1,stroke-width:1.5px,color:#1A1A1A
+    style G fill:#FFD54F,stroke:#FFA000,stroke-width:1.5px,color:#1A1A1A
+    style A fill:#A5D6A7,stroke:#388E3C,stroke-width:1.5px,color:#1A1A1A
+    style W fill:#CE93D8,stroke:#7B1FA2,stroke-width:1.5px,color:#1A1A1A
+    style DB fill:#FFAB91,stroke:#E64A19,stroke-width:1.5px,color:#1A1A1A
+    style Q fill:#F48FB1,stroke:#C2185B,stroke-width:1.5px,color:#1A1A1A
 ```
 
 The gateway routes user-facing requests (watchlist management, charts, search) to the app server, and enqueues crawl jobs to the worker pool. Workers read from Kafka, fetch prices through a rotating proxy layer, write price changes to TimescaleDB, and evaluate alerts in a Kafka-backed fanout pipeline.
@@ -147,83 +147,88 @@ flowchart TD
         ES[Elasticsearch] --> AS
         FE --> ES
     end
+
+    style FE fill:#81D4FA,stroke:#0288D1,stroke-width:1.5px,color:#1A1A1A
+    style GW fill:#FFD54F,stroke:#FFA000,stroke-width:1.5px,color:#1A1A1A
+    style AS fill:#A5D6A7,stroke:#388E3C,stroke-width:1.5px,color:#1A1A1A
+    style Auth fill:#FFF59D,stroke:#FBC02D,stroke-width:1.5px,color:#1A1A1A
+    style PG fill:#FFAB91,stroke:#E64A19,stroke-width:1.5px,color:#1A1A1A
+    style TS fill:#FFAB91,stroke:#E64A19,stroke-width:1.5px,color:#1A1A1A
+    style RD fill:#B39DDB,stroke:#512DA8,stroke-width:1.5px,color:#1A1A1A
+    style Sched fill:#CE93D8,stroke:#7B1FA2,stroke-width:1.5px,color:#1A1A1A
+    style Q fill:#F48FB1,stroke:#C2185B,stroke-width:1.5px,color:#1A1A1A
+    style WP fill:#80CBC4,stroke:#00796B,stroke-width:1.5px,color:#1A1A1A
+    style PL fill:#B0BEC5,stroke:#455A64,stroke-width:1.5px,color:#1A1A1A
+    style Retailers fill:#B0BEC5,stroke:#455A64,stroke-width:1.5px,color:#1A1A1A
+    style AE fill:#C5E1A5,stroke:#689F38,stroke-width:1.5px,color:#1A1A1A
+    style AQ fill:#F48FB1,stroke:#C2185B,stroke-width:1.5px,color:#1A1A1A
+    style ND fill:#80CBC4,stroke:#00796B,stroke-width:1.5px,color:#1A1A1A
+    style Email fill:#80CBC4,stroke:#00796B,stroke-width:1.5px,color:#1A1A1A
+    style Push fill:#80CBC4,stroke:#00796B,stroke-width:1.5px,color:#1A1A1A
+    style CA fill:#A5D6A7,stroke:#388E3C,stroke-width:1.5px,color:#1A1A1A
+    style ES fill:#C5E1A5,stroke:#689F38,stroke-width:1.5px,color:#1A1A1A
 ```
 
 #### FR1: Watchlist Management
 
-**Components:** App server, PostgreSQL, URL normalization module, Redis dedup cache.
-
-**Flow:**
-
-1. User submits an Amazon URL via the web app or browser extension.
-1. URL normalizer extracts ASIN using regex `(?:/dp/|/gp/product/|/ASIN/)([A-Z0-9]{10})`; marketplace is inferred from the URL's TLD.
-1. App server upserts into products: `INSERT INTO products (asin, marketplace, title) VALUES ($1, $2, $3) ON CONFLICT (asin, marketplace) DO UPDATE SET title = COALESCE(products.title, EXCLUDED.title)`.
-1. Watch record is inserted: `INSERT INTO watches (user_id, product_id, target_price) VALUES ($1, $2, $3)`.
-1. Product's `subscriber_count` is incremented and crawl_tier promoted to 1 (hot).
-
-**Design consideration:** ASIN alone is not globally unique — `amazon.com/dp/B08N5WRWNW` and `amazon.co.uk/dp/B08N5WRWNW` are different products with different prices. The composite key `(asin, marketplace)` prevents collision. URL normalization handles six distinct Amazon URL formats: `/dp/`, `/gp/product/`, `/ASIN/`, short links, affiliate-wrapped URLs, and mobile product-page variants.
+- **Components:** App server, PostgreSQL, URL normalization module, Redis dedup cache.
+- **Flow:**
+  1. User submits an Amazon URL via the web app or browser extension.
+  1. URL normalizer extracts ASIN using regex `(?:/dp/|/gp/product/|/ASIN/)([A-Z0-9]{10})`; marketplace is inferred from the URL's TLD.
+  1. App server upserts into products: `INSERT INTO products (asin, marketplace, title) VALUES ($1, $2, $3) ON CONFLICT (asin, marketplace) DO UPDATE SET title = COALESCE(products.title, EXCLUDED.title)`.
+  1. Watch record is inserted: `INSERT INTO watches (user_id, product_id, target_price) VALUES ($1, $2, $3)`.
+  1. Product's `subscriber_count` is incremented and crawl_tier promoted to 1 (hot).
+- **Design consideration:** ASIN alone is not globally unique — `amazon.com/dp/B08N5WRWNW` and `amazon.co.uk/dp/B08N5WRWNW` are different products with different prices. The composite key `(asin, marketplace)` prevents collision. URL normalization handles six distinct Amazon URL formats: `/dp/`, `/gp/product/`, `/ASIN/`, short links, affiliate-wrapped URLs, and mobile product-page variants.
 
 **Edge cases:** Duplicate watch submission for the same (user, product) returns the existing watch id. Removing the last watch demotes crawl priority but does not delete the product or its price history.
 
 #### FR2: Scheduled Price Monitoring
 
-**Components:** Scheduler (single instance with leader election via PostgreSQL advisory lock), Kafka crawl queues (256 partitions keyed by `hash(hostname)`), Kafka consumer group (worker pool), rotating proxy layer, dual-extractor parser ([Schema.org](http://schema.org/) JSON-LD + CSS fallback), change detector.
-
-**Flow:**
-
-1. Scheduler ticks every 60 seconds and queries products due for re-check:
-1. Products are grouped by retailer hostname and enqueued to Kafka partitions keyed by `hash(hostname)`.
-1. Workers fetch jobs, route through the proxy layer, extract price via [Schema.org](http://schema.org/) JSON-LD (falling back to CSS selectors).
-1. Change detector computes `MD5(price || availability || hash(metadata))` and compares to stored hash. If unchanged, only `last_checked_at` is batched-updated:
-1. If changed, a new row is written to price_history and the alert evaluator is invoked.
-
-**Design consideration:** Store-only-changes reduces TimescaleDB write volume from 107M to ~14M rows per day (87% reduction). The three-tier schedule (hot 1h, warm 24h, cold 7d) reduces total checks 16x versus uniform hourly polling.
+- **Components:** Scheduler (single instance with leader election via PostgreSQL advisory lock), Kafka crawl queues (256 partitions keyed by `hash(hostname)`), Kafka consumer group (worker pool), rotating proxy layer, dual-extractor parser ([Schema.org](http://schema.org/) JSON-LD + CSS fallback), change detector.
+- **Flow:**
+  1. Scheduler ticks every 60 seconds and queries products due for re-check:
+  1. Products are grouped by retailer hostname and enqueued to Kafka partitions keyed by `hash(hostname)`.
+  1. Workers fetch jobs, route through the proxy layer, extract price via [Schema.org](http://schema.org/) JSON-LD (falling back to CSS selectors).
+  1. Change detector computes `MD5(price || availability || hash(metadata))` and compares to stored hash. If unchanged, only `last_checked_at` is batched-updated:
+  1. If changed, a new row is written to price_history and the alert evaluator is invoked.
+- **Design consideration:** Store-only-changes reduces TimescaleDB write volume from 107M to ~14M rows per day (87% reduction). The three-tier schedule (hot 1h, warm 24h, cold 7d) reduces total checks 16x versus uniform hourly polling.
 
 **Edge cases:** Fetch failure uses exponential backoff: 5s to 30s to 5m to 1h, max 4 retries, then quarantine. A 404/410 immediately dead-letters the product. Sustained retailer outages suspend crawl jobs for that host to preserve proxy budget.
 
 #### FR3: Price History and Charts
 
-**Components:** TimescaleDB hypertable with continuous aggregates, Redis cache layer, server-side downsampling.
-
-**Flow:**
-
-1. Frontend requests `GET /v1/products/:asin/history?range=1y`.
-1. API checks Redis key `chart:{asin}:{marketplace}:1y` (TTL 1 hour). On cache miss:
-1. Server downsamples to at most the viewport pixel width (800 points per range).
-1. Response cached in Redis and returned as JSON array of `{timestamp, price}` objects.
-
-**Design consideration:** Continuous aggregates are materialized views, not logical views — reads are <5 ms per query. Columnar compression in TimescaleDB achieves 90-95% on numerical price data. Layered downsampling across the three tiers requires at most ~9,500 data points for a full 2-year chart.
+- **Components:** TimescaleDB hypertable with continuous aggregates, Redis cache layer, server-side downsampling.
+- **Flow:**
+  1. Frontend requests `GET /v1/products/:asin/history?range=1y`.
+  1. API checks Redis key `chart:{asin}:{marketplace}:1y` (TTL 1 hour). On cache miss:
+  1. Server downsamples to at most the viewport pixel width (800 points per range).
+  1. Response cached in Redis and returned as JSON array of `{timestamp, price}` objects.
+- **Design consideration:** Continuous aggregates are materialized views, not logical views — reads are <5 ms per query. Columnar compression in TimescaleDB achieves 90-95% on numerical price data. Layered downsampling across the three tiers requires at most ~9,500 data points for a full 2-year chart.
 
 **Edge cases:** Data gaps beyond 7 days are rendered as break lines; gaps under 7 days are linearly interpolated. A product with no price history returns an empty array with 200 status. Querying beyond available data returns everything without error.
 
 #### FR4: Alerts and Notifications
 
-**Components:** Change event emitter, alert evaluator (inverted index scan on watches), Kafka alert topic (64 partitions keyed by `user_id`), notification dispatcher (SES for email, FCM for push), Redis rate-limiter.
-
-**Flow:**
-
-1. Price change event `{product_id, new_price, old_price, fetched_at}` emitted after price_history write.
-1. Alert evaluator queries the covering index:
-1. For each matching watch, `should_notify()` is evaluated — true only when `new_price < target_price AND (last_notified_price IS NULL OR new_price < last_notified_price)`.
-1. Triggered alert published to Kafka with idempotency key `(watch_id, crossing_ts)` at second-bucket resolution.
-1. Notification dispatcher reads alerts per partition, sends via the user's preferred channel, updates `last_notified_price`.
-
-**Design consideration:** A five-layer dedup cascade eliminates notification spam at every stage: (1) content hash eliminates 87% of evaluations before they start, (2) `last_notified_price` stops oscillation re-triggers, (3) Kafka idempotency key with 60s LRU dedup window handles producer/consumer retries, (4) Redis rate-limit caps at 24 notifications per watch per day, (5) digest mode merges bursts into summary notifications when alert rate exceeds 10x the rolling average.
+- **Components:** Change event emitter, alert evaluator (inverted index scan on watches), Kafka alert topic (64 partitions keyed by `user_id`), notification dispatcher (SES for email, FCM for push), Redis rate-limiter.
+- **Flow:**
+  1. Price change event `{product_id, new_price, old_price, fetched_at}` emitted after price_history write.
+  1. Alert evaluator queries the covering index:
+  1. For each matching watch, `should_notify()` is evaluated — true only when `new_price < target_price AND (last_notified_price IS NULL OR new_price < last_notified_price)`.
+  1. Triggered alert published to Kafka with idempotency key `(watch_id, crossing_ts)` at second-bucket resolution.
+  1. Notification dispatcher reads alerts per partition, sends via the user's preferred channel, updates `last_notified_price`.
+- **Design consideration:** A five-layer dedup cascade eliminates notification spam at every stage: (1) content hash eliminates 87% of evaluations before they start, (2) `last_notified_price` stops oscillation re-triggers, (3) Kafka idempotency key with 60s LRU dedup window handles producer/consumer retries, (4) Redis rate-limit caps at 24 notifications per watch per day, (5) digest mode merges bursts into summary notifications when alert rate exceeds 10x the rolling average.
 
 **Edge cases:** Flash sales produce 50M events in 5 minutes — free-tier alerts are shed when consumer lag exceeds 5 minutes. A price oscillation $49 to $51 to $49 triggers only one notification. Failed deliveries retry 3x over 24 hours, then flag for manual review.
 
 #### FR5: Product Search and Discovery
 
-**Components:** Elasticsearch cluster, URL lookup endpoint, browser extension content script.
-
-**Flow:**
-
-1. User types a search query on the web app; API proxies to Elasticsearch:
-1. Results returned sorted by subscriber count and recent price drop magnitude.
-1. Alternatively, user pastes a retailer URL — ASIN is extracted and the product page with chart and alert UI is returned.
-1. Browser extension content script injects on retailer product pages, queries the backend, and overlays the price chart.
-
-**Design consideration:** For single-retailer tracking, product search can proxy directly to the retailer's own search API — authoritative results with zero indexing cost, and this is the real CamelCamelCamel approach. For multi-retailer systems, Elasticsearch populated from scrape data is necessary with cross-retailer product matching via GTIN/EAN/UPC.
+- **Components:** Elasticsearch cluster, URL lookup endpoint, browser extension content script.
+- **Flow:**
+  1. User types a search query on the web app; API proxies to Elasticsearch:
+  1. Results returned sorted by subscriber count and recent price drop magnitude.
+  1. Alternatively, user pastes a retailer URL — ASIN is extracted and the product page with chart and alert UI is returned.
+  1. Browser extension content script injects on retailer product pages, queries the backend, and overlays the price chart.
+- **Design consideration:** For single-retailer tracking, product search can proxy directly to the retailer's own search API — authoritative results with zero indexing cost, and this is the real CamelCamelCamel approach. For multi-retailer systems, Elasticsearch populated from scrape data is necessary with cross-retailer product matching via GTIN/EAN/UPC.
 
 **Edge cases:** Empty results include spelling suggestions from Elasticsearch suggest API. The browser extension degrades gracefully when the backend is unreachable. Malicious ASIN submissions are rate-limited by source IP and quarantined if unverifiable within 24 hours.
 
@@ -411,28 +416,11 @@ If all entries have `next_allowed_at > now()`, the worker calls `heap[0][0] - no
 
 ---
 
-## 7. Trade-offs
-
-| Decision | Alternative | Rationale |
-|---|---|---|
-| Hybrid API + scraping | Pure API only (C3 model) | API provides reliability for core products; scraping extends coverage to long-tail and non-Amazon retailers. Pure API works only with preferential rate limits from high affiliate volume. |
-| TimescaleDB for price history | InfluxDB 3.x | SQL JOINs with product metadata outweigh InfluxDB's higher cardinality ceiling. TimescaleDB compression (90-95%) is competitive with InfluxDB's Parquet-based storage. |
-| Kafka for crawl + alert queues | Amazon SQS | Kafka provides partition-keyed delivery for host sharding, exactly-once semantics via idempotent producers, and consumer group rebalancing. SQS lacks ordered delivery per message group and partition-awareness. |
-| Host-sharded crawl partitioning | Random partitioning | Host sharding enables per-worker politeness without coordination — each worker owns its host's clock. Random partitioning would require a shared distributed mutex per host. |
-| Three-tier crawl schedule | Uniform polling | 16x cost reduction with bounded staleness (7 days for cold vs 1 hour). Cold products have zero subscribers, so stale data has no user-facing impact beyond delayed chart updates. |
-| Store-only-changes | Snapshot every check | 87% write reduction (107M checks to 14M writes). Price history interpolation fills gaps linearly. Snapshot approach would increase storage 8x and degrade write throughput. |
-| Continuous aggregates | On-query downsampling | Pre-computed hourly/daily views serve chart queries in <50 ms vs 200-500 ms computing on the fly from raw data. Storage overhead of aggregates is ~2% of raw data. |
-| Five-layer dedup cascade | Single idempotency key | Layered approach prevents unnecessary upstream work — write dedup eliminates 87% of alert evaluations before they start. Single-key approach evaluates all alerts before deduplicating the notification output. |
-| Email + FCM push | Email only | Free tier is email-only to control cost. Push via Firebase Cloud Messaging provides sub-minute delivery for paid subscribers and re-engages users via browser notifications. |
-| S3 cold storage for 1yr+ data | Keep all in TimescaleDB | S3 Glacier Deep Archive at ~$1/TB/month vs TimescaleDB at ~$50/TB/month. Restore latency of 1-12 hours is acceptable for rare view-all-time-history queries. |
-
----
-
-## 8. References
+## 7. References
 
 1. Software Engineering Daily #837 — [CamelCamelCamel (Daniel Green, 2019)](https://softwareengineeringdaily.com/wp-content/uploads/2019/05/SED837-CamelCamelCamel.pdf). Full transcript: Ruby on Rails + PHP + MySQL/Percona stack, SQS queues per country, PA-API, priority system, affiliate business model.
 1. [Mercator: A Scalable, Extensible Web Crawler (Heydon & Najork, 1999)](https://dl.acm.org/doi/10.1023/A%3A1019213109274). ACM paper defining the two-tier URL frontier design (front priority queues + back politeness queues) used as the foundation for distributed crawl systems.
 1. [TimescaleDB whitepaper — Benchmarking InfluxDB vs TimescaleDB](https://assets.timescale.com/whitepapers/Timescale_WhitePaper_Benchmarking_Influx.pdf). Official benchmark data on compression ratios (90-95%), memory usage, insert performance at varying cardinality levels.
 1. [PayPal Technology Blog — Honey Migration to Spanner (Sam Aronoff, 2018)](https://medium.com/paypal-tech/hi-ho-hi-ho-its-off-to-spanner-we-go-22c79d970708). Real-world architecture: Node.js + K8s + GCP, CloudSQL-to-Spanner migration taking a full year, GraphQL API gateway, hard lessons on undocumented assumptions.
 1. [Keepa API documentation](https://github.com/keepacom/php_api). Open-source Java backend (`keepacom/api_backend`), PHP API framework, and Python client library confirming time-series compression scheme and token-based pricing (20-250 tokens/min).
-1. [camelcamelcamel.com — How Our Price Checking System Works](https://camelcamelcamel.com/support/price_checks). Official documentation on price check frequency, data sources (Amazon PA-API), and browser extension (The Camelizer) functionality.
+1. [camelcamelcamel.com](http://camelcamelcamel.com/) [— How Our Price Checking System Works](https://camelcamelcamel.com/support/price_checks). Official documentation on price check frequency, data sources (Amazon PA-API), and browser extension (The Camelizer) functionality.

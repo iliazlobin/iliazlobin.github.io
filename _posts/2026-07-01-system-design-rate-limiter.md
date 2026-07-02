@@ -1,10 +1,10 @@
 ---
 layout: post
-thumbnail: /images/posts/2026-07-01-system-design-rate-limiter.svg
 title: "System Design: Rate Limiter"
 date: 2026-07-01
-tags: [System Design, Rate Limiting, Distributed Systems]
+tags: [System Design]
 description: "A rate limiter controls how many requests a client can make within a time window. It sits in the request path for every API call, enforcing configurable limits — per user, per IP, or per API key — and rejecting excess traffic with HTTP 429."
+thumbnail: /images/posts/2026-07-01-system-design-rate-limiter.svg
 ---
 
 A rate limiter controls how many requests a client can make within a time window. It sits in the request path for every API call, enforcing configurable limits — per user, per IP, or per API key — and rejecting excess traffic with HTTP 429.
@@ -27,6 +27,13 @@ graph LR
     Limiter --> Store
     Limiter --> Config
     Gateway --> Client
+
+    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
+    class Client,Gateway edge
+    class Limiter,Config svc
+    class Store store
 ```
 
 ## 2. Requirements
@@ -88,15 +95,15 @@ BucketState {
 
 ```mermaid
 graph TB
-    subgraph Edge[""]
+    subgraph Edge[" "]
         Client["Client"]
         GW["API Gateway"]
     end
-    subgraph Services[""]
+    subgraph Services[" "]
         LM["Rate Limiter<br/>Middleware"]
         RS["Rule Service"]
     end
-    subgraph Stores[""]
+    subgraph Stores[" "]
         Redis[("Redis Cluster<br/>bucket state")]
         DB[("Config DB<br/>rule definitions")]
     end
@@ -476,19 +483,7 @@ Additionally, before failing, the middleware tries its local token cache first. 
 > [!TIP]
 > **Why not fail-open everywhere, with separate DDoS protection?** DDoS mitigation at the network layer (scrubbing, anycast filtering) catches volumetric attacks before they reach the application. But application-layer abuse — credential stuffing, scraping, API key enumeration — is rate-shaped and looks like legitimate traffic. The rate limiter is the application-layer defense; failing it open during an application-layer attack surrenders that defense at the moment it is most needed. Per-rule fail mode puts the choice where the operator knows the risk: open for the login endpoint (users should always be able to log in), closed for the search endpoint (scrapers should never get a free pass).
 
-## 7. Trade-offs
-
-| Decision | Rejected alternative | Why |
-|---|---|---|
-| Two-tier (local cache + Redis) per FR5 | Centralized Redis only | 10x Redis traffic reduction keeps p99 latency sub-1ms and cluster size manageable; accuracy drift (~6%) is acceptable for fairness rules |
-| Lua EVALSHA for atomicity per FR2 | WATCH/MULTI/EXEC optimistic locking | Zero retry overhead under write contention; hot keys create exactly the high-conflict scenario where optimistic locking fails |
-| Multi-algorithm (token bucket + sliding window + GCRA) per FR4 | One algorithm for all rules | Different endpoints need different characteristics: burst tolerance for user APIs, strict per-IP for abuse prevention, low-memory GCRA for constrained deployments |
-| Per-rule fail-open/fail-closed per NFR2 | Uniform fail-open or fail-closed | Anti-abuse endpoints fail closed (safe during attack); user-facing endpoints fail open (availability > brief overshoot) |
-| Local rejection caching per FR3 | Redis check on every rejected request | During abuse events, caching the rejection verdict in process memory eliminates Redis calls for already-blocked keys |
-| Server-time clock in Lua per FR2 | Gateway-passed timestamps | Avoids clock-skew refill inconsistency; Redis is the single authoritative time source |
-| Hot-reloaded rule config per FR4 | Restart-on-change | Rules change during operation (adding endpoints, adjusting limits); hot-reload avoids brief gaps in enforcement |
-
-## 8. References
+## 7. References
 
 1. Stripe Engineering. ["Scaling your API with rate limiters"](https://stripe.com/blog/rate-limiters). Stripe Blog. Four-layer rate-limiting architecture: token bucket per user, concurrent request limiter, fleet usage shedder, and worker utilization shedder.
 1. Desgats, J. (2017). ["How we built rate limiting capable of scaling to millions of domains"](https://blog.cloudflare.com/counting-things-a-lot-of-different-things/). Cloudflare Blog. Sliding window counter with weighted estimate, Twemproxy + memcache per PoP, 0.003% error rate across 400M requests.
