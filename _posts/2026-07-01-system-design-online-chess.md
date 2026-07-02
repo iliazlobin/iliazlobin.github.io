@@ -36,19 +36,24 @@ graph LR
 ## 2. Requirements
 
 **Functional**
+
 - FR1: Find an opponent through skill-based matchmaking and start a game
 - FR2: Play a real-time chess game with validated moves and synchronized clocks
 - FR3: View a global leaderboard ranked by rating and see own position
 - FR4: Replay any completed game move-by-move with analysis
 - FR5: Join and participate in tournaments (arena and Swiss formats)
+
 **Non-functional**
+
 - NFR1: <200ms p95 end-to-end move propagation between opponents
 - NFR2: Consistency over availability — a game pauses rather than corrupting state
 - NFR3: Support 500K concurrent games (1M WebSocket connections) at peak
 - NFR4: Anti-cheat engine detection with low false-positive rate on flagged accounts
-**Out of scope:** spectator broadcasting, in-game chat, friends/social graph, puzzles and training content, opening explorer, monetization and subscriptions.
+
+*Out of scope: spectator broadcasting, in-game chat, friends/social graph, puzzles and training content, opening explorer, monetization and subscriptions.*
 
 ## 3. Back of the envelope
+
 - **Connection overhead:** 1M WebSocket conns × ~10KB/conn = 10GB → fleet of 30-100 game servers at 1-2GB RAM each for connection buffers
 - **Game state memory:** 500K games × ~1KB board state = 500MB → trivial; the connection count, not the game state, dictates server count
 - **Move throughput:** ~5-10 moves/sec per active game × 500K games = 2.5-5M moves/sec → ~8K validated move writes/sec to durable store (burst pattern — most games are idle between moves)
@@ -56,7 +61,7 @@ graph LR
 
 ## 4. Entities
 
-```sql
+```
 Player {
   player_id:        uuid PK
   username:         string
@@ -117,6 +122,7 @@ Tournament {
 ```
 
 ### API
+
 - `POST /matchmaking` — start seeking opponent; held open via long-poll until paired or timeout
 - `WS /games/{game_id}` — bidirectional game channel: send moves, receive state updates and clock sync
 - `GET /games/{game_id}` — fetch full game record with move list for replay
@@ -185,6 +191,7 @@ graph TB
 **Components:** Client → Matchmaking Service → Redis sorted set → Game Service
 
 **Flow:**
+
 1. Client sends `POST /matchmaking` with desired time control and variant
 1. Matchmaking Service looks up player's rating from Player DB (server-side, never trusts client)
 1. Service creates a `MatchRequest` and inserts it into a Redis sorted set keyed by `{variant}:{time_control}`, scored by rating
@@ -192,6 +199,7 @@ graph TB
 1. If found: a Lua script atomically removes both entries from the sorted set (prevents double-booking), creates a `Game` record, assigns a game server, returns `game_id` to both players
 1. If not found: the POST is held open via long-poll; after 30 seconds without a match, rating range widens and retries
 1. Both clients then open a WebSocket to the assigned game server
+
 **Design consideration:** The Redis sorted set provides O(log n) range queries and the Lua script makes claim-and-remove atomic — no distributed locking needed. A single Redis node handles the full pending-pool lookup (~50K ops/sec at peak for the hottest time control) since the pending set is tiny (<100MB). Redis Sentinel provides automatic failover; if the pool is lost, clients re-submit and the queue refills in seconds.
 
 #### FR2: Real-time gameplay
@@ -199,6 +207,7 @@ graph TB
 **Components:** Client ↔ WebSocket Gateway ↔ Game Service (stateful) → Redis pub/sub → Move Log (MongoDB)
 
 **Flow:**
+
 1. Both players open a WebSocket to `ws://gameserver/games/{game_id}`
 1. Player A sends `{ type: "move", from: "e2", to: "e4", moveNumber: 1 }` over WebSocket
 1. Game Service validates against in-memory board state (legal move? correct player's turn? piece exists at `from`?)
@@ -208,6 +217,7 @@ graph TB
 1. Send `moveAck` back to mover confirming the move was accepted
 1. If game ends (checkmate, stalemate, resignation, timeout): write final result, compute new ratings, publish `gameEnd`
 1. Illegal move → `moveAck` with error, no state change
+
 **Design consideration:** Persist before broadcast (step 5 before 6) is load-bearing. If the server sends `moveAck` first and then crashes, recovery finds a board missing a move both players already saw — corrupted state worse than a paused game. A MongoDB write takes a few ms, well within the 200ms latency budget.
 
 #### FR3: Leaderboard and rank
@@ -215,11 +225,13 @@ graph TB
 **Components:** Client → Leaderboard Service → Redis sorted set + Player DB
 
 **Flow:**
+
 1. On game end, Rating Service computes new Glicko-2 ratings for both players and writes to Player DB
 1. Rating Service fans rating updates into a Redis sorted set keyed by `rating` with `player_id` as member
 1. `GET /leaderboard?limit=50` → `ZREVRANGEBYSCORE rating_set +inf -inf LIMIT 0 50` returns top 50 in O(log n)
 1. `GET /players/{id}/rank` → `ZRANK rating_set {player_id}` returns exact rank in O(log n)
 1. Redis sorted set is an external index, not the source of truth; periodic reconciliation recomputes from Player DB
+
 **Design consideration:** A SQL `COUNT(*) WHERE rating > :my_rating` is O(rank) — millions of index entries for mid-pack players. The Redis sorted set gives O(log n) rank lookup for all 10M+ players. If Redis is lost, the reconciliation job rebuilds it from the authoritative Player DB.
 
 #### FR4: Game replay
@@ -227,10 +239,12 @@ graph TB
 **Components:** Client → REST API → Game DB (MongoDB)
 
 **Flow:**
+
 1. Client sends `GET /games/{game_id}`
 1. API queries Game DB, returns full move list with FEN after each move, clock times, and result
 1. Client replays moves locally from the move log — no server-side computation needed
 1. Cursor-based pagination for games with hundreds of moves (correspondence chess)
+
 **Design consideration:** Lichess stores 12B+ games in MongoDB with delayed replicas (1h and 24h lag) for point-in-time recovery. Each game is a single MongoDB document — moves array is embedded, no joins needed for replay. Compression is critical: Lichess uses a custom Java compression library for chess moves and clocks to minimize storage.
 
 #### FR5: Tournament play
@@ -238,11 +252,13 @@ graph TB
 **Components:** Client → Tournament Service → Matchmaking Service → Game Service
 
 **Flow:**
+
 1. Tournament Service creates a tournament at scheduled time with format (arena or Swiss)
 1. Players join via `POST /tournaments/{id}/join`
 1. For arena format: Tournament Service periodically triggers matchmaking waves, pairing available players using weighted maximum matching
 1. For Swiss format: after each round, Tournament Service runs Fast Swiss pairing (O(n log n)), assigns pairings, creates games
 1. Results feed back into tournament standings; final standings determined at tournament end
+
 **Design consideration:** Fast Swiss pairing handles 100K players in ~28 seconds per round vs. years for the classic Dutch system. The algorithm sorts by score, pairs greedily top-down, and backtracks only when stuck (guaranteed O(r³) backtracking bound).
 
 ## 6. Deep dives
@@ -256,18 +272,22 @@ graph TB
 Assign each `game_id` to a server via `hash(game_id) % N`. Both players connect to that server. Simple to implement. No coordination needed.
 
 **Challenges:**
+
 - Server crash: all games on that server are lost until players reconnect. No built-in failover.
 - Adding servers: `N` changes, every game re-hashes to a different server — total disruption.
 - Split-brain: if a server is slow (not dead), players reconnect elsewhere, and now two servers think they own the same game.
+
 **Approach 2: Stateless game service backed by a shared state store**
 
 Push every move to a shared Redis/MongoDB and rebuild board state from the move log on every request. Servers are interchangeable; any server can handle any game. Crash recovery is trivial.
 
 **Challenges:**
+
 - Latency: every move validation requires a multi-ms network round-trip to the shared store.
 - Throughput: 5M moves/sec × 2 round-trips (read board + write move) = 10M store ops/sec.
 - Board rebuild: reading 40 moves to reconstruct a mid-game board adds latency to every move.
 - Cost: the store becomes a massive bottleneck; 5M writes/sec is feasible but expensive.
+
 **Approach 3: Consistent hashing with a membership registry and crash recovery via move-log replay**
 
 Use consistent hashing (ring-based, not modulo) to map `game_id` to a game server. A registry (etcd/ZooKeeper) tracks live servers and their ring positions. When a player connects, hash `game_id` to find the responsible server. The server holds the board state in memory (a few hundred bytes). On every move, persist to the durable Move Log *before* broadcasting. On server crash: the player reconnects, consistent hash maps to the new owner (ring rebalances only adjacent keys), the new server replays the move log from MongoDB to rebuild the in-memory board, and the game resumes.
@@ -303,10 +323,12 @@ sequenceDiagram
 **Rationale:** This is the architecture Lichess runs in production via Akka Cluster Sharding — virtual actors addressed by `game_id`, with the move log (MongoDB) as the recovery source. Microsoft Orleans uses the same pattern for stateful actors. Consistent hashing minimizes disruption on server add/remove: only ~1/N of keys migrate. The persist-before-broadcast discipline prevents the "phantom move" problem — if the server crashes after broadcasting but before persisting, the move is lost to both players, but at least the board isn't corrupted (the game state is consistent with the move log). The overhead of replaying 40-80 moves at reconnect is ~1-2ms, well within the resumption budget.
 
 **Edge cases:**
+
 - **Fencing tokens:** Each game server gets an epoch number from the registry. A server may only serve writes for its epoch. If a zombie server (slow, not dead) tries to write a move after a new server took over, the MongoDB write is rejected because the epoch is stale. This prevents split-brain corruption.
 - **Partial move log:** If the crashed server wrote move #15 to MongoDB but didn't broadcast it to the opponent, the new server replays 15 moves — including the one the opponent never saw. The opponent receives `gameState` containing move #15 and renders it. No corruption; the mover already saw their `moveAck`.
 - **Reconnection storm:** If an entire rack fails, thousands of players reconnect simultaneously. The registry throttles re-registration and the remaining servers replay move logs in batches.
 - **Game server overload:** If a server exceeds its connection budget, new games for its hash range spill to adjacent servers (virtual nodes on the consistent hash ring distribute load).
+
 > [!TIP]
 > The in-memory board is not precious — the move log is. The board is a cache that can be rebuilt; the move log is the durable source of truth. This is the same insight behind event sourcing: the event log (moves) is the system of record, and the projection (board state) is disposable.
 
@@ -378,10 +400,12 @@ The Hungarian algorithm finds the set of non-overlapping pairs that maximizes to
 **Rationale:** The rating constraint (±200 points initially, widening to ±400 after timeout) makes the matching graph extremely sparse — each player is connectable to only ~0.5-2% of the pool. The Hungarian algorithm on a sparse graph runs in near O(n²) or faster with practical optimizations. Lichess runs this every few seconds on pools of thousands of players without issue. The wait-time bonus (12 points per missed wave) is load-bearing: a player who waits 10 waves gets a +120 score bonus, making them the most attractive pairing candidate and preventing indefinite starvation. The Redis sorted set approach (Approach 2) is simpler but can't express multi-factor quality or prevent the starvation of extreme-rated players.
 
 **Edge cases:**
+
 - **Extreme ratings:** A 3800-rated grandmaster and a 400-rated beginner have no compatible opponents in their band. After 30 seconds, the rating range widens exponentially. Most platforms cap the widen at ±500-700; beyond that, the player is notified that no opponent is available.
 - **Rating manipulation:** A player could intentionally tank their rating to match weaker opponents. Glicko-2's rating deviation (φ) provides a natural defense: players with uncertain ratings (high φ) experience larger rating changes, quickly correcting manipulation.
 - **Wave timing:** All players joining exactly at the wave boundary creates a thundering herd. Lichess adds random jitter (±1000ms) to each wave to spread the load.
 - **Block lists:** Players who blocked each other must never be paired. The scoring function assigns them an infinite edge weight (unmatchable).
+
 > [!TIP]
 > The matchmaking problem is fundamentally a bipartite matching problem disguised as a real-time queue. The wave-based approach converts real-time requests into a batch optimization problem — this is the same pattern used by ride-sharing (Uber/Lyft) and multi-player game lobbies. The wave interval is a tunable trade-off: shorter waves = lower latency but fewer candidates per wave (worse pairings); longer waves = better pairings but higher perceived wait time.
 
@@ -424,10 +448,12 @@ After each game:
 **Leaderboard implementation:** Store ratings in a Redis sorted set. `ZADD leaderboard rating player_id`. `ZRANK leaderboard player_id` returns 0-based rank in O(log n). `ZREVRANGE leaderboard 0 49 WITHSCORES` returns top 50. The sorted set is an external index rebuilt periodically from the authoritative Player DB. On game end: compute new ratings → write to Player DB → `ZADD` both players into Redis sorted set. Idempotency keyed by `game_id` prevents double-counting if the rating update is replayed.
 
 **Edge cases:**
+
 - **New player boost:** A player with φ=350 who wins their first 3 games is treated as a legitimate 1800+ player. The high φ amplifies rating changes. If they lose the next 3, φ shrinks and their rating settles around 1600 — the system self-corrects.
 - **Rating floor:** Ratings are clamped to [400, 4000]. A player at 400 can't drop further; a player at 4000 can't rise further. This prevents degenerate rating deflation and preserves leaderboard integrity.
 - **Unranked players:** Players with φ>75 (standard) or φ>65 (variants) are excluded from the leaderboard. Their rating is too uncertain to rank meaningfully.
 - **Bot accounts:** Internal bot accounts start at μ=3000 (so they match strong humans), not 1500.
+
 > [!TIP]
 > Glicko-2's rating deviation is a measure of "how much the system trusts this rating." This is the same concept as a confidence interval in statistics. ELO treats all ratings as equally trusted, which is mathematically equivalent to assuming everyone has the same φ — an assumption that breaks for platforms with rapid user growth.
 
@@ -460,7 +486,9 @@ Stage 1 — Collect: Stream games from flagged players and high-rated games into
 Stage 2 — Analyze: Distributed Stockfish workers (fishnet) analyze every position to depth ~4.5M nodes, producing principal variations and top-N engine moves. Compare each player move against engine recommendations.
 
 Stage 3 — Score: Feed analysis results into two TensorFlow models:
+
 - `basicGame.h5`: game metadata only (move times, rating difference, outcome, opening compliance) — fast to evaluate, catches obvious temporal anomalies.- `analysedGame.h5`: full Stockfish analysis (centipawn loss per move, move-matching rate, blunder frequency, consistency of play across positions of varying complexity) — catches subtle engine use.
+
 Stage 4 — Aggregate: A CNN model (Kaladin) runs on player-level "insights" across all recent games to detect patterns invisible in single games (sudden rating improvement, unusual consistency, suspicious account age vs. skill).
 
 **Pro:** Two-tier scoring separates easy cases (basicGame) from hard cases (analysedGame). The CNN catches account-level patterns a per-game classifier misses. Distributed Stockfish analysis parallelizes the most expensive step.
@@ -472,10 +500,12 @@ Stage 4 — Aggregate: A CNN model (Kaladin) runs on player-level "insights" acr
 **Rationale:** This is the Lichess anti-cheat architecture: Irwin (dual TF models) + Kaladin (CNN insights) + fishnet (distributed Stockfish). The two-model split (basicGame vs. analysedGame) is a cost optimization — basicGame runs on all flagged games (cheap, no Stockfish needed), and only games that score above a threshold on basicGame graduate to full Stockfish analysis. This filters out ~80% of flagged games before the expensive analysis step. The CNN aggregation layer catches the most dangerous cheaters: those who consult the engine only in 2-3 critical positions per game, maintaining plausible-looking play otherwise. These players would pass a per-game threshold check but their aggregate stats reveal the pattern.
 
 **Edge cases:**
+
 - **Strong legitimate players:** Grandmasters routinely match Stockfish's top-3 moves >80% of the time. The models are trained to distinguish between "strong human play" (occasional blunders, natural time usage, variance across games) and "engine play" (unnatural consistency, zero blunders, uniform move times). The CNN is particularly effective here — it sees that a GM sometimes plays suboptimal but creative moves, while an engine user never does.
 - **Selective cheating:** A player who consults Stockfish only in positions where the engine evaluation swing exceeds +2.0. Per-game analysis catches this because those critical-position moves match the engine perfectly while non-critical positions show normal human variance.
 - **False positive mitigation:** Flagged accounts go to human moderators for final review before banning. The models produce a confidence score; only high-confidence flags auto-escalate. False positive rate is kept below 1% of flagged accounts.
 - **New cheating methods:** As detection improves, cheaters adapt. The models are periodically retrained on newly confirmed cheating cases. The pipeline supports adding new features (mouse movement analysis, tab-switching detection for web clients) without restructuring.
+
 > [!TIP]
 > Anti-cheat in chess is fundamentally an anomaly detection problem, not a classification problem. The system isn't asking "is this an engine?" — it's asking "is this play pattern statistically inconsistent with human play at this rating level?" This framing avoids the arms race of detecting specific engines and instead focuses on the statistical signature that all engine-assisted play shares: superhuman consistency.
 
@@ -514,9 +544,11 @@ Store raw moves as an append-only event stream in Kafka with long-term retention
 **Rationale:** Lichess stores 12B+ games in MongoDB with each game as a single document. The move list is embedded (no joins), player IDs are stored as an indexed array, and a custom Java compression library reduces per-game storage to ~2-5KB. MongoDB shards on `game_id` for even write distribution. Delayed replicas (1h and 24h lag) provide point-in-time recovery — if a bug corrupts recent games, the 1h-lag replica has the pre-corruption state. Elasticsearch (via lila-search) powers the search use case: find all games matching an opening position, filter by rating range and date.
 
 **Edge cases:**
+
 - **Very long games:** Correspondence chess games can exceed 300 moves. MongoDB documents have a 16MB size limit. With compression, 300 moves × ~15 bytes/move = 4.5KB — well within limits.
 - **Bulk export:** Lichess makes all rated games available as downloadable PGN archives at [database.lichess.org](http://database.lichess.org/). This is a batch job that reads from MongoDB and decompresses to PGN, not a real-time API.
 - **Shard key choice:** Sharding on `game_id` (UUID) distributes writes evenly but makes "find all games by player X" a scatter-gather across all shards. The `players` index is maintained as a separate collection mapping `player_id → [game_ids]` with TTL-based trimming for inactive players.
+
 > [!TIP]
 > Chess game storage benefits enormously from domain-specific compression. A chess move can be encoded in ~8-12 bits (6 bits for source square, 6 bits for destination, 2-4 bits for promotion), vs. 4-6 bytes in algebraic notation. Over 12B games, this saves petabytes.
 
@@ -532,10 +564,10 @@ Store raw moves as an append-only event stream in Kafka with long-term retention
 | Leaderboard rank lookup | Redis sorted set (ZRANK, O(log n)) | SQL COUNT(*) with B-tree index (O(rank)) | COUNT(*) is O(rank) — millions of index scans for mid-pack players. ZRANK is O(log n) for all 10M+ players. Redis sorted set is an external index rebuilt from the authoritative DB. |
 | Move propagation protocol | WebSocket with persist-before-broadcast | HTTP polling, Server-Sent Events | Polling adds latency and wastes bandwidth. SSE is half-duplex (server→client only). WebSocket is full-duplex and the industry standard for real-time game state sync. |
 
-
 ## 8. References
 
 **Primary sources**
+
 1. [Lichess source code (lila)](https://github.com/lichess-org/lila) — full open-source Scala/Play backend, matchmaking, game logic, rating
 1. [Lichess WebSocket server (lila-ws)](https://github.com/lichess-org/lila-ws) — decoupled WS service communicating via Redis pub/sub
 1. [Scalachess — immutable chess engine](https://github.com/lichess-org/scalachess) — functional, side-effect-free chess rules and move generation

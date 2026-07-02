@@ -6,11 +6,13 @@ tags: [System Design, Web Crawler, SEO]
 description: "A web crawler discovers and downloads 10B+ pages per month, managing crawl prioritization, politeness (rate limiting per domain), deduplication, and incremental freshness across a distributed index."
 thumbnail: /images/posts/2026-07-02-system-design-web-crawler.svg
 ---
+
 A web crawler that ingests ~10 billion web pages and extracts their text content to build an LLM training dataset. The crawl must complete in under 5 days, fetching pages from hundreds of millions of distinct hosts while respecting per-host rate limits and robots.txt.
 
 <!--more-->
 
 ## 1. Problem
+
 A web crawler that ingests ~10 billion web pages and extracts their text content to build an LLM training dataset. The crawl must complete in under 5 days, fetching pages from hundreds of millions of distinct hosts while respecting per-host rate limits and robots.txt. Pages that change frequently (news sites, social feeds) are recrawled more often; static pages are fetched once. The output is a deduplicated text corpus stored in object storage, ready for downstream tokenization and training.
 
 ```mermaid
@@ -28,8 +30,6 @@ graph LR
     class Operator,API,Fetcher,Parser edge;
     class Frontier svc;
     class Storage store;
-
-
 ```
 
 ## 2. Requirements
@@ -37,26 +37,21 @@ graph LR
 **Functional**
 
 - FR1: Start a crawl from given seed URLs.
-
 - FR2: Fetch HTML pages from discovered URLs.
-
 - FR3: Extract text content and store it.
-
 - FR4: Discover and enqueue new URLs from fetched pages.
 
 **Non-functional**
 
 - NFR1: Crawl 10B pages within 5 days.
-
 - NFR2: Respect per-host rate limits and robots.txt.
-
 - NFR3: Survive individual node failures without losing crawl progress.
-
 - NFR4: Store no duplicate or near-duplicate content.
 
 *Out of scope: full-text indexing, image/video crawling, authentication-gated content, real-time search over the corpus.*
 
 ## 3. Back of the envelope
+
 - **Crawl throughput:** 10B pages ÷ (5 days × 86,400 s) ≈ 23,150 pages/s → the fetch pipeline must sustain ~23K req/s; single-machine DNS resolution alone cannot keep up.
 - **Bandwidth:** 23,150 pages/s × 500 KB avg page ≈ 11.6 GB/s ≈ 93 Gbps → requires 10+ machines with 10 Gbps NICs; bandwidth, not CPU, is the binding constraint.
 - **Storage:** 10B pages × 2 KB extracted text ≈ 20 TB → the text corpus is small; a single object store bucket absorbs it with room to spare.
@@ -64,7 +59,6 @@ graph LR
 ## 4. Entities
 
 ```
-
 CrawlJob {
   job_id:      uuid PK
   seed_urls:   text[]
@@ -97,11 +91,10 @@ RobotsCache {
   cached_at:  timestamp
   ttl:        integer          ← seconds until re-fetch
 }
-
-
 ```
 
 ### API
+
 - `POST /crawls` — submit a crawl job with seed URLs, returns `job_id`
 - `GET /crawls/{job_id}` — get job status, pages fetched, failure count
 - `POST /crawls/{job_id}/pause` — pause an active crawl
@@ -113,7 +106,7 @@ RobotsCache {
 
 ```mermaid
 graph TB
-    subgraph Clients[" "]
+    subgraph Clients[""]
         Operator["Operator"]
     end
 
@@ -129,7 +122,7 @@ graph TB
         Parser["Parser Pool<br/>text extraction"]
     end
 
-    subgraph Stores[" "]
+    subgraph Stores[""]
         URLDB[("URL<br/>Metadata DB")]
         RobotsDB[("Robots<br/>Cache")]
         ObjStore[("Object<br/>Storage")]
@@ -155,13 +148,14 @@ graph TB
     class Operator,API,Scheduler,Fetcher,Parser edge;
     class Frontier,Dedup svc;
     class URLDB,RobotsDB,ObjStore,DdStore store;
-
-
 ```
 
-FR1: Start a crawl from given seed URLs
+#### FR1: Start a crawl from given seed URLs
+
 **Components:** Operator → Crawl API → Crawl Scheduler → URL Frontier.
+
 **Flow:**
+
 1. Operator `POST /crawls` with a list of seed URLs and optional config (max depth, crawl rate multiplier).
 1. Crawl API validates the seed list, creates a `CrawlJob` row with `status=pending`, returns `job_id`.
 1. Crawl Scheduler normalizes each seed URL (lowercase host, strip fragment, sort query params) and assigns an initial priority based on domain reputation and freshness deficit.
@@ -169,9 +163,13 @@ FR1: Start a crawl from given seed URLs
 1. Scheduler sets the job to `status=running` and begins dequeuing.
 
 **Design consideration:** seed URL quality determines crawl coverage. A poor seed list (e.g., 100 hand-picked domains) produces a shallow crawl biased toward those domains. A strong seed list includes high-PageRank URLs from a prior crawl plus sitemap entries from major hosts. The frontier's priority system ensures high-value seeds are fetched before discovered low-priority URLs, so the crawl achieves broad coverage early.
-FR2: Fetch HTML pages from discovered URLs
+
+#### FR2: Fetch HTML pages from discovered URLs
+
 **Components:** URL Frontier → Dedup Layer → Fetcher Pool → URL Metadata DB.
+
 **Flow:**
+
 1. A fetcher worker calls the frontier's dequeue operation, which returns the highest-priority URL whose host is currently below its rate limit.
 1. The fetcher checks the robots.txt cache for the URL's host; if the path is disallowed or the cache is stale, it re-fetches `robots.txt` first.
 1. The fetcher issues an HTTP GET with a reasonable timeout (30 s) and a byte limit (2 MB for HTML).
@@ -179,9 +177,13 @@ FR2: Fetch HTML pages from discovered URLs
 1. After a configurable number of failed retries (typically 5), the URL is marked `failed` and sent to a dead-letter queue for operator inspection.
 
 **Design consideration:** the fetcher pool is the throughput bottleneck. Each fetcher thread spends ~70% of its wall-clock time on DNS resolution and TCP handshakes (Mercator measured this in 1999; the ratio holds today for a wide crawl). A DNS cache shared across all fetcher workers on a node, with a TTL matching the DNS record, cuts resolution time by ~90% for repeat hosts. Multiple DNS providers in round-robin prevent any single resolver from becoming a throttle point.
-FR3: Extract text content and store it
+
+#### FR3: Extract text content and store it
+
 **Components:** Parser Pool → Object Storage → SimHash Index.
+
 **Flow:**
+
 1. A parser worker receives raw HTML from a fetcher, strips tags and scripts, and extracts visible text.
 1. A 64-bit SimHash fingerprint is computed over the tokenized text using TF-IDF-weighted feature hashing.
 1. The fingerprint is checked against the SimHash index using Block-Permuted Hamming Search (k=3 bits). If a near-duplicate is found, the page is discarded and the URL is marked `skipped`.
@@ -197,13 +199,14 @@ FR3: Extract text content and store it
   "text": "The quick brown fox jumps over the lazy dog...",
   "content_hash": "a1b2c3d4e5f67890"
 }
-
-
 ```
 
-FR4: Discover and enqueue new URLs from fetched pages
+#### FR4: Discover and enqueue new URLs from fetched pages
+
 **Components:** Parser Pool → Link Extractor → Dedup Layer → URL Frontier.
+
 **Flow:**
+
 1. The parser extracts all `<a href="...">` links from the fetched HTML.
 1. Each extracted URL is canonicalized (lowercase host, strip fragment, sort query params, resolve relative paths).
 1. The canonical URL passes through the dedup layer: first a Bloom filter check, then a secondary exact lookup in the URL Metadata DB for the ~1% of URLs that survive the Bloom filter.
@@ -215,8 +218,11 @@ FR4: Discover and enqueue new URLs from fetched pages
 ## 6. Deep dives
 
 ### DD1: URL Frontier
+
 **Problem.** The frontier must satisfy three constraints at once: (a) schedule URLs by priority so high-value pages are fetched first, (b) enforce per-host politeness so no single server is overwhelmed, and (c) deduplicate so no URL is fetched twice. A single data structure cannot satisfy both priority ordering and per-host rate limiting because priority and politeness are orthogonal dimensions — a high-priority URL from a slow server must be deferred, and a low-priority URL from a fast server should not starve.
+
 **Approach 1: Single shared priority queue**
+
 A single priority queue where each URL carries a `(priority, host, next_allowed_time)` tuple. The fetcher pops the highest-priority URL whose `next_allowed_time` has passed.
 
 ```javascript
@@ -227,12 +233,12 @@ dequeue():
             heap.pop()
             return url
         sleep(min_time_to_wait)
-
-
 ```
 
 **Challenges:** the heap must be scanned for the first eligible URL, which degenerates to O(N) when many hosts are rate-limited. Under heavy politeness (thousands of hosts in cooldown), fetcher threads spin scanning ineligible entries while eligible URLs sit deep in the heap. Throughput collapses.
+
 **Approach 2: Mercator dual-queue frontier**
+
 Two tiers of queues — front queues for priority, back queues for politeness — with a heap scheduler bridging them.
 
 ```javascript
@@ -251,11 +257,12 @@ Two tiers of queues — front queues for priority, back queues for politeness �
 ┌───────────────────────────┐
 │     Fetcher Workers        │
 └───────────────────────────┘
-
 ```
 
 Front queues: k FIFO queues, one per priority level (k=10). A URL lands in the queue matching its priority score. The queue selector draws from front queues with probability proportional to priority — the highest-priority queue is sampled most often.
+
 Back queues: n FIFO queues (n ≈ 3 × number of fetcher threads). Each back queue holds URLs from exactly one host. A mapping table `host → back_queue_id` routes every URL to the correct back queue, ensuring politeness: all URLs from the same host land in the same queue and are fetched by one thread at a time.
+
 A min-heap of `(back_queue_id, next_allowed_time)` tuples schedules the fetchers. A fetcher pops the root of the heap, waits until `next_allowed_time`, and fetches one URL from that back queue.
 
 ```javascript
@@ -284,11 +291,12 @@ def dequeue():
 
     heap.insert(q_id, politeness_delay)
     return url
-
 ```
 
 **Challenges:** the dual-queue is a single-machine data structure. At 23K pages/s, the frontier's in-memory queues and heap become a bottleneck — one machine must coordinate all fetcher threads. At 10B pages, the URL backlog exceeds RAM; Mercator solves this with on-disk FIFO queues (600-URL in-memory buffers, bulk on disk), but disk I/O becomes the new limit.
+
 **Approach 3: Kafka-partitioned distributed frontier**
+
 Each crawler node owns a subset of hosts (determined by consistent hashing on hostname) and runs its own local dual-queue frontier. URLs are routed to the owning node via a Kafka topic partitioned by `host_hash`.
 
 ```javascript
@@ -302,21 +310,28 @@ URL Frontier Topic (256 partitions, keyed by host_hash)
 │ per-host b-q │  │ per-host b-q │  │ per-host b-q │
 │ local heap   │  │ local heap   │  │ local heap   │
 └──────────────┘  └──────────────┘  └──────────────┘
-
 ```
 
 Each crawler runs its own dual-queue frontier scoped to the hosts it owns. Kafka guarantees that all URLs from `cnn.com` land on the same partition and are consumed by the same crawler node. The politeness state (last fetch time, rate limit window) for `cnn.com` is local to that node — no distributed locking, no cross-node coordination.
+
 When a crawler discovers a new URL, it publishes to the Kafka topic with `key=hash(host)`. Kafka routes it to the owning partition. If a crawler node fails, Kafka reassigns its partitions to surviving nodes; the new owner rebuilds its local frontier from the partition's retained messages.
+
 **Decision:** Approach 3 (Kafka-partitioned distributed frontier) with each node running the dual-queue (Approach 2) locally. Kafka handles host-to-node assignment and failure recovery; the dual-queue handles intra-node priority and politeness. 256 partitions support up to 256 crawler nodes without re-partitioning.
+
 **Rationale:** the dual-queue is the canonical solution to the priority/politeness tension, proven since the 1999 Mercator paper. Wrapping it in Kafka partitions eliminates the single-machine bottleneck while preserving the locality property — a host's politeness clock never crosses machine boundaries. At 256 partitions and ~23K pages/s, each partition handles ~90 pages/s, well within a single node's dual-queue capacity.
+
 **Edge cases:**
+
 - **Empty front queues:** if all front queues are empty, the heap returns no eligible back queue. The fetcher blocks until new URLs arrive via discovery or the operator adds seeds. A low-watermark alert notifies the operator.
 - **Host migration on rebalance:** when a crawler node joins or leaves, Kafka reassigns partitions. The new owner replays the partition from the last committed offset, rebuilding its local back-queue state. URLs fetched by the previous owner but not yet acknowledged are re-delivered (at-least-once semantics); the dedup layer catches them.
 - **Hot host (millions of URLs from one domain):** a back queue for a single large host can grow unboundedly. The BEAST-style budget cap limits any one host to ~10K pending URLs in the back queue; excess URLs are pushed to a low-frequency disk queue.
 
 ### DD2: URL Deduplication
+
 **Problem.** With 10B+ URLs to crawl and each fetched page producing tens of new links, the system must answer "have I seen this URL before?" ~500K times per second. A hash set in memory at 60 bytes per URL needs ~600 GB — too large and too expensive. A database round-trip per check kills throughput at 23K fetches/s.
+
 **Approach 1: In-memory hash set**
+
 Store every seen URL's canonical form in a distributed hash set across crawler nodes. A lookup is O(1) and exact — no false positives.
 
 ```javascript
@@ -324,11 +339,12 @@ seen_urls = DistributedHashSet(partition_by=host_hash)
 
 def is_new(url):
     return canonicalize(url) not in seen_urls
-
 ```
 
 **Challenges:** at 10B URLs and ~60 bytes per entry (string + overhead), the hash set requires ~600 GB of RAM. Distributing it across 10 nodes still costs 60 GB per node — expensive but not impossible. The real problem is that the set must be rebuilt from scratch for each crawl (URLs from a prior crawl are stale), and rebuilding a 600 GB distributed data structure takes hours.
+
 **Approach 2: Bloom filter — fast probabilistic check**
+
 A Bloom filter at 10 bits per entry. For 10B URLs: 10 bits × 10B = 100 Gbits = 12.5 GB total. With k=7 hash functions, the false-positive rate is ~0.8%.
 
 ```javascript
@@ -342,13 +358,14 @@ def is_new(url, bloom_filter):
         if bloom_filter[hash_i(url) % m] == 0:
             return True   # definitely not seen
     return False          # probably seen (false positive ~0.8%)
-
-
 ```
 
 The Bloom filter has zero false negatives — if it says "not seen," the URL is guaranteed new. A false positive (the filter says "seen" for a new URL) means ~1 in 120 genuinely new URLs is skipped. The URL will be rediscovered through a different link path on a different page and retried.
+
 **Challenges:** the 0.8% false-positive rate means 80M genuinely new URLs are skipped across 10B checks. Not fatal — most are rediscovered — but the Bloom filter cannot be cleared or shrunk during a crawl. It grows monotonically.
+
 **Approach 3: Two-tier check — Bloom filter + exact KV lookup**
+
 A fast Bloom filter fronted by a persistent key-value store for exact confirmation.
 
 ```javascript
@@ -362,21 +379,28 @@ def is_new(url):
         # Definitely new — fast path (99% of checks)
         bloom_filter.add(canonical)
         return True
-
 ```
 
 - Bloom filter (12.5 GB in Redis Cluster): handles ~99% of checks in <0.1 ms.
 - URL Metadata DB (sharded by host_hash): handles the ~1% that pass the Bloom filter with an exact key lookup. Stores `(canonical_url, status, last_fetched_at, content_hash)`.
+
 The Bloom filter sits in front — 99% of URL checks return "definitely new" and never touch the DB. The 1% that might be duplicates get an exact DB lookup. After confirming a URL is new, the canonical form is written to the DB and added to the Bloom filter.
+
 **Decision:** Approach 3 (two-tier: Bloom filter + exact KV lookup). The Bloom filter absorbs the read volume; the KV store provides exactness for the small fraction that need it. The Bloom filter is rebuilt from the URL DB at crawl start (a one-time cost of ~10 minutes scanning 10B rows) rather than checkpointed, avoiding stale-state bugs.
+
 **Rationale:** 12.5 GB fits comfortably in a single Redis Cluster shard. The two-tier design decouples read throughput (Bloom filter, O(1) with no network call when colocated) from correctness (DB, exact). At 500K checks/s with 99% hitting the Bloom filter fast path, only 5K checks/s reach the DB — easily handled by a sharded Postgres or Cassandra cluster.
+
 **Edge cases:**
+
 - **Bloom filter saturation:** as the filter fills past ~75%, the false-positive rate rises above 1%. A monitoring threshold triggers a rebuild from the current URL DB snapshot. The brief window of rebuilding (minutes) uses a secondary Bloom filter.
 - **URL canonicalization inconsistency:** two URLs that differ only in trailing slash or `www.` prefix must map to the same canonical form. The canonicalizer applies a fixed rule set: lowercase scheme+host, remove default port, sort query params alphabetically, strip fragment, remove trailing slash, strip `www.` prefix. A regression test suite of known-collision pairs runs before each crawl.
 
 ### DD3: Content Deduplication
+
 **Problem.** After URL dedup, two different URLs may serve identical or near-identical content — mirrors, CDN variants, scraped articles with different boilerplate, the same press release on 50 news sites. Studies of large web corpora show ~30% of fetched pages are near-duplicates of content already seen. Storing them wastes object storage and bloats the training corpus with redundant text, which degrades LLM output quality.
+
 **Approach 1: Full-content hash (SHA-256)**
+
 Compute a SHA-256 hash of the extracted text. If the hash matches an existing entry, discard the page.
 
 ```javascript
@@ -386,12 +410,12 @@ if content_hash in seen_hashes:
 else:
     store(text, content_hash)
     seen_hashes.add(content_hash)
-
-
 ```
 
 **Challenges:** this catches exact duplicates (byte-for-byte identical content under different URLs) but misses near-duplicates — the same article with a different byline, timestamp, or sidebar ad. In a web corpus of 10B pages, exact duplicates are ~5% of content; the other ~25% are near-duplicates that SHA-256 misses. A full-content hash also requires the entire text to be in memory before hashing, preventing streaming.
+
 **Approach 2: SimHash with Block-Permuted Hamming Search**
+
 A 64-bit SimHash fingerprint captures the "essence" of a document. Near-duplicate documents produce fingerprints differing in only a few bits (Hamming distance ≤ k).
 
 ```javascript
@@ -410,11 +434,12 @@ def simhash(document):
         if v[i] > 0:
             fingerprint |= (1 << i)
     return fingerprint
-
 ```
 
 The key property: two documents differing in a small fraction of their weighted features produce SimHash fingerprints with small Hamming distance. For web pages, k=3 bits is the validated threshold (Manku et al., WWW 2007, on an 8B-page corpus).
+
 **Finding near-duplicates at scale:** a naive pairwise Hamming distance check across 10B fingerprints is impossible. Block-Permuted Hamming Search (BPHS) solves this:
+
 1. Split the 64-bit fingerprint into 4 blocks of 16 bits.
 1. Maintain 4 permuted index tables. In table i, fingerprints are sorted by block i as the prefix.
 1. To query fingerprint F: for each block i, extract the 16-bit prefix, probe table i for all fingerprints sharing that prefix, and compute Hamming distance against only those candidates.
@@ -428,13 +453,16 @@ def find_near_duplicates(fp, index, k=3):
         prefix = blocks[i]
         candidates.update(index[i].get(prefix))
     return [c for c in candidates if hamming_distance(fp, c.fp) <= k]
-
 ```
 
 **Challenges:** the SimHash index requires ~4× the fingerprint storage (one copy per permutation). For 10B fingerprints at 8 bytes each: 4 × 80 GB = 320 GB RAM. This is large but manageable across a small cluster. The index must be updated incrementally as new pages arrive; each insert touches 4 permuted tables.
+
 **Decision:** Approach 2 (SimHash + BPHS) for near-duplicate detection, combined with a fast exact-hash check (Approach 1) as a pre-filter. The SHA-256 check catches the ~5% of exact duplicates in microseconds; the remaining 95% pass through to SimHash, which catches the ~25% near-duplicate rate.
+
 **Rationale:** the 64-bit SimHash fingerprint is compact enough to index billions of documents. The k=3 threshold was validated on a production-scale 8B-page corpus and achieves ~75% precision and ~75% recall for near-duplicate detection — good enough to cut the training corpus by ~25% with minimal false removals. The SHA-256 pre-filter is a cheap optimization that prevents the expensive BPHS lookup for exact duplicates.
+
 **Edge cases:**
+
 - **Short documents:** pages with <200 characters of text produce unstable SimHash fingerprints (few features → high variance). These pages skip SimHash and are stored unconditionally. The training pipeline's own dedup pass handles them later.
 - **Language-dependent feature extraction:** TF-IDF weighting requires a tokenizer that handles the document's language. The parser runs language detection (CLD2-style) and selects the appropriate tokenizer. Pages in languages without a configured tokenizer fall back to character 4-gram features.
 - **Incremental index growth:** the SimHash index grows with each new page. At ~50M new fingerprints per hour, the index must support concurrent reads (dedup checks) and writes (new insertions). A read-write lock per block-group (the 16-bit prefix shard) keeps contention low — writes to block group `0xABCD` block reads only for that group, not the whole index.
@@ -443,12 +471,19 @@ def find_near_duplicates(fp, index, k=3):
 > **Why not MinHash for near-duplicate detection?** MinHash (used by shingling-based approaches) estimates Jaccard similarity rather than cosine similarity. For web pages where boilerplate (navigation, footer) dominates, Jaccard similarity inflates the duplicate signal — two pages with different content but identical navigation score as high-similarity. SimHash with TF-IDF weighting suppresses boilerplate terms because they appear in nearly every document and carry near-zero weight. The fingerprint captures the distinctive content, not the shared template.
 
 ### DD4: Adaptive Politeness
+
 **Problem.** A fixed per-host delay (e.g., 5 seconds between requests) protects slow servers but wastes capacity on fast ones. A well-provisioned CDN-backed news site can handle 10+ req/s; a small WordPress blog on shared hosting might handle 0.2 req/s. The crawler's aggregate throughput is the sum of every host's effective rate — using a single conservative delay for all hosts leaves 80%+ of available capacity on the table.
+
 **Approach 1: Fixed per-host delay**
+
 A global configuration value — e.g., 5 seconds between successive requests to any host. Simple to implement and guaranteed polite.
+
 **Pro:** trivially correct — no host ever receives more than 1 request per 5 seconds. No state beyond a `last_fetch_time` per host.
+
 **Con:** a fast server that can handle 10 req/s gets 0.2 req/s — 50× underutilization. A slow server that times out at 2 seconds gets hit again after 5 seconds, potentially compounding the problem. Aggregate throughput is `N_hosts / delay`, not `sum(host_capacity)`.
+
 **Approach 2: k× multiplier — delay proportional to last fetch time**
+
 After each fetch, the next allowed time is set to `now + k × last_fetch_duration`. A fast server (50 ms response) gets a 500 ms delay (k=10). A slow server (3 s response) gets a 30 s delay.
 
 ```javascript
@@ -458,12 +493,14 @@ def fetch_and_update(url, host):
     fetch_duration = now() - start
     back_queues[host].next_allowed = now() + 10 * fetch_duration
     return response
-
 ```
 
 **Pro:** automatically biases throughput toward responsive servers. No manual tuning per host. The crawler consumes a bounded fraction (~10%) of each server's capacity regardless of its speed. This is the "strong politeness guarantee" — the crawler cannot overwhelm any server because it self-throttles proportionally.
+
 **Con:** the multiplier is static (k=10). A server that consistently responds in 10 ms gets 100 ms delay → 10 req/s — appropriate for a static file server but aggressive for a dynamic page server that happens to be fast. Server errors (500, 503) don't trigger immediate backoff; the delay is still based on the fetch duration, which may be short even when the server is failing.
+
 **Approach 3: Closed-loop server health control**
+
 The crawl rate per host is adjusted continuously based on observed signals: response time trend, error rate, and HTTP status codes. A 429 (Too Many Requests) or a spike in 500/503 responses triggers immediate rate reduction for the entire hostname, not just the URL.
 
 ```javascript
@@ -481,17 +518,20 @@ def adjust_rate(host, response):
         host.rate_limit = min(host.rate_limit * 1.1, max_rate)
 
     host.next_allowed = now() + (1.0 / host.rate_limit)
-
-
 ```
 
 **Pro:** responds to actual server health rather than assuming a fixed relationship between response time and capacity. Prevents the crawler from hammering a degraded server while allowing it to ramp up on healthy ones. The multiplicative decrease on errors and additive increase on success is the same AIMD principle that governs TCP congestion control — well-understood and stable.
+
 **Con:** requires per-host state with multiple fields (error streak, current rate, cooldown timer). State must survive crawler node restarts. The ramp-up after cooldown is slow (10% increase per successful fetch), so a server that recovered quickly is underutilized for minutes.
+
 **Decision:** Approach 2 (k× multiplier) as the baseline politeness mechanism, with Approach 3's error-signal overrides layered on top. The k× multiplier handles the steady state — fast servers get proportionally more traffic. The error-signal overrides handle the transient state — a server returning 429 or a burst of 500s gets immediate rate reduction regardless of fetch duration.
+
 **Rationale:** the k× multiplier is simple, stateless beyond `last_fetch_duration`, and provides the strong politeness guarantee: the crawler never consumes more than a fixed fraction of any server's resources. It has been the baseline of production crawlers since the 1999 Mercator paper. The error-signal overrides add ~3 fields of per-host state but close the gap where a fast-failing server would otherwise get fast retries. The combined approach requires no manual tuning per host and adapts automatically as server capacity changes.
+
 **Edge cases:**
+
 - **Redirects (301/302):** the fetch duration for a redirect is short (the server responds quickly with the redirect). The k× multiplier would assign a short delay, but the redirect target is a different host. The politeness clock applies to the original host, not the target — redirects don't consume the target server's capacity until the redirect is followed.
-- **Robots.txt **`Crawl-delay`** directive:** when a host's robots.txt specifies an explicit `Crawl-delay: N`, that value overrides the k× multiplier. N is the minimum delay; the k× multiplier only applies if it would produce a longer delay. This preserves compliance with explicit site-owner preferences.
+- **Robots.txt** `Crawl-delay` **directive:** when a host's robots.txt specifies an explicit `Crawl-delay: N`, that value overrides the k× multiplier. N is the minimum delay; the k× multiplier only applies if it would produce a longer delay. This preserves compliance with explicit site-owner preferences.
 - **DNS failures:** a DNS resolution failure is not a server error — the host isn't being overloaded, it's unreachable. The URL is re-enqueued with a fixed 60 s backoff. The politeness clock for the host is not updated (no fetch occurred), so other URLs from the same host can proceed when DNS recovers.
 
 ## 7. Trade-offs
@@ -506,6 +546,7 @@ def adjust_rate(host, response):
 | Stateless parser (one write per page) | Batch parser (accumulate N pages before writing) | Stateless parsers survive crashes without batch loss. At 2 KB per page, the PUT overhead (~23K/s) is well within object store limits. |
 
 ## 8. References
+
 1. Najork, M., & Heydon, A. (1999). ["Mercator: A Scalable, Extensible Web Crawler"](https://marc.najork.org/papers/src173.pdf). World Wide Web, 2(4), 219–229.
 1. Olston, C., & Najork, M. (2010). ["Web Crawling"](http://i.stanford.edu/~olston/publications/crawling_survey.pdf). Foundations and Trends in Information Retrieval, 4(3), 175–246.
 1. Manku, G. S., Jain, A., & Das Sarma, A. (2007). ["Detecting Near-Duplicates for Web Crawling"](https://static.googleusercontent.com/media/research.google.com/en//pubs/archive/33026.pdf). WWW 2007.
