@@ -65,7 +65,7 @@ graph LR
 ## 3. Back of the envelope
 - **CDN bandwidth:** 65M peak concurrent streams × 5 Mbps average bitrate = 325 Tbps egress → ~15% of global internet downstream traffic; third-party CDN egress fees alone exceed $1B/year at this volume.
 - **Encoding compute:** 500 hours/min ingested × 20 compute-hours per hour of content × 1,200 output files per title → ~12M compute-core-hours per day of encoding work; the single largest batch-compute workload in the system.
-- **Metadata read QPS:** 325M subscribers × 5 daily sessions × 50 API calls per session ÷ 86,400 seconds ≈ 940K read QPS at peak → the homepage-serving path handles 20× more reads than writes; read throughput is the binding constraint.
+- **Metadata read QPS:** 325M subscribers × 5 daily sessions × 50 API calls per session ÷ 86,400 seconds ≈ 940K average read QPS → the homepage-serving path handles 20× more reads than writes; read throughput is the binding constraint.
 
 ## 4. Entities
 

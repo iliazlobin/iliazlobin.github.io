@@ -3,15 +3,15 @@ layout: post
 title: "System Design: Post Search"
 date: 2026-07-02
 tags: [System Design, Search]
-description: "Post Search powers real-time full-text retrieval across billions of posts for a large social network, handling 50K queries per second with sub-50ms latency and supporting complex filtering across time, relevance, and multi-dimensional ranking."
+description: "Post Search powers real-time full-text retrieval across billions of posts for a large social network, handling 50K queries per second with sub-200ms latency and supporting complex filtering across time, relevance, and multi-dimensional ranking."
 thumbnail: /images/posts/2026-07-02-system-design-post-search.svg
 ---
-Post Search lets users find social media posts by keyword, phrase, or semantic meaning across billions of posts, returning ranked results in under 200ms. The system ingests millions of new posts per minute, indexes them in near real-time, and serves search traffic from a global user base.
+Post Search lets users find social media posts by keyword, phrase, or semantic meaning across billions of posts, returning ranked results in under 200ms. The system ingests 100M new posts per day, indexes them in near real-time, and serves search traffic from a global user base.
 
 <!--more-->
 
 ## 1. Problem
-Post Search lets users find social media posts by keyword, phrase, or semantic meaning across billions of posts, returning ranked results in under 200ms. The system ingests millions of new posts per minute, indexes them in near real-time, and serves search traffic from a global user base. Three tensions shape the architecture: (1) the inverted index must absorb writes at line rate without blocking reads — every millisecond of indexing lag is a post the user cannot find; (2) relevance ranking must fuse lexical match signals (BM25) with semantic similarity (embeddings) without blowing the latency budget; and (3) storage spans hot in-memory posting lists, warm SSD-resident segments, and cold archival shards — the index footprint grows ~3× the raw text size.
+Three tensions shape the architecture: (1) the inverted index must absorb writes at line rate without blocking reads — every millisecond of indexing lag is a post the user cannot find; (2) relevance ranking must fuse lexical match signals (BM25) with semantic similarity (embeddings) without blowing the latency budget; and (3) storage spans hot in-memory posting lists, warm SSD-resident segments, and cold archival shards — the index footprint grows ~3× the raw text size.
 
 ```mermaid
 graph LR
@@ -149,7 +149,7 @@ FR2: Semantic search
   1. Aggregator fans out the vector to all ANN shards (same shard key as lexical index; embedding and posting list co-located per shard).
   1. Each Faiss shard performs approximate nearest-neighbor search (IVF+PQ, nprobe=32) and returns the top 200 posts by cosine similarity.
   1. Aggregator merges shard results into a global top 200.
-  1. Ranker re-ranks using Reciprocal Rank Fusion (RRF) for the final top 50, and returns snippets.
+  1. Ranker re-ranks using a lightweight cross-encoder for the final top 50, and returns snippets.
 - **Design consideration:** Embedding generation is the write-path bottleneck — a 256d sentence transformer encodes ~500 posts/sec per GPU. At 1,200 writes/sec steady-state, 3 GPUs cover the load. Vectors are stored in Faiss with IVF+PQ compression (256d × 1KB raw → ~64 bytes compressed), keeping the full ANN index for 10B posts at ~640GB.
 FR3: Filter by author, date, language
 - **Components:** Aggregator applies filters during post-fetch from DocStore before ranking.
