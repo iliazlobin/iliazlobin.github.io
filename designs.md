@@ -33,7 +33,7 @@ description: "System design write-ups by Ilia Zlobin — production-grade archit
   {%- for d in designs %}
   {%- assign name = d.title | remove_first: "System Design: " %}
   {%- assign seed = d.title | size | modulo: 6 %}
-  <article id="{{ d.title | slugify }}" class="portfolio-item reveal">
+  <article id="{{ d.title | slugify }}" class="portfolio-item">
     {%- if d.thumbnail %}
     <a class="thumb" href="{{ d.url | relative_url }}" aria-label="{{ name | escape }} — read the design"><img src="{{ d.thumbnail | relative_url }}?v={{ site.time | date: '%s' }}" alt="{{ name | escape }} architecture diagram" loading="lazy"></a>
     {%- else %}
