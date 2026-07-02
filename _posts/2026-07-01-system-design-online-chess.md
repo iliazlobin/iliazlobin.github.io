@@ -1,13 +1,13 @@
 ---
 layout: post
-thumbnail: /images/posts/2026-07-01-system-design-online-chess.svg
 title: "System Design: Online Chess"
 date: 2026-07-01
-tags: [System Design, Gaming]
-description: "Online chess is a real-time two-player game where every half-second of latency feels like an eternity. The hard parts are synchronizing authoritative game state across globally distributed players ..."
+tags: [System Design]
+description: "Online chess is a real-time two-player game where every half-second of latency feels like an eternity."
+thumbnail: /images/posts/2026-07-01-system-design-online-chess.svg
 ---
 
-Online chess is a real-time two-player game where every half-second of latency feels like an eternity. The hard parts are synchronizing authoritative game state across globally distributed players at sub-200ms latency, pairing opponents fairly without starving extreme-rated players at 8K requests/sec, detecting engine-assisted cheating that threatens the entire product, and keeping 1M concurrent WebSocket connections alive without corrupting the board when a server crashes. Lichess proves this is feasible with a single-developer open-source codebase handling 500K concurrent games and 12B+ stored games; [Chess.com](http://chess.com/) proves it scales commercially to 250M+ registered users. The architecture centers on stateful game servers with consistent hashing, Redis-backed matchmaking with atomic claims, and a multi-stage anti-cheat ML pipeline — all designed so that if the server dies, the game replays from the move log rather than vanishing.
+Online chess is a real-time two-player game where every half-second of latency feels like an eternity.
 
 <!--more-->
 
@@ -259,7 +259,7 @@ graph TB
 1. For Swiss format: after each round, Tournament Service runs Fast Swiss pairing (O(n log n)), assigns pairings, creates games
 1. Results feed back into tournament standings; final standings determined at tournament end
 
-**Design consideration:** Fast Swiss pairing handles 100K players in ~28 seconds per round vs. years for the classic Dutch system. The algorithm sorts by score, pairs greedily top-down, and backtracks only when stuck (guaranteed O(r³) backtracking bound).
+**Design consideration:** Fast Swiss pairing works in three steps: (1) sort all players by score (wins + draws), highest first. (2) Walk top-down, pairing each unmatched player with the nearest lower-scored player they haven't yet faced. (3) If a choice leaves downstream players impossible to pair, backtrack to the last decision point and try the next option. The bound is O(r³) in rounds (r), not O(n³) in players — 100K players in round 7 complete in ~28 seconds. The classic Dutch system has exponential worst-case backtracking by comparison. Reference: bbpPairings library, used by Lichess.
 
 ## 6. Deep dives
 
@@ -358,10 +358,10 @@ Store pending requests in a Redis sorted set keyed by `{variant}:{time_control}`
 
 ```lua
 -- Lua script: atomically claim a match or return nil
-# KEYS[1] = sorted set key
-# ARGV[1] = my_request_id
-# ARGV[2] = my_rating
-# ARGV[3] = range (e.g., 200)
+-- KEYS[1] = sorted set key
+-- ARGV[1] = my_request_id
+-- ARGV[2] = my_rating
+-- ARGV[3] = range (e.g., 200)
 local opponents = redis.call('ZREVRANGEBYSCORE', KEYS[1],
     ARGV[2] + ARGV[3], ARGV[2] - ARGV[3], 'LIMIT', 0, 1)
 if #opponents > 0 then
@@ -377,7 +377,7 @@ return nil
 
 **Approach 3: Weighted maximum matching with multi-factor scoring**
 
-Accumulate pending requests into a pool. Every N seconds (the wave interval), run a maximum-weight matching algorithm (Hungarian / Kuhn-Munkres) where the edge weight is a pair quality score computed from multiple factors: rating proximity, wait time bonus, rating range preferences, sportsmanship flags, and provisional (new player) status.
+Instead of first-come-first-served, use a batching matchmaker: accumulate pending requests in a pool, then every N seconds (the wave interval) find the globally optimal set of pairs. The Hungarian algorithm (Kuhn-Munkres) maximizes total pair-quality score across factors: rating proximity, wait time bonus, sportsmanship flags, and provisional status (see score function below). To use: set a wave interval (2-5s), pool POST /matchmaking requests, run Hungarian at each tick, create GameService games for each matched pair, return unmatched players to the pool with +1 wait counter. Ref: Kuhn (1955) "The Hungarian method for the assignment problem"; Lichess MatchMaking.scala.
 
 ```python
 def pair_score(a: Player, b: Player) -> int:
@@ -553,21 +553,7 @@ Store raw moves as an append-only event stream in Kafka with long-term retention
 > [!TIP]
 > Chess game storage benefits enormously from domain-specific compression. A chess move can be encoded in ~8-12 bits (6 bits for source square, 6 bits for destination, 2-4 bits for promotion), vs. 4-6 bytes in algebraic notation. Over 12B games, this saves petabytes.
 
-## 7. Trade-offs
-
-| Decision | Chose | Rejected | Why |
-|---|---|---|---|
-| Game server architecture | Stateful in-memory with consistent hashing + move-log replay for crash recovery | Stateless with shared state store, round-robin sticky routing | Stateless adds latency to every move (read board from store). Round-robin breaks on scale-up and doesn't handle crashes. Consistent hashing with replay hits the sweet spot: low-latency reads from memory, durability from the move log. |
-| Matchmaking algorithm | Weighted maximum matching with multi-factor scoring | Greedy pairing, Redis sorted set with atomic claim | Greedy starves extreme-rated players. Redis sorted set is locally optimal but can't express multi-factor quality (wait time, sportsmanship, provisional status). Weighted matching is the only approach that prevents starvation and produces high-quality pairings. |
-| Rating system | Glicko-2 (μ, φ, σ) | Classic ELO (single number) | ELO can't track rating uncertainty. New players get the wrong rating for too long. Glicko-2 converges faster for new accounts, decays inactive ratings, and handles volatility. Both Lichess and [Chess.com](http://chess.com/) use Glicko variants in production. |
-| Anti-cheat detection | Multi-stage ML pipeline (dual TF models + CNN + distributed Stockfish) | Threshold-based move matching, single neural network | Thresholds produce false positives on strong players. Single NN can't model account-level patterns. Multi-stage filters cheaply (basicGame before expensive Stockfish analysis) and aggregates across games. |
-| Game storage | MongoDB document per game with binary-compressed moves | Relational DB with PGN BLOBs, event-sourced with columnar analytics | Relational DB struggles with 12B+ rows and compression. Event sourcing is over-engineered for single-game replay. MongoDB document model maps naturally to "fetch a game by ID" — the dominant access pattern. |
-| Leaderboard rank lookup | Redis sorted set (ZRANK, O(log n)) | SQL COUNT(*) with B-tree index (O(rank)) | COUNT(*) is O(rank) — millions of index scans for mid-pack players. ZRANK is O(log n) for all 10M+ players. Redis sorted set is an external index rebuilt from the authoritative DB. |
-| Move propagation protocol | WebSocket with persist-before-broadcast | HTTP polling, Server-Sent Events | Polling adds latency and wastes bandwidth. SSE is half-duplex (server→client only). WebSocket is full-duplex and the industry standard for real-time game state sync. |
-
-## 8. References
-
-**Primary sources**
+## 7. References
 
 1. [Lichess source code (lila)](https://github.com/lichess-org/lila) — full open-source Scala/Play backend, matchmaking, game logic, rating
 1. [Lichess WebSocket server (lila-ws)](https://github.com/lichess-org/lila-ws) — decoupled WS service communicating via Redis pub/sub

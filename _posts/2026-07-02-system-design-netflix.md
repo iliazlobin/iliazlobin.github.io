@@ -2,7 +2,7 @@
 layout: post
 title: "System Design: Netflix"
 date: 2026-07-02
-tags: [System Design, Netflix, Video Streaming]
+tags: [System Design]
 description: "Netflix streams on-demand video to 325M+ paid subscribers across 190 countries, ingests 500+ hours of new content per minute, and serves ~15% of global internet downstream traffic."
 thumbnail: /images/posts/2026-07-02-system-design-netflix.svg
 ---
@@ -29,6 +29,7 @@ graph LR
     class Gateway,Services svc
     class Stores,Origin store
     class CDN edge
+    class Client edge
 ```
 
 > [!TIP]
@@ -58,7 +59,7 @@ graph LR
 
 - **CDN bandwidth:** 65M peak concurrent streams × 5 Mbps average bitrate = 325 Tbps egress → ~15% of global internet downstream traffic; third-party CDN egress fees alone exceed $1B/year at this volume.
 - **Encoding compute:** 500 hours/min ingested × 20 compute-hours per hour of content × 1,200 output files per title → ~12M compute-core-hours per day of encoding work; the single largest batch-compute workload in the system.
-- **Metadata read QPS:** 325M subscribers × 5 daily sessions × 50 API calls per session ÷ 86,400 seconds ≈ 940K average read QPS → the homepage-serving path handles 20× more reads than writes; read throughput is the binding constraint.
+- **Metadata read QPS:** 325M subscribers × 5 daily sessions × 50 API calls per session ÷ 86,400 seconds ≈ 940K read QPS at peak → the homepage-serving path handles 20× more reads than writes; read throughput is the binding constraint.
 
 ## 4. Entities
 
@@ -165,6 +166,10 @@ graph TB
     class GW,PLAY,HOME,SEARCH,PROFILE aws
     class STEER,OCA cdn
     class S3,CASS,EV,ES,MYSQL store
+    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a
+    class Client edge
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    class DNS svc
 ```
 
 ### Video Pipeline (Ingest → Transcode → Package → Encrypt → Deliver)
@@ -185,85 +190,68 @@ graph LR
     classDef store fill:#e6f4ea,stroke:#34a853,color:#1a1c1e
     class INSPECT,COMPLEX,LADDER,ENCODE,VALIDATE,PACKAGE,ENCRYPT,DEPLOY svc
     class S3_FINAL store
+    class MEZZ svc
 ```
 
 #### FR1: Browse a personalized homepage
 
-**Components:** Homepage Service, EVCache, Recommendation Pipeline (offline), Row Assembler.
-
-**Flow:**
-
-1. Client calls `GET /homepage?profile_id=P1` on app launch.
-1. Homepage Service reads EVCache key `homepage:P1` — a pre-computed list of row definitions: `[{row_type: "continue_watching", video_ids: [...]}, {row_type: "trending_now", video_ids: [...]}, ...]`, refreshed every 15 minutes.
-1. For each row, the Homepage Service bulk-fetches video metadata (title, poster art URL, maturity) from a local cache keyed by `video_id`. Video metadata is small (~2 KB per title) and changes rarely — a 5-minute CDN cache on poster art plus 1-hour application cache on metadata covers nearly every request.
-1. The response payload is ~30 rows × ~12 titles per row = 360 title references with poster URLs. The client renders the row structure; poster art loads from the CDN in parallel.
-1. On cache miss (new profile, cache eviction), the Row Assembler runs inline: queries WatchHistory for continue-watching candidates, queries the Trending Velocity sorted set for popular titles in the profile's country, and calls the Recommendation Service for personalized rows — capped at 200ms total assembly time.
-
-**Design consideration:** The Homepage Service never computes rows from scratch on the request path. All candidate generation — item-to-item collaborative filtering, two-tower scoring, new-release injection — runs offline in Spark jobs and writes results to EVCache. The online path is a cache read + metadata decoration, keeping p99 latency under 50ms. The 15-minute refresh interval means a newly released title takes at most 15 minutes to appear on a homepage — acceptable for VOD; live content would need a different path.
+- **Components:** Homepage Service, EVCache, Recommendation Pipeline (offline), Row Assembler.
+- **Flow:**
+  1. Client calls `GET /homepage?profile_id=P1` on app launch.
+  1. Homepage Service reads EVCache key `homepage:P1` — a pre-computed list of row definitions: `[{row_type: "continue_watching", video_ids: [...]}, {row_type: "trending_now", video_ids: [...]}, ...]`, refreshed every 15 minutes.
+  1. For each row, the Homepage Service bulk-fetches video metadata (title, poster art URL, maturity) from a local cache keyed by `video_id`. Video metadata is small (~2 KB per title) and changes rarely — a 5-minute CDN cache on poster art plus 1-hour application cache on metadata covers nearly every request.
+  1. The response payload is ~30 rows × ~12 titles per row = 360 title references with poster URLs. The client renders the row structure; poster art loads from the CDN in parallel.
+  1. On cache miss (new profile, cache eviction), the Row Assembler runs inline: queries WatchHistory for continue-watching candidates, queries the Trending Velocity sorted set for popular titles in the profile's country, and calls the Recommendation Service for personalized rows — capped at 200ms total assembly time.
+- **Design consideration:** The Homepage Service never computes rows from scratch on the request path. All candidate generation — item-to-item collaborative filtering, two-tower scoring, new-release injection — runs offline in Spark jobs and writes results to EVCache. The online path is a cache read + metadata decoration, keeping p99 latency under 50ms. The 15-minute refresh interval means a newly released title takes at most 15 minutes to appear on a homepage — acceptable for VOD; live content would need a different path.
 
 #### FR2: Search content
 
-**Components:** Search Service, Elasticsearch.
-
-**Flow:**
-
-1. `GET /search?q=comedy&genre=stand-up&language=en` hits the Search Service.
-1. Search Service constructs an Elasticsearch query: a `multi_match` across `title^3`, `synopsis^1`, `cast^2` for the full-text term, plus `term` filters on `genres` and `language`.
-1. Elasticsearch returns ranked results — BM25 relevance scoring with a recency boost (titles released in the last 90 days get a 1.2× multiplier).
-1. Results are paginated (20 per page, cursor-based). The service strips results blocked by the profile's maturity gate (`is_kids=true` drops anything above `all-ages`).
-
-**Design consideration:** The video catalog is ~15K titles — small enough that the entire index fits in memory on a modest Elasticsearch cluster. Autocomplete (type-ahead suggestions) uses a separate edge-ngram index refreshed nightly. At 940K read QPS, the search path is a small fraction of total traffic (<5%) and not the scaling bottleneck.
+- **Components:** Search Service, Elasticsearch.
+- **Flow:**
+  1. `GET /search?q=comedy&genre=stand-up&language=en` hits the Search Service.
+  1. Search Service constructs an Elasticsearch query: a `multi_match` across `title^3`, `synopsis^1`, `cast^2` for the full-text term, plus `term` filters on `genres` and `language`.
+  1. Elasticsearch returns ranked results — BM25 relevance scoring with a recency boost (titles released in the last 90 days get a 1.2× multiplier).
+  1. Results are paginated (20 per page, cursor-based). The service strips results blocked by the profile's maturity gate (`is_kids=true` drops anything above `all-ages`).
+- **Design consideration:** The video catalog is ~15K titles — small enough that the entire index fits in memory on a modest Elasticsearch cluster. Autocomplete (type-ahead suggestions) uses a separate edge-ngram index refreshed nightly. At 940K read QPS, the search path is a small fraction of total traffic (<5%) and not the scaling bottleneck.
 
 #### FR3: Stream video with adaptive bitrate
 
-**Components:** Playback Service, Steering Service, OCA CDN, DRM License Server.
-
-**Flow:**
-
-1. Client calls `POST /playback/start` with `video_id`, `profile_id`, and `device_type`.
-1. Playback Service validates the profile's entitlement (plan tier, concurrent stream limit, geo-restriction) and creates a `PlaybackSession` row in Cassandra.
-1. Playback Service calls the Steering Service: "give me the best OCA for `video_id`, this client's IP, and this codec family (HEVC for 4K-capable devices, H.264 for older)."
-1. Steering Service consults its ranked list of OCAs — scored by BGP proximity, current health, and whether the OCA holds the requested video's encoded files — and returns the top three OCA URLs.
-1. Playback Service returns the DASH or HLS manifest URL (hosted on the selected OCA) and a short-lived DRM license token to the client.
-1. Client fetches the manifest from the OCA, then streams segments. The ABR algorithm adjusts quality every 2 seconds: if the buffer exceeds 20 seconds, step up one bitrate; if below 10 seconds, step down immediately. Throughput is tracked as an exponential moving average of the last 5 segment downloads.
-
-**Design consideration:** The playback control path (steps 1–5) runs in AWS and is independent of the video data path (step 6), which runs entirely through Open Connect. A full AWS region outage stops new playback sessions from starting, but in-progress streams continue uninterrupted — the OCA holds enough segments buffered locally to serve minutes of content without the control plane.
+- **Components:** Playback Service, Steering Service, OCA CDN, DRM License Server.
+- **Flow:**
+  1. Client calls `POST /playback/start` with `video_id`, `profile_id`, and `device_type`.
+  1. Playback Service validates the profile's entitlement (plan tier, concurrent stream limit, geo-restriction) and creates a `PlaybackSession` row in Cassandra.
+  1. Playback Service calls the Steering Service: "give me the best OCA for `video_id`, this client's IP, and this codec family (HEVC for 4K-capable devices, H.264 for older)."
+  1. Steering Service consults its ranked list of OCAs — scored by BGP proximity, current health, and whether the OCA holds the requested video's encoded files — and returns the top three OCA URLs.
+  1. Playback Service returns the DASH or HLS manifest URL (hosted on the selected OCA) and a short-lived DRM license token to the client.
+  1. Client fetches the manifest from the OCA, then streams segments. The ABR algorithm adjusts quality every 2 seconds: if the buffer exceeds 20 seconds, step up one bitrate; if below 10 seconds, step down immediately. Throughput is tracked as an exponential moving average of the last 5 segment downloads.
+- **Design consideration:** The playback control path (steps 1–5) runs in AWS and is independent of the video data path (step 6), which runs entirely through Open Connect. A full AWS region outage stops new playback sessions from starting, but in-progress streams continue uninterrupted — the OCA holds enough segments buffered locally to serve minutes of content without the control plane.
 
 #### FR4: Resume playback
 
-**Components:** Playback Service, Cassandra (WatchHistory).
-
-**Flow:**
-
-1. During playback, the client sends `POST /playback/heartbeat` every 30 seconds with `session_id` and `last_position`.
-1. The Playback Service upserts `WatchHistory` in Cassandra: `UPDATE watch_history SET last_position = ?, updated_at = now() WHERE profile_id = ? AND video_id = ?`. The upsert is lightweight (one row, two columns changed) and runs at ~130M heartbeats per minute peak — Cassandra absorbs this with its append-only write path.
-1. When the client loads `GET /profiles/{id}/continue-watching`, the Playback Service queries `SELECT * FROM watch_history WHERE profile_id = ? AND completed = false ORDER BY updated_at DESC LIMIT 20`. The partition key (`profile_id`) makes this a single-partition read.
-
-**Design consideration:** Heartbeats are fire-and-forget — the Playback Service does not acknowledge them. A lost heartbeat means the resume position drifts backward by at most 30 seconds on the next session, which is acceptable. The heartbeat interval trades positional accuracy for write volume: 30 seconds at 65M concurrent streams = ~2.2M writes/s, which is within Cassandra's comfortable range with appropriate partitioning.
+- **Components:** Playback Service, Cassandra (WatchHistory).
+- **Flow:**
+  1. During playback, the client sends `POST /playback/heartbeat` every 30 seconds with `session_id` and `last_position`.
+  1. The Playback Service upserts `WatchHistory` in Cassandra: `UPDATE watch_history SET last_position = ?, updated_at = now() WHERE profile_id = ? AND video_id = ?`. The upsert is lightweight (one row, two columns changed) and runs at ~65M heartbeats per minute peak — Cassandra absorbs this with its append-only write path.
+  1. When the client loads `GET /profiles/{id}/continue-watching`, the Playback Service queries `SELECT * FROM watch_history WHERE profile_id = ? AND completed = false ORDER BY updated_at DESC LIMIT 20`. The partition key (`profile_id`) makes this a single-partition read.
+- **Design consideration:** Heartbeats are fire-and-forget — the Playback Service does not acknowledge them. A lost heartbeat means the resume position drifts backward by at most 30 seconds on the next session, which is acceptable. The heartbeat interval trades positional accuracy for write volume: 30 seconds at 65M concurrent streams = ~2.2M writes/s, which is within Cassandra's comfortable range with appropriate partitioning.
 
 #### FR5: Manage multiple profiles
 
-**Components:** Profile Service, MySQL.
-
-**Flow:**
-
-1. `POST /profiles` creates a new profile under the authenticated user's account. The Profile Service checks the plan tier's profile limit (basic: 1, standard: 5, premium: 5) and inserts a row.
-1. `PUT /profiles/{id}` updates name, avatar, language, or kids flag. The kids flag change triggers a cache invalidation for that profile's homepage — the next homepage load recomputes with the new maturity filter.
-1. Profile data is small (5 rows × ~200 bytes) and write-rare — MySQL with standard replication handles it comfortably.
-
-**Design consideration:** The kids flag is a security boundary, not just a UX preference. If a profile switches from kids to non-kids, the maturity filter drops — the next homepage load shows mature titles. The reverse transition (non-kids to kids) immediately invalidates the EVCache entry so stale mature rows cannot leak to a kids profile.
+- **Components:** Profile Service, MySQL.
+- **Flow:**
+  1. `POST /profiles` creates a new profile under the authenticated user's account. The Profile Service checks the plan tier's profile limit (basic: 1, standard: 5, premium: 5) and inserts a row.
+  1. `PUT /profiles/{id}` updates name, avatar, language, or kids flag. The kids flag change triggers a cache invalidation for that profile's homepage — the next homepage load recomputes with the new maturity filter.
+  1. Profile data is small (5 rows × ~200 bytes) and write-rare — MySQL with standard replication handles it comfortably.
+- **Design consideration:** The kids flag is a security boundary, not just a UX preference. If a profile switches from kids to non-kids, the maturity filter drops — the next homepage load shows mature titles. The reverse transition (non-kids to kids) immediately invalidates the EVCache entry so stale mature rows cannot leak to a kids profile.
 
 #### FR6: Download for offline viewing
 
-**Components:** Playback Service, DRM License Server, OCA CDN.
-
-**Flow:**
-
-1. Client calls `POST /downloads` with `video_id`. The Playback Service checks the profile's plan tier (downloads are premium-only for most regions) and the title's download availability (some licensing agreements prohibit offline viewing).
-1. If authorized, the Playback Service returns download URLs for the best single-bitrate encode suitable for the device's storage and screen resolution — typically 1080p HEVC at 2–4 Mbps, producing a ~1–2 GB file for a 90-minute film.
-1. The DRM License Server issues a device-bound, time-limited offline license: the downloaded file decrypts only on the requesting device, and the license expires after 48 hours of non-connectivity. The client must phone home within that window to refresh the license, enforcing licensing windows without persistent connectivity.
-
-**Design consideration:** Downloads use a single fixed bitrate rather than an adaptive ladder — the file size is predictable and the experience is consistent. The license-expiry phone-home is the key mechanism for enforcing content licensing restrictions offline: the file is encrypted on disk and unplayable without a valid license, so even a rooted device cannot bypass expiry by copying the file.
+- **Components:** Playback Service, DRM License Server, OCA CDN.
+- **Flow:**
+  1. Client calls `POST /downloads` with `video_id`. The Playback Service checks the profile's plan tier (downloads are premium-only for most regions) and the title's download availability (some licensing agreements prohibit offline viewing).
+  1. If authorized, the Playback Service returns download URLs for the best single-bitrate encode suitable for the device's storage and screen resolution — typically 1080p HEVC at 2–4 Mbps, producing a ~1–2 GB file for a 90-minute film.
+  1. The DRM License Server issues a device-bound, time-limited offline license: the downloaded file decrypts only on the requesting device, and the license expires after 48 hours of non-connectivity. The client must phone home within that window to refresh the license, enforcing licensing windows without persistent connectivity.
+- **Design consideration:** Downloads use a single fixed bitrate rather than an adaptive ladder — the file size is predictable and the experience is consistent. The license-expiry phone-home is the key mechanism for enforcing content licensing restrictions offline: the file is encrypted on disk and unplayable without a valid license, so even a rooted device cannot bypass expiry by copying the file.
 
 ## 6. Deep dives
 
@@ -402,20 +390,7 @@ Online path (Homepage Service, per request):
 > [!TIP]
 > The key insight: a user's taste doesn't change in 15 minutes, but their playback position does. By keeping freshness-sensitive paths (continue watching, search) inline and batching taste-sensitive paths (recommended rows), Netflix gets real-time accuracy where it matters at a fraction of the inference cost.
 
-## 7. Trade-offs
-
-| Chosen | Rejected | Why |
-|---|---|---|
-| Own CDN (Open Connect) with pre-positioning | Third-party CDN (CloudFront, Akamai) | At 325 Tbps sustained egress (~15% of global internet downstream traffic), third-party egress fees exceed $1B/year. Pre-positioning during off-peak hours uses idle backbone capacity and guarantees cache residency for long-tail content. The CapEx crossover was passed in ~2013; at current scale, the savings are existential. |
-| Hundreds of microservices with bounded contexts | Monolith or coarse-grained services | Coarse decomposition creates thick client libraries and a distributed monolith — coupling services through shared libraries is worse than coupling through well-defined APIs because the dependency graph is invisible. Bounded-context microservices force explicit interfaces and independent deployability. The cost is operational complexity (service discovery, tracing, circuit breaking), which requires a service mesh (Envoy) and observability stack. |
-| Global active-active with eventual consistency for non-critical data | Multi-region primary-standby | A standby region that isn't continuously exercised in production will fail when you need it — a lesson from a 2008 datacenter corruption that caused a 3-day streaming outage. Every service must survive an AZ failure, and critical services must survive a full region failure. User data is written to the nearest region and replicated asynchronously — the consistency domain is per-user, so cross-region conflicts are rare. |
-| Async encoding pipeline with media-ready gating | Synchronous encoding at ingest | Encoding a feature film takes 20+ compute-hours across 1,200 output files. Synchronous encoding makes the studio's content ingestion wait on batch compute — unacceptable turnaround for time-sensitive releases. The async pipeline ingests the mezzanine file immediately and returns a content-ID; the encoded versions stream only after the encode-and-validate pipeline completes, gated by a media-ready event. |
-| EVCache with pre-computed homepage rows | Real-time recommendation inference per request | 940K homepage reads per second × even 50ms of model inference = uneconomical. The offline pipeline runs expensive models (two-tower neural scoring, graph walks, multi-tower ensembles) on a 15-minute batch schedule. The online path is a cache read decorating pre-computed rows with metadata — 50ms p99. |
-
-> [!WARNING]
-> Global active-active is the highest-operational-cost trade-off here: building every service to survive a full region failure adds significant infrastructure and testing complexity. The 2008 datacenter corruption outage — 3 days of DVD-only delivery — was the forcing function that made this investment non-optional.
-
-## 8. References
+## 7. References
 
 1. Netflix Technology Blog. [Rebuilding Netflix Video Processing Pipeline with Microservices](https://netflixtechblog.com/rebuilding-netflix-video-processing-pipeline-with-microservices-4e5e6310e359) (2024).
 1. Netflix Technology Blog. [Distributing Content to Open Connect](https://netflixtechblog.com/distributing-content-to-open-connect-3e3e391d4dc9) (2021).

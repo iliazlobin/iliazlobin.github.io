@@ -2,8 +2,8 @@
 layout: post
 title: "System Design: Distributed Cache"
 date: 2026-07-02
-tags: [System Design, Caching]
-description: "A distributed cache provides sub-millisecond read latency for hot data across 100+ nodes, handling 1M+ queries per second with automatic rebalancing and fault tolerance."
+tags: [System Design]
+description: "A single-node cache (one Redis instance, one Memcached process) hits a hard wall: the server's RAM ceiling."
 thumbnail: /images/posts/2026-07-02-system-design-distributed-cache.svg
 ---
 
@@ -126,65 +126,50 @@ flowchart TB
 
 #### FR1: Store a key-value pair with optional TTL
 
-**Components:** Smart client, leader node owning the target slot.
-
-**Flow:**
-
-1. Client hashes the key: `slot = CRC16(key) % 16384`.
-1. Client looks up slot in its local slot→node table, sends `SET key value EX ttl` to the leader.
-1. Leader writes to its in-memory hash table, records the expiry timestamp, replies `OK`.
-1. Leader asynchronously replicates the write to its followers via the replication stream.
-1. If the client's slot map is stale (slot moved to a different node), the leader replies `MOVED <slot> <new-node>`. Client updates its map, retries on the new node.
-
-**Design consideration:** The client must handle `MOVED` redirects transparently. On a `MOVED` response, it updates the slot map (not just for that one key — it learns the whole slot range that moved) and retries. A `MOVED` is permanent; an `ASK` redirect (temporary, during migration of a single key) forces a one-shot redirect but does not update the map.
+- **Components:** Smart client, leader node owning the target slot.
+- **Flow:**
+  1. Client hashes the key: `slot = CRC16(key) % 16384`.
+  1. Client looks up slot in its local slot→node table, sends `SET key value EX ttl` to the leader.
+  1. Leader writes to its in-memory hash table, records the expiry timestamp, replies `OK`.
+  1. Leader asynchronously replicates the write to its followers via the replication stream.
+  1. If the client's slot map is stale (slot moved to a different node), the leader replies `MOVED <slot> <new-node>`. Client updates its map, retries on the new node.
+- **Design consideration:** The client must handle `MOVED` redirects transparently. On a `MOVED` response, it updates the slot map (not just for that one key — it learns the whole slot range that moved) and retries. A `MOVED` is permanent; an `ASK` redirect (temporary, during migration of a single key) forces a one-shot redirect but does not update the map.
 
 #### FR2: Retrieve the value for a given key
 
-**Components:** Smart client, any node (leader or follower, if read-from-replica is enabled).
-
-**Flow:**
-
-1. Client computes slot, routes `GET key` to the leader for that slot.
-1. Leader checks the hash table. If key exists and TTL has not expired, returns value. If expired, lazily evicts and returns nil.
-1. If key is absent, returns nil — the caller treats this as a cache miss and fetches from the source of truth.
-
-**Design consideration:** Reads can be served from replicas for higher throughput (Redis `READONLY` command on replica connections), at the cost of reading slightly stale data — the replica may lag behind the leader by the replication delay (typically sub-millisecond on a local network, but can spike under load). For cache workloads, this staleness is acceptable; the cache-aside pattern already tolerates it.
+- **Components:** Smart client, any node (leader or follower, if read-from-replica is enabled).
+- **Flow:**
+  1. Client computes slot, routes `GET key` to the leader for that slot.
+  1. Leader checks the hash table. If key exists and TTL has not expired, returns value. If expired, lazily evicts and returns nil.
+  1. If key is absent, returns nil — the caller treats this as a cache miss and fetches from the source of truth.
+- **Design consideration:** Reads can be served from replicas for higher throughput (Redis `READONLY` command on replica connections), at the cost of reading slightly stale data — the replica may lag behind the leader by the replication delay (typically sub-millisecond on a local network, but can spike under load). For cache workloads, this staleness is acceptable; the cache-aside pattern already tolerates it.
 
 #### FR3: Delete a key explicitly before its TTL expires
 
-**Components:** Smart client, leader.
-
-**Flow:**
-
-1. Client routes `DEL key` to the leader.
-1. Leader removes the key from the hash table and the expiry index.
-1. Leader replicates the deletion to followers.
-
-**Design consideration:** `DEL` is synchronous on the leader but the replication is still async. If the leader crashes immediately after ack'ing the `DEL`, a replica that did not yet receive the deletion might promote and serve the stale key — until its own TTL expires. This is the same async-replication caveat as writes.
+- **Components:** Smart client, leader.
+- **Flow:**
+  1. Client routes `DEL key` to the leader.
+  1. Leader removes the key from the hash table and the expiry index.
+  1. Leader replicates the deletion to followers.
+- **Design consideration:** `DEL` is synchronous on the leader but the replication is still async. If the leader crashes immediately after ack'ing the `DEL`, a replica that did not yet receive the deletion might promote and serve the stale key — until its own TTL expires. This is the same async-replication caveat as writes.
 
 #### FR4: Retrieve or update multiple keys in one round trip
 
-**Components:** Smart client, multiple leaders (keys may hash to different slots).
-
-**Flow:**
-
-1. Client receives `["key1","key2","key3"]`. For each key, computes its slot.
-1. Groups keys by slot → node, sends one `MGET` (or pipelined `GET`s) per target node.
-1. Waits for all responses, merges results, returns the combined map to the caller.
-1. For `MSET`, the same grouping — pipeline writes per node, collect acknowledgements.
-
-**Design consideration:** Redis hash tags (`{...}`) let the application force related keys to the same slot: `user:{42}:profile` and `user:{42}:settings` both hash on `42`. This enables true atomic `MGET`/`MSET` on co-located keys but creates hot spots if one user dominates. Use hash tags sparingly and only when atomicity across keys is required.
+- **Components:** Smart client, multiple leaders (keys may hash to different slots).
+- **Flow:**
+  1. Client receives `["key1","key2","key3"]`. For each key, computes its slot.
+  1. Groups keys by slot → node, sends one `MGET` (or pipelined `GET`s) per target node.
+  1. Waits for all responses, merges results, returns the combined map to the caller.
+  1. For `MSET`, the same grouping — pipeline writes per node, collect acknowledgements.
+- **Design consideration:** Redis hash tags (`{...}`) let the application force related keys to the same slot: `user:{42}:profile` and `user:{42}:settings` both hash on `42`. This enables true atomic `MGET`/`MSET` on co-located keys but creates hot spots if one user dominates. Use hash tags sparingly and only when atomicity across keys is required.
 
 #### FR5: Query or extend a key's remaining TTL
 
-**Components:** Smart client, leader.
-
-**Flow:**
-
-1. `TTL key` → leader returns seconds remaining, -1 (no expiry), or -2 (not found).
-1. `EXPIRE key 300` → leader updates the expiry timestamp to now + 300s in the expiry index, replicates the change.
-
-**Design consideration:** Redis stores TTLs in a separate expiry dictionary (not inline in the hash table entry), so `EXPIRE` is an O(1) update that does not touch the value. The server lazily evicts expired keys on access plus an active background scan sampling 20 random keys from the expiry set 10 times per second.
+- **Components:** Smart client, leader.
+- **Flow:**
+  1. `TTL key` → leader returns seconds remaining, -1 (no expiry), or -2 (not found).
+  1. `EXPIRE key 300` → leader updates the expiry timestamp to now + 300s in the expiry index, replicates the change.
+- **Design consideration:** Redis stores TTLs in a separate expiry dictionary (not inline in the hash table entry), so `EXPIRE` is an O(1) update that does not touch the value. The server lazily evicts expired keys on access plus an active background scan sampling 20 random keys from the expiry set 10 times per second.
 
 ## 6. Deep dives
 
@@ -366,18 +351,7 @@ When L2 is updated or invalidated, publish an invalidation event. Every applicat
 - **Memory pressure on L1:** Caffeine's W-TinyLFU eviction adaptively balances recency and frequency, so the hot working set stays resident even under memory pressure. Size the L1 to hold the top ~10K keys by access frequency.
 - **Cold start:** On deployment, L1 is empty. All reads hit L2, then L1 warms up. If L2 is also cold (new cluster), reads hit the database. A cache warmer — a process that preloads hot keys at startup — mitigates this. The warmer snapshots the hot key set to a persistent volume; new instances load the snapshot at boot, then catch up on recent writes from the replication stream.
 
-## 7. Trade-offs
-
-| Decision | Option A | Option B | Why we chose A |
-|---|---|---|---|
-| Data distribution | Fixed hash slots (Redis Cluster) | Consistent hashing ring | Deterministic slot ownership simplifies failure detection and failover; the 2 KB slot bitmap makes gossip efficient |
-| Replication consistency | Async leader-follower | Quorum-based (W + R > N) | Cached data is regenerable; sub-ms write latency matters more than zero-loss durability |
-| Eviction policy | Approximated LRU (sampling) | Segmented HOT/WARM/COLD LRU | Simpler, fewer moving parts; at 1M req/s the approximation is within 5% of true LRU hit rate |
-| Client architecture | Smart client (slot-aware) | Proxy layer (e.g., mcrouter) | Eliminates an extra hop for every request; the slot map is only 64 KB of client memory |
-| Multi-tier invalidation | Short-TTL L1 (no pub/sub) | Pub/sub-driven L1 invalidation | 5-second staleness is acceptable for cache workloads; pub/sub adds infrastructure for marginal gain |
-| Read scaling | Read from replicas (READONLY) | Read only from leaders | Doubles read throughput per shard; replica lag is sub-ms and acceptable for cache data |
-
-## 8. References
+## 7. References
 
 1. [Redis Cluster Specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/)
 1. [Redis Eviction Policies](https://redis.io/docs/latest/develop/reference/eviction/)

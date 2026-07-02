@@ -1,10 +1,10 @@
 ---
 layout: post
-thumbnail: /images/posts/2026-07-01-system-design-google-docs.svg
 title: "System Design: Google Docs"
 date: 2026-07-01
-tags: [System Design, Google Docs, Collaboration]
+tags: [System Design]
 description: "Google Docs serves ~2B monthly active users editing documents collaboratively in real time. A document open for editing draws 1–100 concurrent collaborators whose keystrokes must resolve to a single consistent document state with sub-200ms latency."
+thumbnail: /images/posts/2026-07-01-system-design-google-docs.svg
 ---
 
 Google Docs serves ~2B monthly active users editing documents collaboratively in real time. A document open for editing draws 1–100 concurrent collaborators whose keystrokes must resolve to a single consistent document state with sub-200ms latency.
@@ -53,7 +53,7 @@ graph LR
 - NFR3: 99.99% write durability — no keystroke loss on acknowledged edits.
 - NFR4: Causal ordering: every user sees edits in the order they were made.
 
-*Out of scope: authentication, authorization, offline editing with local-merge, real-time video/voice, add-on marketplace.*
+*Out of scope: authentication, authorization, offline editing with local-merge, PDF export rendering, real-time video/voice, add-on marketplace.*
 
 ## 3. Back of the envelope
 
@@ -166,7 +166,7 @@ graph TB
 
 **Design consideration:** `doc_id` doubles as the consistent-hashing routing key. The first 2 bytes of the UUID hash determine the OT server shard — the gateway routes every connection for that document to the same shard without a separate lookup table. New documents spread evenly across the ring.
 
-### FR2: Edit document text concurrently with other users in real time
+#### FR2: Edit document text concurrently with other users in real time
 
 **Components:** Browser OT client → WebSocket → OT Engine → Bigtable.
 
@@ -190,7 +190,7 @@ Server broadcasts:
 
 **Design consideration:** The client operates on a **stop-and-wait** model — it sends one operation at a time and waits for the server's acknowledgment (carrying the assigned `rev`) before sending the next. This keeps the client's local revision counter in lockstep with the server and eliminates a whole class of undoing/redoing transforms. For fast typists (100+ WPM), a single-keystroke-per-roundtrip is still 5–10 ms on a good connection — faster than human perception. Batching multi-character inserts (paste operations) into a single `insert(string, offset)` operation keeps throughput reasonable.
 
-### FR3: See other editors' cursors and text selections live
+#### FR3: See other editors' cursors and text selections live
 
 **Components:** Browser → Presence Hub → Redis Pub/Sub → all collaborators.
 
@@ -203,7 +203,7 @@ Server broadcasts:
 
 **Design consideration:** Presence traffic is unbundled from the OT channel. Cursor updates fire at 10–30 Hz (mouse movement) vs. keystrokes at 3–10 Hz — combining them would inflate the OT engine's workload by 3×. Keeping presence on a separate Redis Pub/Sub path also means a presence node crash doesn't interrupt editing — cursors blink out briefly and reappear on reconnect, which users tolerate.
 
-### FR4: View and restore past document revisions
+#### FR4: View and restore past document revisions
 
 **Components:** Browser → OT Engine → Bigtable op-log.
 
@@ -216,7 +216,7 @@ Server broadcasts:
 
 **Design consideration:** Replay from op-log is linear in the number of operations between the snapshot and the target revision. The Snapshot Worker compacts snapshots every 5 minutes or every 500 ops (whichever comes first), bounding replay depth to ≤ 500 ops per document. A user opening a 10-year-old document replays at most 500 operations — ~50 ms of replay time in the browser.
 
-### FR5: Apply rich formatting — fonts, colors, lists, alignment
+#### FR5: Apply rich formatting — fonts, colors, lists, alignment
 
 **Components:** Browser OT client (local model) → OT Engine.
 
@@ -229,7 +229,7 @@ Server broadcasts:
 
 **Design consideration:** Formatting uses the same OT pipeline as text edits — no separate protocol. The component model treats the document as a sequence of characters with attribute spans: `[{char: 'H', bold: true}, {char: 'i', bold: false}]`. Inserting in the middle of a bold region inherits the surrounding attributes automatically. This avoids "format paint" bugs where typing after a bold word produces non-bold text.
 
-### FR6: Insert images, tables, comments, and embedded content
+#### FR6: Insert images, tables, comments, and embedded content
 
 **Components:** Browser → BlobStore (images) / OT Engine (references).
 
@@ -410,7 +410,7 @@ Collaborators establish a WebRTC data channel mesh for cursor traffic. No server
 
 **Decision.** Out-of-band presence via Redis Pub/Sub, multiplexed over the same WebSocket connection as edits.
 
-**Rationale.** Redis Pub/Sub is fire-and-forget — no persistence, no replication overhead (channels don't survive restarts). A presence message traverses: Client → WS Proxy → Presence Hub → Redis `PUBLISH` → Redis `SUBSCRIBE` on 99 other Presence Hub instances → 99 clients. Total latency: ~5–10ms within a datacenter, dominated by the Redis hop. The 50ms dedup window is the key optimization: it reduces 3,000 cursor messages/sec/document (raw) to ~2,000 messages/sec/document (deduped), a 33% reduction, without perceptible cursor lag. Redis's per-channel message rate is ~100K/sec on modest hardware. The 2,000 msg/sec/document figure is the worst case (100 concurrent editors); the vast majority of active documents have only two or three editors and generate ~20 msg/sec, so one Redis node sustains ~5,000 typical documents before saturating. With ~500K documents having active editors at any instant, that puts the presence tier at ~100 Redis nodes — and the rare 100-editor hot document gets a dedicated channel so it can't starve its neighbors.
+**Rationale.** Redis Pub/Sub is fire-and-forget — no persistence, no replication overhead (channels don't survive restarts). A presence message traverses: Client → WS Proxy → Presence Hub → Redis `PUBLISH` → Redis `SUBSCRIBE` on 99 other Presence Hub instances → 99 clients. Total latency: ~5–10ms within a datacenter, dominated by the Redis hop. The 50ms dedup window is the key optimization: it reduces 3,000 cursor messages/sec/document (raw) to ~2,000 messages/sec/document (deduped), a 33% reduction, without perceptible cursor lag. Redis's per-channel message rate is ~100K/sec on modest hardware — 2,000 msg/sec/document means one Redis node handles ~50 active documents before saturating. At 50M concurrent documents, that's ~1M Redis nodes if every document were active — but the actual active document count at any instant is far lower (~500K with active editors), so ~100 Redis nodes cover the presence tier.
 
 > [!NOTE]
 > **Load-bearing detail:** Cursor deduplication happens at the Presence Hub, not at the client. The client sends every cursor move (the browser fires `onmousemove` events at the display refresh rate, typically 60 Hz, throttled to 30 Hz by the JS client). The Presence Hub buffers the latest cursor state per user per document in a 50ms bucket; when the bucket flushes, only the most recent position is published. This is effectively a lossy throttle — acceptable because intermediate cursor positions are invisible to the human eye at 30 Hz anyway.
@@ -424,22 +424,7 @@ Collaborators establish a WebRTC data channel mesh for cursor traffic. No server
 
 ---
 
-## 7. Trade-offs
-
-| Decision | Chosen | Rejected | Why |
-|---|---|---|---|
-| Edit convergence | OT (Jupiter, central server) | CRDT (RGA / Yjs) | Central server enables snapshots and bounded replay without tombstone accumulation. CRDT wins for offline-first P2P; OT wins when you have a server and need version history. |
-| Client flow control | Stop-and-wait (one op per ack) | Streaming (multiple in-flight ops) | Simplifies client-side state; a 10ms RTT supports 100 ops/sec — well beyond human typing speed. Streaming is unnecessary for text and introduces undo/redo complexity. |
-| Connection routing | L7 cookie stickiness + consistent-hash fallback | L4 consistent hashing, intra-cluster proxy | Cookie handles reconnect within 5min TTL without cold-load. L4 can't inspect WebSocket upgrade path; intra-cluster proxy adds a hop. |
-| Op-log store | Bigtable (row: doc_id#rev) | Spanner (for ops), Cassandra | Bigtable's lexicographic row ordering co-locates ops + snapshots for efficient prefix scans. Spanner is overkill for append-heavy, single-partition-range workloads. |
-| Presence channel | Redis Pub/Sub (ephemeral) | OT engine (in-band), WebRTC mesh | Presence is 10× message volume of edits; mixing them inflates OT engine cost. WebRTC mesh is fragile behind corporate firewalls. Redis is fire-and-forget with sub-10ms latency. |
-| Snapshot frequency | Every 500 ops or 5 minutes | Every N seconds, snapshot-on-idle | Ties to operation count prevents replay depth from growing unbounded during edit bursts. Time-based interval handles idle documents. |
-| Document routing | Consistent hashing on doc_id | Range-based partitioning | Consistent hashing minimizes re-assignment on cluster resize. Cross-region migration is a manual operation for hot documents, not an automatic rebalance. |
-| Image/blob storage | Colossus (immutable, content-addressed) | Inline in op-log, Bigtable blobs | Op-log stays lean (~200 bytes/op). Blobs are fetched from CDN edge cache, not through the OT server. Content addressing deduplicates identical images across documents. |
-
-## 8. References
-
-### Primary Sources
+## 7. References
 
 1. [High-Latency, Low-Bandwidth Windowing in the Jupiter Collaboration System](https://dl.acm.org/doi/10.1145/215585.215706) — Nichols, Curtis, Dixon, Lamping (UIST 1995). The foundational Jupiter OT paper.
 1. [Google Docs: Under the Hood](https://drive.googleblog.com/2010/09/whats-different-about-new-google-docs.html) — Google Drive Blog (2010). Operational transform, stop-and-wait flow, 100-editor limit.
@@ -448,6 +433,6 @@ Collaborators establish a WebRTC data channel mesh for cursor traffic. No server
 1. [The Google File System](https://research.google/pubs/pub51/) — Ghemawat, Gobioff, Leung (SOSP 2003). Foundation for Colossus; chunk replication, master-chunk architecture.
 1. [Operational Transformation in Real-Time Group Editors](https://www.scitepress.org/papers/2005/10928/10928.pdf) — Sun, Jia, Zhang, Yang, Chen (ICEIS 1998). OT correctness conditions, transformation functions.
 1. [CRDTs: Consistency without Consensus](https://crdt.tech/) — Shapiro, Preguiça, Baquero, Zawirski (2011). Counterpoint: when decentralized data types beat central coordination.
-1. [How Figma's Multiplayer Technology Works](https://www.figma.com/blog/how-figmas-multiplayer-technology-works/) — Figma Engineering (2019). Real-world CRDT deployment for multi-user collaboration.
+1. [How Figma's Multiplayer Technology Works](https://www.figma.com/blog/how-figmas-multiplayer-technology-works/) — Figma Engineering (2019). Real-world CRDT deployment; comparison point for OT vs. CRDT trade-offs.
 1. [Redis Pub/Sub](https://redis.io/docs/latest/develop/interact/pubsub/) — Fire-and-forget messaging with channel subscriptions, the basis for ephemeral presence.
 1. [Envoy Proxy: WebSocket Support](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/http/upgrades) — L7 WebSocket upgrade handling, sticky sessions, connection draining.

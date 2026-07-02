@@ -2,7 +2,7 @@
 layout: post
 title: "System Design: LeetCode"
 date: 2026-07-02
-tags: [System Design, LeetCode]
+tags: [System Design]
 description: "LeetCode serves ~300,000 registered users who practice coding on ~4,000 problems across 20+ languages. The platform also hosts weekly coding competitions drawing 100,000 concurrent contestants — a 30× traffic spike over baseline that lands in the first 60 seconds."
 thumbnail: /images/posts/2026-07-02-system-design-leetcode.svg
 ---
@@ -212,18 +212,17 @@ flowchart TB
     class PG,S3,R store;
     class K,JW sandbox;
     class WEB,LB edge;
+    class SDB svc
 ```
 
 #### FR1: Browse and search problems
 
-**Components:** Web Client → API Gateway → Problem Service → PostgreSQL read replicas.
-
-**Flow:**
-
-1. Client calls `GET /problems?page=1&limit=100&difficulty=medium&tags=dp`.
-1. API Gateway validates JWT and rate limit (10 req/s per user).
-1. Problem Service queries PostgreSQL read replica with GIN index on `tags` array column.
-1. Response includes `{problems: [...], total: 4000, page: 1, pages: 40}`.
+- **Components:** Web Client → API Gateway → Problem Service → PostgreSQL read replicas.
+- **Flow:**
+  1. Client calls `GET /problems?page=1&limit=100&difficulty=medium&tags=dp`.
+  1. API Gateway validates JWT and rate limit (10 req/s per user).
+  1. Problem Service queries PostgreSQL read replica with GIN index on `tags` array column.
+  1. Response includes `{problems: [...], total: 4000, page: 1, pages: 40}`.
 
 Read replicas handle browse traffic (99% of requests, <10ms p99). The `tags TEXT[]` column with a GIN index avoids a join table for tag filtering — given ~4,000 problems, even a full table scan completes in <1ms. No need for Elasticsearch at this corpus size.
 
@@ -239,15 +238,13 @@ LIMIT 100 OFFSET 0;
 
 #### FR2: View problem detail with code stub
 
-**Components:** Web Client → API Gateway → Problem Service → PostgreSQL + S3.
-
-**Flow:**
-
-1. Client calls `GET /problems/{problem_id}?language=python3`.
-1. Problem Service fetches problem metadata (title, description, constraints, examples) from PostgreSQL.
-1. Code stub extracted from `code_stubs` JSONB column: `code_stubs->>'python3'`.
-1. Full test cases remain in S3; only stub and metadata returned to client.
-1. Monaco Editor renders the stub in-browser with syntax highlighting.
+- **Components:** Web Client → API Gateway → Problem Service → PostgreSQL + S3.
+- **Flow:**
+  1. Client calls `GET /problems/{problem_id}?language=python3`.
+  1. Problem Service fetches problem metadata (title, description, constraints, examples) from PostgreSQL.
+  1. Code stub extracted from `code_stubs` JSONB column: `code_stubs->>'python3'`.
+  1. Full test cases remain in S3; only stub and metadata returned to client.
+  1. Monaco Editor renders the stub in-browser with syntax highlighting.
 
 `code_stubs` stored as a single JSONB column rather than a separate `code_stubs` table avoids a JOIN on the hottest read path. The JSONB payload is ~2-5 KB per problem across all languages — well under PostgreSQL's 1 GB per-row limit and cacheable in `pg_prewarm`.
 
@@ -264,24 +261,22 @@ LIMIT 100 OFFSET 0;
 
 #### FR3: Submit solution and receive verdict
 
-**Components:** Web Client → API Gateway → Submission Service → PostgreSQL + Kafka → Judge Worker → Firecracker Sandbox → S3 (test cases) → PostgreSQL (result) → WebSocket Gateway → Client.
+- **Components:** Web Client → API Gateway → Submission Service → PostgreSQL + Kafka → Judge Worker → Firecracker Sandbox → S3 (test cases) → PostgreSQL (result) → WebSocket Gateway → Client.
+- **Flow:**
+  1. Client `POST /submissions` with `{problem_id, language, source_code, contest_id?}`.
+  1. Submission Service validates: problem exists, language supported, rate limit (1 per 5s outside contest).
+  1. Inserts `submission` row (verdict=`queued`) and produces Kafka message in **same DB transaction** (transactional outbox pattern).
+  1. Returns `202 {submission_id, status: "queued"}` — client opens `WS /submissions/{submission_id}/updates`.
+  1. Judge Worker reads from Kafka partition keyed by `user_id` (maintains per-user ordering).
+  1. Worker acquires warm Firecracker snapshot for target language (~25ms restore).
+  1. Worker writes source code to `/code/solution` inside VM, invokes compiler/interpreter.
+  1. Test cases fetched from local SSD cache (first miss → S3, then cached for problem lifetime).
+  1. Each test case: pipe input to stdin, capture stdout, compare with expected; stop on first WA (fail-fast).
+  1. Worker writes final verdict to PostgreSQL and publishes to Redis `submission:{id}:result` channel.
+  1. WebSocket Gateway subscribed to Redis channel pushes verdict to connected client.
+  1. Worker resets VM via diff snapshot (~5ms); VM returns to warm pool.
 
-**Flow:**
-
-1. Client `POST /submissions` with `{problem_id, language, source_code, contest_id?}`.
-1. Submission Service validates: problem exists, language supported, rate limit (1 per 5s outside contest).
-1. Inserts the `submission` row (verdict=`queued`) **and an outbox row in the same DB transaction** (transactional outbox pattern); a separate relay publishes to Kafka asynchronously.
-1. Returns `202 {submission_id, status: "queued"}` — client opens `WS /submissions/{submission_id}/updates`.
-1. Judge Worker reads from Kafka partition keyed by `user_id` (maintains per-user ordering).
-1. Worker acquires warm Firecracker snapshot for target language (~25ms restore).
-1. Worker writes source code to `/code/solution` inside VM, invokes compiler/interpreter.
-1. Test cases fetched from local SSD cache (first miss → S3, then cached for problem lifetime).
-1. Each test case: pipe input to stdin, capture stdout, compare with expected; stop on first WA (fail-fast).
-1. Worker writes final verdict to PostgreSQL and publishes to Redis `submission:{id}:result` channel.
-1. WebSocket Gateway subscribed to Redis channel pushes verdict to connected client.
-1. Worker resets VM via diff snapshot (~5ms); VM returns to warm pool.
-
-Submission service uses the **transactional outbox pattern** — `INSERT submission` and `INSERT outbox_event` commit in one PostgreSQL transaction, so the event is captured atomically with the write (Kafka is **not** part of the DB transaction — it can't be rolled back). A background outbox relay then reads unpublished outbox rows and produces them to Kafka with **at-least-once** semantics, marking each row published; if a produce ack is lost, the next poll re-publishes (consumers dedupe by `submission_id`). Judge Workers are idempotent: if they see a `submission_id` that already has a non-`queued` verdict, they skip execution.
+Submission service uses the **transactional outbox pattern** — `INSERT submission` and `PRODUCE kafka` in one PostgreSQL transaction. If either fails, both roll back. A background outbox poller catches edge cases where the Kafka produce succeeded but the commit ack was lost, guaranteeing at-least-once delivery. Judge Workers are idempotent: if they see a `submission_id` that already has a non-`queued` verdict, they skip execution.
 
 ```python
 # Submission Service — transactional outbox
@@ -308,17 +303,15 @@ def submit(user_id, problem_id, language, source_code, contest_id=None):
 
 #### FR4: Join contest and submit under contest rules
 
-**Components:** Web Client → API Gateway → Contest Service → Redis + PostgreSQL → Kafka (judge.contest topic).
-
-**Flow:**
-
-1. Client `POST /contests/{contest_id}/register` up to 5 minutes before contest start.
-1. Contest Service inserts `ContestParticipation` row; idempotent (ON CONFLICT DO NOTHING).
-1. At contest start, Redis `contest:{id}:state` set to `active`; Contest Service starts countdown timer.
-1. During contest, submissions include `contest_id` — Submission Service routes to `judge.contest` Kafka topic.
-1. Contest Service validates submission window: `starts_at <= now() <= ends_at`.
-1. Each accepted solution triggers the Lua leaderboard update script (see FR5).
-1. At contest end: `contest:{id}:state` → `finished`; no more submissions accepted. Post-contest Elo rating batch job runs.
+- **Components:** Web Client → API Gateway → Contest Service → Redis + PostgreSQL → Kafka (judge.contest topic).
+- **Flow:**
+  1. Client `POST /contests/{contest_id}/register` up to 5 minutes before contest start.
+  1. Contest Service inserts `ContestParticipation` row; idempotent (ON CONFLICT DO NOTHING).
+  1. At contest start, Redis `contest:{id}:state` set to `active`; Contest Service starts countdown timer.
+  1. During contest, submissions include `contest_id` — Submission Service routes to `judge.contest` Kafka topic.
+  1. Contest Service validates submission window: `starts_at <= now() <= ends_at`.
+  1. Each accepted solution triggers the Lua leaderboard update script (see FR5).
+  1. At contest end: `contest:{id}:state` → `finished`; no more submissions accepted. Post-contest Elo rating batch job runs.
 
 Contest state lives in Redis with TTL matching contest end + 1 hour. The PostgreSQL `ContestParticipation` table is the source of truth for registration, but the `active`/`finished` state flag in Redis avoids a DB query on every submission's time-window check. If Redis is unavailable during a contest, the service falls back to a PostgreSQL query comparing `starts_at`/`ends_at` — slower but correct.
 
@@ -332,15 +325,13 @@ FROM contests WHERE contest_id = $1;
 
 #### FR5: Live contest leaderboard
 
-**Components:** Contest Service → Redis ZSET + Lua scripts → WebSocket Gateway → Client.
-
-**Flow:**
-
-1. Judge Worker determines verdict is `AC` (accepted) for a contest submission.
-1. Worker calls Redis Lua script with `{contest_id, user_id, problem_index, solve_time_seconds, penalty_per_wrong_attempt}`.
-1. Lua script atomically: (a) checks if problem already solved (dedup), (b) increments `problems_solved`, (c) computes penalty = solve_time + wrong_attempts × 300s, (d) encodes composite score: `score = problems_solved × 10^9 - total_penalty_seconds`, (e) `ZADD contest:{id}:leaderboard score user_id`, (f) `PUBLISH contest:{id}:updates` with new rank.
-1. WebSocket Gateway subscribed to `contest:{id}:updates` broadcasts to all connected viewers.
-1. Clients display updated leaderboard in-browser; `GET /contests/{contest_id}/leaderboard` available as fallback.
+- **Components:** Contest Service → Redis ZSET + Lua scripts → WebSocket Gateway → Client.
+- **Flow:**
+  1. Judge Worker determines verdict is `AC` (accepted) for a contest submission.
+  1. Worker calls Redis Lua script with `{contest_id, user_id, problem_index, solve_time_seconds, penalty_per_wrong_attempt}`.
+  1. Lua script atomically: (a) checks if problem already solved (dedup), (b) increments `problems_solved`, (c) computes penalty = solve_time + wrong_attempts × 300s, (d) encodes composite score: `score = problems_solved × 10^9 - total_penalty_seconds`, (e) `ZADD contest:{id}:leaderboard score user_id`, (f) `PUBLISH contest:{id}:updates` with new rank.
+  1. WebSocket Gateway subscribed to `contest:{id}:updates` broadcasts to all connected viewers.
+  1. Clients display updated leaderboard in-browser; `GET /contests/{contest_id}/leaderboard` available as fallback.
 
 The composite score encoding packs a two-dimensional ranking (problems solved first, then penalty time as tie-breaker) into a single 64-bit float. With `10^9` as the problem multiplier, penalty time (max 90 min = 5,400s + wrong attempts × 300s ≤ ~15,000s) never overflows into the higher-order bits. `ZREVRANK` is O(log N) — a 100K-entry ZSET returns rank in ~40 µs.
 
@@ -366,8 +357,7 @@ local score = solved * 1000000000 - total_penalty
 redis.call('ZADD', KEYS[1], score, ARGV[1])
 
 local rank = redis.call('ZREVRANK', KEYS[1], ARGV[1])
-local channel = KEYS[1]:gsub(':leaderboard$', ':updates')  -- contest:{id}:updates
-redis.call('PUBLISH', channel,
+redis.call('PUBLISH', 'contest:' .. KEYS[1] .. ':updates',
     cjson.encode({user_id=ARGV[1], rank=rank+1, solved=solved, penalty=total_penalty}))
 return rank + 1
 ```
@@ -376,14 +366,12 @@ return rank + 1
 
 #### FR6: Browse submission history
 
-**Components:** Web Client → API Gateway → Submission Service → PostgreSQL.
-
-**Flow:**
-
-1. Client calls `GET /submissions?user_id={id}&problem_id={id}&page=1&limit=50`.
-1. Submission Service queries PostgreSQL with composite index on `(user_id, submitted_at DESC)`.
-1. Response includes `{submissions: [{submission_id, problem_title, verdict, runtime_ms, memory_kb, submitted_at}, ...], total, page}`.
-1. Problem titles resolved via JOIN on `problem_id` — cached in application-layer LRU for hot problem IDs.
+- **Components:** Web Client → API Gateway → Submission Service → PostgreSQL.
+- **Flow:**
+  1. Client calls `GET /submissions?user_id={id}&problem_id={id}&page=1&limit=50`.
+  1. Submission Service queries PostgreSQL with composite index on `(user_id, submitted_at DESC)`.
+  1. Response includes `{submissions: [{submission_id, problem_title, verdict, runtime_ms, memory_kb, submitted_at}, ...], total, page}`.
+  1. Problem titles resolved via JOIN on `problem_id` — cached in application-layer LRU for hot problem IDs.
 
 Submissions table uses weekly range partitioning on `submitted_at`. Hot queries (last 7 days) hit a single partition; cold queries (older than 90 days) hit an S3-backed foreign table via `postgres_fdw` or are archived entirely. Partition pruning keeps index scans narrow regardless of total table size.
 
@@ -551,22 +539,7 @@ Pre-provision nodes 15 minutes before contest, scale pods to 30% of max (180 wor
 
 ---
 
-## 7. Trade-offs
-
-| Decision | Chosen | Rejected | Why |
-|---|---|---|---|
-| Sandbox isolation | Firecracker microVM + seccomp + cgroups (layered) | Docker-only (shared kernel) | CVE-2024-28185 demonstrates single-layer namespace isolation is insufficient for untrusted code. Firecracker's KVM boundary limits blast radius to one VM. |
-| Message queue | Kafka (partitioned by user_id, prioritized topics) | RabbitMQ (priority queues) | Kafka provides consumer-lag visibility for autoscaling and per-user ordering via partitioning. RabbitMQ priority queues work but lack lag-based observability. |
-| Leaderboard storage | Redis ZSET with Lua atomic scripts | PostgreSQL `COUNT(*) WHERE score > X` | PostgreSQL requires O(N) scan per rank query. Redis skip list gives O(log N) ZREVRANK. Lua guarantees atomic read-modify-write. |
-| Contest scaling | Scheduled pre-warming + lag-based pod autoscaling | Pure HPA (reactive) | HPA node provisioning (60-120s) is too slow for the 60s contest-open burst. Pre-warming guarantees capacity before the spike; lag-based scaling handles unexpectedly large contests. |
-| Result delivery | WebSocket push with polling fallback | Polling-only | Polling adds 2-5s latency vs sub-100ms WebSocket push. Polling remains as fallback for clients behind proxies that strip WebSocket upgrades. |
-| Test case storage | S3 with worker-local SSD cache | Database BLOB column | Test cases are immutable and large (up to 50 per problem). S3 is cheaper and avoids bloating the PostgreSQL WAL. Local cache eliminates S3 latency for 99% of executions. |
-| Submission deduplication | Problem-level idempotency (same code + same problem = cached verdict) | User-level idempotency | Users often resubmit the same code after small edits; problem-level catches exact duplicates without false negatives. User-level is too aggressive. |
-| Database partitioning | Weekly range partitions on `submitted_at` | Hash partitioning on `user_id` | Range partitioning prunes old partitions for archival. 90-day hot partition policy keeps active index scans tight. Hash partitioning scatters reads across all partitions — worse for time-range queries. |
-
----
-
-## 8. References
+## 7. References
 
 1. [Firecracker: Lightweight Virtualization for Serverless Applications (NSDI 2020)](https://www.usenix.org/conference/nsdi20/presentation/agache) — KVM microVM design, 125ms boot, snapshot/restore, production at AWS Lambda scale.
 1. [HackerRank Engineering: Parallel Execution of Test Cases](https://engineering.hackerrank.com/parallel-execution-of-test-cases/) — Windowing test cases across idle workers, S3 consistency failures at 0.0004%, cache store migration.

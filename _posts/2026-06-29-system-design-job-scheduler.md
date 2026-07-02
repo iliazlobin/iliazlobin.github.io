@@ -2,566 +2,362 @@
 layout: post
 title: "System Design: Job Scheduler"
 date: 2026-06-29
-tags: [System Design, Distributed Systems, Job Scheduler, Cron, Workflow, Kafka, PostgreSQL]
-description: "A distributed job scheduler that accepts work definitions and fans execution across a fleet of workers — on demand, at a future wall-clock time, or on a recurring cron schedule — with at-least-once guarantees, DAG workflow support, and horizontal scale to 10,000 jobs/sec."
+tags: [System Design]
+description: "A job scheduler accepts one-shot and scheduled job submissions, executes them at the specified time, retries on failure, and surfaces execution history. Users submit, cancel, and monitor jobs through an API with no infrastructure management."
 thumbnail: /images/posts/2026-06-29-system-design-job-scheduler.svg
 ---
 
-A distributed job scheduler that accepts work definitions and fans execution across a fleet of workers — on demand, at a future wall-clock time, or on a recurring cron schedule — with at-least-once guarantees, DAG workflow support, and horizontal scale to 10,000 jobs/sec.
+A job scheduler accepts one-shot and scheduled job submissions, executes them at the specified time, retries on failure, and surfaces execution history. Users submit, cancel, and monitor jobs through an API with no infrastructure management.
 
 <!--more-->
 
 ## 1. Problem
 
-A distributed job scheduler accepts work definitions from users and fans their execution across a fleet of workers — on demand, at a future wall-clock time, or on a recurring cron schedule. It tracks dependencies between tasks so a DAG workflow advances only when all upstream steps succeed, and guarantees each job runs at least once through machine crashes, network partitions, and scheduler failovers. This is infrastructure that powers ETL pipelines at Shopify (10K+ DAGs, 150K Airflow runs/day), async compute at Pinterest (billions of Pacer tasks), and workflow automation at Uber (12B+ Cadence executions). The system targets 10,000 jobs/sec peak throughput with sub-2-second scheduling precision and no single-process SPOF.
+A job scheduler accepts one-shot and scheduled job submissions, executes them at the specified time, retries on failure, and surfaces execution history. Users submit, cancel, and monitor jobs through an API with no infrastructure management. The system must handle ~10K jobs/s sustained with sub-2s scheduling precision and 30-day history retention — 864M jobs/day generating ~13 TB of state.
 
 ```mermaid
 graph LR
-    A["Client<br/>SDK / CLI / API"]
-    B["API Gateway<br/>stateless, auth"]
-    C["Scheduler Fleet<br/>sharded, leader-elected"]
-    D[("Job Store<br/>PostgreSQL partitioned")]
-    E["Execution Queue<br/>Kafka"]
-    F["Worker Pool<br/>stateless, autoscaled"]
+    Client["Client"]
+    Gateway["API Gateway"]
+    Scheduler["Scheduler"]
+    Workers["Worker Pool"]
+    DB[("Primary Store")]
 
-    A -->|REST| B
-    B -->|route by shard| C
-    C --> D
-    C -->|publish| E
-    E --> F
-    F -.->|heartbeat + ack| C
+    Client --> Gateway
+    Gateway --> Scheduler
+    Scheduler --> DB
+    Scheduler --> Workers
+    Workers --> DB
 
     classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a;
     classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
     classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
-    classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a;
-
-    class A edge;
-    class B,C,F svc;
-    class D store;
-    class E async;
+    class Client,Gateway,Scheduler,Workers svc;
+    class DB store;
 ```
 
 ## 2. Requirements
 
 **Functional**
 
-- FR1: Schedule jobs — execute immediately, at a future UTC timestamp, or on recurring cron expression.
-- FR2: Define DAG workflows — tasks declare upstream parent dependencies resolved before downstream execution.
-- FR3: Execute reliably — at-least-once delivery with configurable retries and exponential backoff.
-- FR4: Monitor status — query job state, workflow progress, and per-execution event history.
-- FR5: Cancel jobs — cancel pending jobs; signal running workers to abort in-flight execution.
-- FR6: Retrieve execution history — append-only log of every state transition with timestamps and worker IDs.
+- FR1: Schedule a job to run at a specified time.
+- FR2: Cancel a scheduled job before execution.
+- FR3: Execute jobs reliably; retry on failure.
+- FR4: List jobs filtered by status and time range.
+- FR5: Retrieve execution history for any job.
 
 **Non-functional**
 
-- NFR1: 10,000 jobs/sec peak throughput — horizontal scaling beyond a single machine.
-- NFR2: ≤2s scheduling precision — job fires within 2 seconds of its scheduled wall-clock time.
-- NFR3: 99.9% availability — no single scheduler process is a SPOF; leader failover under 10 seconds.
-- NFR4: Durability — zero accepted jobs lost on crash; all jobs either execute or land in a dead-letter queue.
+- NFR1: 99.9% availability with PostgreSQL HA.
+- NFR2: Submission latency under 200 ms p99.
+- NFR3: Once acknowledged, a job is never lost.
+- NFR4: Failed jobs retained for operator review.
 
-*Out of scope: multi-tenant quota enforcement, resource-aware bin-packing, visual DAG editor.*
+*Out of scope: recurring cron schedules, workflow DAGs, multi-region disaster recovery, priority queues with preemption, sub-second precision guarantees.*
 
 ## 3. Back of the envelope
 
-- 10K jobs/sec × 86,400 sec/day = **864M jobs/day**. Each job record ~500 bytes (UUID, timestamps, status, params JSONB) → 432 GB raw daily. With 30-day retention, the `job` table hits ~13 TB. With PostgreSQL native partitioning by shard and BRIN indexes on timestamps, sequential scans of old partitions are cheap. Execution events (2 KB each) are heavier at 1.7 TB/day.
-- 10K jobs/sec across 512 shards = **~20 jobs/sec per shard**. A scheduler leader processes one job (timing-wheel tick + status update + Kafka publish) in ~5ms. 20 jobs/sec × 5ms = 100ms CPU/sec = **10% utilization**. A single shard leader saturates at ~200 jobs/sec → 512 shards give 50× headroom.
-- ≤2s scheduling precision means the scheduling hot path can't wait on a DB poll. A `FOR UPDATE SKIP LOCKED` scan at 500ms intervals gives 250ms average precision but P99 spikes under DB load.
+- **Daily volume:** 10K jobs/s × 86.4K s ≈ 864M jobs/day → ~13 TB over 30-day retention; storage volume is the binding constraint.
+- **Per-shard throughput:** 10K/s ÷ 512 shards ≈ 20 jobs/s/shard → scheduling overhead is negligible at ~5 ms per claim query.
+- **Precision:** Sub-2s scheduling target → 1s poll cycle gives ~1s average latency; DB poll tail latency drives the P99 gap.
 
-## 4. Entities & API
+## 4. Entities
 
 ```
-task {
-  task_id:        uuid PK
-  name:           string
-  schedule_type:  enum      ← IMMEDIATE | SCHEDULED | RECURRING
-  cron_expr:      string?   ← null unless RECURRING; parsed once at create
-  max_retries:    integer   ← default 3
-  timeout_sec:    integer   ← default 3600
-  backoff_base_ms:integer   ← default 1000; exponential multiplier
-  created_at:     timestamp
+Job {
+  job_id:           uuid      PK
+  status:           string    ← scheduled | running | completed | failed | cancelled
+  run_at:           timestamp
+  started_at:       timestamp?
+  completed_at:     timestamp?
+  payload:          jsonb
+  max_retries:      integer   ← default 3
+  retry_count:      integer   ← default 0
+  last_error:       string?
+  idempotency_key:  string    CK ← unique; client-supplied, blocks duplicate submission
+  created_at:       timestamp
 }
 
-job {
-  job_id:         uuid PK
-  task_id:        uuid FK
-  shard_id:       integer     ← hash(job_id) % 512; partition key
-  status:         enum        ← PENDING | CLAIMED | RUNNING | SUCCESS | FAILED | CANCELLED
-  scheduled_at:   timestamp
-  started_at:     timestamp
-  completed_at:   timestamp
-  params:         jsonb
-  idempotency_key:uuid UNIQUE ← client-gen; dedup across duplicate submissions
-  retry_count:    integer     ← default 0
-  next_retry_at:  timestamp   ← computed from backoff_base × 2^retry_count
-  fence_token:    bigint      ← default 0; monotonic, storage rejects lower-token writes
-  catch_up:       boolean     ← default true; for recurring, fire missed intervals?
-  worker_id:      string      ← which worker claimed this job
-}
-
-workflow {
-  workflow_id:uuid PK
-  name:       string
-  status:     enum      ← PENDING | RUNNING | SUCCESS | FAILED
-  created_at: timestamp
-}
-
-workflow_edge {
-  workflow_id:    uuid FK
-  child_task_id:  uuid FK ← → task
-  parent_task_id: uuid FK ← → task
-  pending_parents:integer ← default 0; enqueue child when reaches 0
-  PRIMARY KEY (workflow_id, child_task_id, parent_task_id)
-}
-
-execution_event {
-  event_id:   bigint PK ← BIGSERIAL
-  job_id:     uuid FK
-  event_type: enum      ← ENQUEUED | CLAIMED | STARTED | HEARTBEAT | COMPLETED | FAILED | RETRYING | CANCELLED
-  occurred_at:timestamp
-  worker_id:  string
-  payload:    jsonb     ← error trace, heartbeat progress, retry reason
+JobRun {
+  run_id:           bigint    PK
+  job_id:           uuid      FK → Job.job_id
+  attempt:          integer
+  status:           string    ← started | completed | failed
+  worker_id:        string?
+  started_at:       timestamp
+  ended_at:         timestamp?
+  error:            jsonb?
 }
 ```
 
-**API**
+### API
 
-- `POST /tasks` — Create a task definition, returns `task_id`.
-- `POST /jobs` — Schedule a job with `schedule_type`, `scheduled_at` or `cron_expr`, `params`, `idempotency_key`. Returns `job_id`.
-- `GET /jobs/{job_id}` — Get job status, timestamps, retry count, worker ID, last error.
-- `GET /jobs/{job_id}/history?cursor={event_id}&limit=50` — Paginated execution event timeline, newest first.
-- `POST /jobs/{job_id}/cancel` — Cancel a PENDING job or signal the RUNNING worker to abort.
-- `POST /workflows` — Define a DAG of tasks with parent edges, returns `workflow_id`.
-- `GET /workflows/{workflow_id}` — Get workflow status and per-task status across all DAG nodes.
+- `POST /jobs` — schedule a job; returns `job_id`
+- `GET /jobs/{id}` — job status and details
+- `DELETE /jobs/{id}` — cancel a scheduled job
+- `GET /jobs` — list jobs with status and time filters
+- `GET /jobs/{id}/history` — execution event log
 
 ## 5. High-Level Design
 
-```mermaid
-graph TB
-    subgraph Edge["Control Plane"]
-        LB["Load Balancer<br/>round-robin"]
-        GW["API Gateway<br/>stateless, JWT"]
-        SM["Shard Manager<br/>consistent ring + etcd<br/>leader election"]
-    end
-
-    subgraph SchedLayer["Scheduler Shards"]
-        S0["Scheduler Leader<br/>shard 0"]
-        TW0["Timing Wheel<br/>in-memory, 15-min<br/>future window"]
-        S511["Scheduler Leader<br/>shard 511"]
-        TW511["Timing Wheel<br/>in-memory"]
-    end
-
-    subgraph Storage["Data Plane"]
-        J0[("Job Store<br/>PostgreSQL<br/>partition shard_0")]
-        J511[("Job Store<br/>PostgreSQL<br/>partition shard_511")]
-        ES[("Event Store<br/>TimescaleDB<br/>7-day hot")]
-        DQ[("Delay Queue<br/>Redis ZSET<br/>long-tail jobs")]
-    end
-
-    subgraph Exec["Execution Plane"]
-        K0["Kafka<br/>partition 0"]
-        K511["Kafka<br/>partition 511"]
-        W["Worker Pool<br/>consumer group"]
-        DLQ["Dead Letter<br/>max retries exceeded"]
-    end
-
-    LB --> GW
-    GW -->|route by shard_id| SM
-    SM --> S0 & S511
-    S0 --> TW0
-    S511 --> TW511
-    S0 --> J0
-    S511 --> J511
-    S0 & S511 --> DQ
-    S0 --> K0
-    S511 --> K511
-    K0 & K511 --> W
-    W -.->|heartbeat| S0 & S511
-    S0 & S511 -.->|retries exhausted| DLQ
-    S0 & S511 --> ES
-
-    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a;
-    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
-    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
-    classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a;
-
-    class LB,GW,SM,S0,S511,TW0,TW511,W svc;
-    class J0,J511,ES,DQ store;
-    class K0,K511,DLQ async;
-```
-
-The **Shard Manager** holds a fixed 512-shard ring. Each shard elects one scheduler leader via an etcd lease (30s TTL, renewed at 10s). The shard count matches Temporal's proven default — 512 shards provides headroom from startup scale through Uber-sized workloads (12B+ executions). Leader failure causes a ≤10s election gap; jobs scheduled during the gap fire under the catch-up policy on the new leader's restart.
-
-Each **Scheduler Leader** owns one PostgreSQL table partition and runs three concurrent loops: (a) a timing-wheel tick firing due jobs at O(1), (b) a Redis ZSET poll for jobs >15 min out, and (c) a retry scanner re-enqueuing FAILED jobs whose `next_retry_at` has elapsed. The scheduler publishes due jobs to a Kafka partition matching its shard — one partition per shard keeps ordering and lets worker consumer groups scale independently.
-
-**Workers** pull batches from Kafka, invoke the external target (HTTP callback, gRPC, or PubSub publish), heartbeat to the scheduler every 15s during long executions, and write terminal status back to the job store with a fencing token for stale-write protection.
-
----
-
-#### FR1: Schedule jobs — immediate, future, recurring
-
-**Components:** API Gateway → Shard Manager → Scheduler Leader → Job Store + Timing Wheel + Redis ZSET.
-
-**Flow:**
-
-1. Client `POST /jobs` with `schedule_type` and `idempotency_key`. Gateway hashes `job_id % 512` to determine the shard and routes to the owning scheduler leader.
-2. Scheduler inserts into `job` table with `status = PENDING`. The `UNIQUE(idempotency_key)` constraint catches duplicate submissions — `ON CONFLICT DO NOTHING RETURNING job_id, status` returns the existing job and its current state.
-3. `IMMEDIATE`: scheduler publishes directly to the Kafka execution queue.
-4. `SCHEDULED` with `scheduled_at ≤ now + 15 min`: insert into in-memory timing wheel. The timing wheel is a 3-level hierarchical structure (60 seconds wheels × 60 minutes wheels × 24 hours wheels). Jobs land in the seconds wheel if they fire within 60s, minute wheel otherwise. When a minute hand advances, jobs cascade into the seconds wheel. Tick fires all jobs in the current second slot.
-5. `SCHEDULED` with `scheduled_at > now + 15 min`: `ZADD delayed_queue {scheduled_at} {job_id}` in Redis. A background poller runs `ZRANGEBYSCORE delayed_queue -inf NOW LIMIT 500` every 1s and feeds arriving jobs into the timing wheel as they enter the 15-minute window.
-6. `RECURRING`: parse cron expression once at task creation, compute `next_fire_at`. Each execution writes a new `job` row as a concrete instance (not reusing the template row). After completion, the scheduler computes the next `scheduled_at` from the cron expression and inserts the next instance. If `catch_up = true`, missed intervals during scheduler downtime fire sequentially up to a configurable cap (default: 10).
-
-**Design consideration:** Cron parsing happens once at task creation, not at every fire. The parsed representation (a set of time fields) is stored alongside the cron string for efficient `next_fire_at` computation. DST transitions use the same approach as Airflow and Sidekiq: spring-forward gaps skip the interval (no 2:30 AM fire in a "every hour" cron), fall-back duplicates fire at the first occurrence only. BullMQ's timestamp baking trick — `timestamp = timestamp × 0x1000 + (jobId & 0xfff)` — packs 12 bits of job ID into the ZSET score, guaranteeing FIFO order for up to 4096 jobs at the same timestamp without extra sorting. We adopt the same for the Redis ZSET layer.
-
----
-
-#### FR2: Define DAG workflows — dependencies and fan-out
-
-**Components:** API Gateway → Scheduler Leader → Job Store (`workflow_edge` with `pending_parents` counter).
-
-**Flow:**
-
-1. Client `POST /workflows` with a list of task IDs and parent edges. Scheduler writes workflow metadata and populates `workflow_edge` rows, initializing `pending_parents` to the count of upstream parents per child.
-2. When the workflow starts, all tasks with `pending_parents = 0` (root nodes) are enqueued.
-3. On any task reaching `SUCCESS`, the scheduler runs an atomic decrement:
-
-```sql
-UPDATE workflow_edge
-SET pending_parents = pending_parents - 1
-WHERE workflow_id = $wf_id
-  AND parent_task_id = $completed_task_id;
-
-SELECT child_task_id
-FROM workflow_edge
-WHERE workflow_id = $wf_id
-  AND parent_task_id = $completed_task_id
-  AND pending_parents = 0;
-```
-
-1. Each child whose counter reached zero is enqueued as a new job, inheriting the workflow context.
-2. If any task exhausts retries, the workflow transitions to `FAILED`. Downstream PENDING tasks are cancelled. Tasks already RUNNING are allowed to finish but their children remain blocked.
-
-**Design consideration:** The `pending_parents` counter is Airflow's internal DAG resolution model and the standard optimization: O(1) work per completion event instead of O(E) per scheduler tick. Postgres row-level locking on `UPDATE` serializes concurrent parent completions — if task B and C (both parents of D) finish simultaneously, their `UPDATE` statements execute serially. The second decrement (from 1 → 0) triggers the `SELECT` and enqueues D exactly once. Diamonds and complex fan-in patterns resolve without additional coordination.
-
----
-
-#### FR3: Execute reliably — at-least-once delivery, retries, backoff
-
-**Components:** Scheduler Leader → Kafka → Worker Pool → Job Store (status updates + heartbeat + fencing token).
-
-**Flow:**
-
-1. Scheduler publishes `{job_id, task_id, params, fence_token}` to the Kafka partition matching the job's shard.
-2. Worker consumer group pulls batches. Worker claims a job by updating `status = RUNNING, fence_token = fence_token + 1` with a CAS on the current token.
-3. Worker invokes the external target via HTTP POST (or gRPC, PubSub publish) with `timeout = task.timeout_sec`. The `X-Idempotency-Key` header carries the job's `idempotency_key` for target-side dedup.
-4. **Success:** worker writes `status = SUCCESS, fence_token = next`; Kafka offset commits. Scheduler checks if this triggers downstream DAG children.
-5. **Failure:** worker writes `status = FAILED` with error payload. Scheduler computes `next_retry_at = now + min(backoff_base_ms × 2^retry_count, max_backoff)`. If `retry_count < max_retries`, job re-enters the timing wheel. Otherwise, job routes to the dead-letter queue.
-6. **Worker crash:** workers heartbeat every 15s. If 3 consecutive heartbeats are missed (45s window), the scheduler increments `fence_token`, resets `status = PENDING`, and re-enqueues. The stale worker's next write fails the fencing token check (token lower than last committed → rejected).
-
-**Design consideration:** The heartbeat-leased claim pattern (Temporal's model) catches the core failure mode — a worker crashes mid-execution. Without heartbeats, a long-running job is invisible until its timeout expires. With a 45s detection window, the scheduler reassigns within 45s of a crash. The fence token (monotonic BIGINT, wraps at 9×10\^18) prevents the stale worker — recovering from a GC pause — from overwriting the replacement worker's progress. At 100K increments/sec, overflow is ~3 billion years away.
-
----
-
-#### FR4: Monitor status — job state and workflow progress
-
-**Components:** API Gateway → Job Store (read replicas).
-
-**Flow:**
-
-1. `GET /jobs/{job_id}`: single-row PK lookup. Returns `status`, timestamps, `retry_count`, `worker_id`, and last error payload. Served from read replicas — no scheduler involvement.
-2. `GET /jobs/{job_id}/history`: cursor-paginated on `execution_event` table: `WHERE job_id = $id ORDER BY event_id DESC LIMIT 50`. Events carry `event_type`, `occurred_at`, `worker_id`, and `payload` (error stack or heartbeat progress).
-3. `GET /workflows/{workflow_id}`: fetches workflow metadata + aggregating query: `SELECT job_id, task_id, status FROM job WHERE task_id IN (SELECT child_task_id FROM workflow_edge WHERE workflow_id = $wf_id)`. Results grouped per task — shows green/red/amber per DAG node.
-
-**Design consideration:** Status reads bypass the scheduler entirely. The read path hits PostgreSQL read replicas while the write path (schedulers) hits the primary — clean read/write split. The event store is a separate time-series database (TimescaleDB) optimized for append-heavy, time-range scans. Event consistency lags behind status reads: a job may show `RUNNING` in the main table while the `STARTED` event is still flushing (≤2s lag). This is documented in the API contract: status is authoritative; events are eventually consistent.
-
----
-
-#### FR5: Cancel jobs
-
-**Components:** API Gateway → Shard Manager → Scheduler Leader → Timing Wheel + Worker control channel.
-
-**Flow:**
-
-1. `POST /jobs/{job_id}/cancel`. Gateway hashes `job_id` to determine shard, routes to owning scheduler.
-2. `status = PENDING`: scheduler removes job from timing wheel or Redis ZSET, sets `status = CANCELLED`, writes event. Immediate.
-3. `status = RUNNING`: scheduler publishes a cancel signal to the worker's control channel (per-worker Redis pub/sub keyed by `worker_id`). Worker checks this channel between heartbeat intervals. On receiving cancel, sends SIGTERM to the job subprocess, marks `status = CANCELLED`. If worker doesn't acknowledge within 30s, scheduler forces `status = CANCELLED` on the next missed-heartbeat cycle.
-
-**Design consideration:** Cancellation is best-effort for RUNNING jobs — the cancel signal tells our worker to stop, but if the external target already received the HTTP request and is mid-computation, that is outside our control. This matches Airflow's "mark as failed" for in-flight tasks and Temporal's cancel-requested state. The 30s ack timeout bounds the worst case.
-
----
-
-#### FR6: Retrieve execution history — event log
-
-**Components:** Event Store (TimescaleDB) → API Gateway.
-
-**Flow:**
-
-1. Every state transition writes a row to `execution_event` via the scheduler's event bus. The scheduler buffers events in an in-memory ring buffer and flushes in batches of 100 or every 200ms.
-2. `GET /jobs/{job_id}/history?cursor={event_id}&limit=50` with cursor-based pagination, newest first.
-3. Retention: 7 days hot in TimescaleDB (automatic partition drop via `drop_chunks`), 90 days warm in compressed S3 (queryable via Athena/Trino), permanent cold archive (S3 Glacier, not queryable via API).
-
-**Design consideration:** The event store is decoupled from the job table to avoid bloating the OLTP working set. Each retried execution produces 4+ events (ENQUEUED, STARTED, FAILED, RETRYING); mixing that into the job table's primary store would inflate the working set and slow the scheduling hot path. TimescaleDB's chunk-based partitioning with TTL keeps hot storage bounded regardless of total event volume.
-
-## 6. Deep dives
-
-### DD1: Scheduling precision — firing within 2s of scheduled time
-
-**Problem.** A job scheduled for T must fire by T+2s, even at 10K jobs/sec peak. The forces conflict: precision demands a fast, constant-cost operation per tick; durability demands that job state survive crashes. An in-memory data structure is fast but volatile; a database is durable but slow under concurrent load. Resolving this requires layering — a fast cache in front of a durable store.
-
-**Approach 1: Database-only polling**
-
-Poll `SELECT ... WHERE scheduled_at <= NOW() AND status = 'PENDING' ORDER BY scheduled_at LIMIT 500 FOR UPDATE SKIP LOCKED` every 500ms. With a partial index on `(status, scheduled_at)`, this is an index-only scan.
-
-- **Pro:** Single source of truth. Survives crashes — state is in the DB. Simple to reason about.
-- **Con:** Poll interval is the precision floor — average 250ms latency, but P99 spikes when the DB is under load. At 10K jobs/sec, multiple scheduler replicas scanning the same B-tree cause buffer pool contention on the hot leaf pages. `SKIP LOCKED` avoids row-level blocking but not page-level churn. Shopify reported their Airflow scheduler DB CPU as the #1 scaling complaint at 10K DAG scale.
-
-**Approach 2: Redis sorted set**
-
-`ZADD delayed_queue {scheduled_at_unix_ms} {job_id}` with BullMQ-style timestamp baking for FIFO. Poll `ZRANGEBYSCORE -inf NOW LIMIT 500` every 200ms. Atomic claim via Lua `ZPOPMIN`.
-
-- **Pro:** Sub-millisecond poll latency (single-threaded, memory-resident). 200ms poll interval → ~100ms average precision. Pinterest Pacer uses this pattern (MySQL + Redis dual storage).
-- **Con:** Redis is not the source of truth — if Redis restarts, the ZSET is lost. Must replay from the DB, creating recovery lag. Lua scripts block the event loop during the pop-and-move operation; partitioning the ZSET at 10K+ items keeps `M` bounded. Google SRE Book explicitly warns against making the in-memory structure the authority.
-
-**Approach 3: In-memory hierarchical timing wheel (HTW)**
-
-A 3-level circular buffer: 60 second slots (1s each), 60 minute slots (60s each), 24 hour slots (3600s each). Jobs in the far future land in the hour wheel; when the minute hand advances, jobs cascade into the seconds wheel. Tick fires all jobs in the current second slot.
-
-- **Pro:** O(1) insertion, O(1) tick, O(1) removal. The cascade (hour → minute → second) is rare and amortized. Kafka uses HTW internally for delayed produce/fetch operations: 9× faster than `java.util.Timer` with half the heap allocations. Google's internal cron leader uses an in-memory sorted list with the same constant-tick philosophy.
-- **Con:** Volatile — crash loses the entire wheel. Must reload from durable store on restart. Cascade spikes if many jobs land in the same hour slot (mitigate by re-inserting into seconds wheel with randomized offsets).
-
-**Approach 4: Hybrid — HTW for near-future + DB for long-tail**
-
-Load jobs with `scheduled_at ≤ now + 15 min` into the HTW on scheduler startup and every 30s. Jobs beyond 15 min stay in the DB. HTW handles the hot path; DB `SKIP LOCKED` polling handles the cold path. Redis ZSET sits as an optional middle tier for >15 min jobs if DB poll latency exceeds 200ms.
-
-**Decision:** Hybrid HTW + DB (Approach 4).
-
-**Rationale:** Google's distributed cron (SRE Book Chapter 24) maintains an in-memory sorted job list on the Paxos leader, with synchronous consensus announcements before each fire — achieving firm ≤2s precision at datacenter scale. We adopt the same in-memory principle but back it with DB durability instead of Paxos because our 99.9% availability target does not require a consensus round per job fire. The 15-minute window covers the overwhelming majority of scheduled jobs and keeps the HTW footprint bounded (~9M entries worst-case × 200 bytes = 1.8 GB, fits in heap). The 30s reload interval means at most 30s of newly-scheduled jobs bypass the wheel and fire via DB poll (250ms precision, within SLA).
-
-**Edge cases:**
-
-- **Scheduler crash:** HTW lost. On restart, reload from DB. Jobs whose `scheduled_at` passed during the crash fire late under `catch_up` policy (up to 10 missed intervals).
-- **Cascade spike:** 50K jobs landing in the same hour slot cause a single-tick burst. Mitigation: re-insert into the seconds wheel with randomized sub-second offsets within the minute window, spreading the work across 60 seconds.
-- **Clock skew:** Only the shard leader writes claims — uses its own monotonic clock for the HTW. NTP keeps wall clocks synced within 100ms. The `scheduled_at` comparison in the DB poll uses the DB server clock, which is NTP-synced.
-
-> Key insight: Precision and durability are competing goals. The timing wheel gives precision; the database gives durability. The hybrid design resolves the tension by keeping only the next 15 minutes of hot state in memory — a crash loses at most 15 minutes of "what the wheel knew," and even that is recoverable from the DB because the DB is always the source of truth. The wheel is a performance cache, not a data store.
-
----
-
-### DD2: Horizontal scale — 10,000 jobs/sec throughput
-
-**Problem.** A single scheduler process saturates around 2K–5K jobs/sec (scheduling logic + DB I/O). Scaling to 10K/sec requires partitioning work across multiple schedulers. But partitioning introduces coordination: who owns which shard, how do shards rebalance, and how do workers consume from multiple shards without creating cross-shard contention?
-
-**Approach 1: Multi-scheduler replicas, shared DB**
-
-Run N identical scheduler processes, each polling the same job table with `SKIP LOCKED`. Workers consume from a shared queue.
-
-- **Pro:** Simplest scaling model. Airflow 2.4+ operates this way — multiple scheduler replicas, one database.
-- **Con:** The DB is the bottleneck, not the schedulers. The scheduling query contends on the same B-tree hot pages; adding replicas increases concurrent index scans without increasing the DB's capacity. Shopify's 10K DAG deployment found scheduler DB CPU as the primary limit. The ceiling is the database, not the number of schedulers.
-
-**Approach 2: Partitioned job table, per-shard leader**
-
-Divide the job table into N fixed shards (`hash(job_id) % N`). Native PostgreSQL table partitioning by `shard_id`. One elected leader per shard runs the scheduling loop on its partition only. Kafka topic has one partition per shard — workers consume across all partitions via a consumer group.
-
-- **Pro:** Linear horizontal scaling. Each shard is an independent domain — no cross-shard coordination on the hot path. Adding shards increases aggregate throughput proportionally. Each leader operates on a smaller working set, improving Postgres buffer pool locality and HTW footprint. Temporal uses 512 fixed history shards for this exact reason.
-- **Con:** Fixed shard count at creation time — Temporal's `numHistoryShards` is immutable. Under-provisioning caps peak throughput. Cross-shard DAG workflows require a coordinator to fan out job creation across shards (rare: most DAGs are submitted together and hash naturally to one shard).
-
-**Approach 3: Consistent-hash ring with dynamic resizing**
-
-Replace `hash % N` with a consistent-hash ring. Adding shards remaps only ~1/N of jobs. Migration window dual-writes to old and new shards.
-
-- **Pro:** Online resizing. Add shards as throughput grows without cluster restart.
-- **Con:** Ring management adds operational complexity. Dual-write migrations need careful fencing to avoid duplication. In practice, most deployments size for peak — Temporal's fixed 512 shards has worked from startup through 12B+ executions at Uber without resizing.
-
-**Decision:** Fixed-shard partitioning at cluster creation with `hash(job_id) % 512`. Start at 512 (over-provisioned at launch, headroom for 100K+ jobs/sec peak). Workers consume from Kafka partitions 1:1 mapped to shards.
-
-**Rationale:** Temporal's 512-shard design is proven at Uber scale: 270B+ actions/month, 1000+ services. A scheduler leader is lightweight (~200 MB RAM, single-digit % CPU at 20 jobs/sec) — over-provisioning 512 shards costs ~100 GB RAM cluster-wide, roughly 2–3 Kubernetes nodes. This is cheap insurance against the operational pain of resharding live. If resizing is ever needed, a blue-green migration (deploy new cluster with 1024 shards, dual-write, drain old cluster) is simpler than maintaining a consistent-hash ring in production.
-
-**Throughput per shard:** 10K jobs/sec ÷ 512 shards = ~20 jobs/sec/shard. At 5ms per job, scheduling CPU is 10% utilized. The bottleneck shifts from scheduling to the execution queue and workers — which scale horizontally without coordination.
+The scheduler is a single FastAPI service with three logical components sharing one PostgreSQL database.
 
 ```mermaid
 graph TB
-    subgraph Shard0["Shard 0"]
-        S0["Scheduler Leader<br/>shard 0"]
-        J0[("PostgreSQL<br/>partition shard_0")]
-        K0["Kafka partition 0"]
+    subgraph Client
+        C["Client"]
     end
-    subgraph Shard511["Shard 511"]
-        S511["Scheduler Leader<br/>shard 511"]
-        J511[("PostgreSQL<br/>partition shard_511")]
-        K511["Kafka partition 511"]
+    subgraph Services
+        SH["Submission Handler<br/>POST /jobs"]
+        SC["Schedule Coordinator<br/>poller loop"]
+        ED["Execution Dispatcher<br/>invoke + record"]
     end
-    subgraph Workers["Worker Consumer Group"]
-        W1["Worker 1"]
-        W2["Worker 2"]
-        Wn["Worker N"]
+    subgraph Stores
+        PG[("PostgreSQL<br/>jobs + runs + leases")]
     end
 
-    S0 --> J0
-    S0 --> K0
-    S511 --> J511
-    S511 --> K511
-    K0 & K511 --> W1 & W2 & Wn
+    C -->|POST /jobs| SH
+    SH -->|INSERT| PG
+    SC -->|SELECT FOR UPDATE<br/>SKIP LOCKED| PG
+    SC -->|claim| ED
+    ED -->|UPDATE status| PG
 
     classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
     classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
-    class S0,S511,W1,W2,Wn svc;
-    class J0,J511 store;
+    class C,SH,SC,ED svc;
+    class PG store;
 ```
 
-**Edge cases:**
+#### FR1: Schedule a job
 
-- **Hot shard:** A tenant or job type hashing to a single shard saturates its leader. UUIDs (`job_id`) are uniformly distributed, so this is statistically unlikely. For known hot keys, a `shard_hint` parameter on `POST /jobs` overrides hash assignment and spreads load manually.
-- **Leader election gap:** On leader failure, the shard is unowned for ≤10s (etcd lease TTL). Jobs scheduled during the gap fire late under the catch-up policy. This is the 99.9% availability tradeoff — we accept ≤10s per-shard gap rather than paying synchronous replication per job fire.
-- **Kafka rebalance:** Worker join/leave triggers consumer group rebalance (5–10s). During rebalance, Kafka buffers messages — no job loss. Scheduler publish is asynchronous.
-
-> Key insight: The scheduler is not the bottleneck; the database is. Sharding the database via table partitioning and assigning one scheduler leader per partition eliminates the coordination problem without introducing distributed consensus on the job hot path. The only coordination is leader election per shard — at human timescales (seconds), not job timescales (milliseconds).
-
----
-
-### DD3: At-least-once execution — layered defense through the stack
-
-**Problem.** "At-least-once" means the system retries on failure, but the failure modes are subtle and varied: a client retries a submission, a worker crashes mid-execution, a stale worker overwrites a replacement's progress, the external target processes our request but our ack is lost. Each failure mode requires its own defense, and no single mechanism catches them all.
-
-**Approach 1: Idempotency key on submission**
-
-The `UNIQUE(idempotency_key)` constraint on the `job` table catches client-side retries. If a client submits the same job twice (network timeout → retry), the second `INSERT` hits the constraint and returns the existing `job_id` and current status. No duplicate job enters the system.
+- **Components:** Client → API Gateway → Submission Handler → PostgreSQL.
+- **Flow:**
+  1. Client sends `POST /jobs` with `{run_at, payload, idempotency_key}`.
+  1. Submission Handler validates `run_at` is in the future; rejects with 422 if missing or in the past.
+  1. Inserts row into `Job` table with `status = 'scheduled'`.
+  1. Returns `201` with `{job_id, status: 'scheduled'}`.
+- **Design consideration:** the `idempotency_key` column carries a `UNIQUE` constraint. A retried `POST` with the same key hits the constraint and returns `409`, preventing duplicate jobs. The application-level `SELECT`-before-`INSERT` provides a clear error message but the database constraint is the real guard against TOCTOU races.
 
 ```sql
-INSERT INTO job (job_id, idempotency_key, task_id, ...)
-VALUES ($job_id, $key, $task_id, ...)
+INSERT INTO job (job_id, status, run_at, payload, idempotency_key, max_retries, created_at)
+VALUES ($1, 'scheduled', $2, $3, $4, 3, now())
 ON CONFLICT (idempotency_key) DO NOTHING
 RETURNING job_id, status;
 ```
 
-- **Edge case:** The retry arrives while the original is still `PENDING`. The handler returns the in-flight job. The client polls `GET /jobs/{job_id}` until a terminal status.
+#### FR2: Cancel a job
 
-**Approach 2: Fencing token + CAS claim**
+- **Components:** Client → API Gateway → Submission Handler → PostgreSQL.
+- **Flow:**
+  1. Client sends `DELETE /jobs/{id}`.
+  1. Handler reads the job row. If `status` is not `'scheduled'`, returns `409` — too late to cancel.
+  1. Updates `status = 'cancelled'`, `completed_at = now()`.
+  1. Returns `200`.
+- **Design consideration:** cancellation is a simple status transition with no side effects — the poller skips non-`scheduled` rows. No need to dequeue from a message broker because there is no separate queue; the poller reads directly from the table.
 
-Every job carries a `fence_token` (monotonic BIGINT). Workers claim jobs by incrementing it atomically:
+#### FR3: Execute jobs reliably
+
+- **Components:** Schedule Coordinator → Execution Dispatcher → PostgreSQL.
+- **Flow:**
+  1. Schedule Coordinator polls every 1s: `SELECT ... WHERE status = 'scheduled' AND run_at <= now() ORDER BY run_at LIMIT 50 FOR UPDATE SKIP LOCKED`.
+  1. For each claimed row, the Coordinator transitions `status = 'running'` and hands off to the Execution Dispatcher.
+  1. Dispatcher invokes the registered handler function for the job type.
+  1. On success: sets `status = 'completed'`, writes result to `payload.result`.
+  1. On failure with retries remaining: increments `retry_count`, computes backoff `run_at`, resets `status = 'scheduled'`, writes `last_error`.
+  1. On failure with retries exhausted: sets `status = 'failed'`.
+- **Design consideration:** the `FOR UPDATE SKIP LOCKED` query is the concurrency primitive. Multiple replicas polling the same table skip rows already locked by another replica — no external lock service, no duplicate execution. A crashed worker that claimed but never executed leaves a row stuck at `running`. A secondary reaper scans for rows with `status = 'running'` and `started_at < now() - 5 min`, resetting them to `scheduled`.
 
 ```sql
-UPDATE job
-SET status = 'RUNNING',
-    fence_token = fence_token + 1,
-    worker_id = $worker_id
-WHERE job_id = $job_id
-  AND fence_token = $expected_token
-RETURNING fence_token;
+UPDATE job SET status = 'running', started_at = now()
+WHERE job_id IN (
+  SELECT job_id FROM job
+  WHERE status = 'scheduled' AND run_at <= now()
+  ORDER BY run_at
+  LIMIT 50
+  FOR UPDATE SKIP LOCKED
+)
+RETURNING *;
 ```
 
-If the returned token does not match the expected token + 1, the claim fails — another worker got there first. Every subsequent status write includes the token. The storage layer (or application-level check) rejects writes with a token lower than the last committed value.
+#### FR4: List jobs
 
-- **Normal path:** Scheduler publishes with `fence_token = 5`. Worker A claims → token 6. Worker A writes `SUCCESS` with token 6 → accepted.
-- **Stale worker path:** Worker A GC-pauses for 60s. Scheduler declares it dead, increments token to 7, re-enqueues. Worker B claims → token 8. Worker A recovers, tries to write token 6 → rejected. The stale write is fenced.
+- **Components:** Client → API Gateway → Submission Handler → PostgreSQL.
+- **Flow:**
+  1. Client sends `GET /jobs?status=scheduled&from=<ISO>&to=<ISO>&cursor=<id>`.
+  1. Handler builds a filtered query on the `Job` table, ordered by `created_at DESC`.
+  1. Returns paginated results with a `next_cursor` for the next page.
+  1. Invalid `status` values return `422`.
+- **Design consideration:** listing is a direct read on the `Job` table with no joins. An index on `(status, created_at)` covers the common filter shape. For high-throughput deployments, a read replica offloads listing queries from the write path.
 
-**Approach 3: Heartbeat-based liveness**
+#### FR5: Retrieve execution history
 
-Workers emit a heartbeat every 15s for long-running jobs (`timeout_sec > 60`). Scheduler tracks `last_heartbeat_at`. After 3 missed intervals (45s), the scheduler increments `fence_token`, resets `status = PENDING`, and re-enqueues. The stale worker's next write fails the fence-token check. This is Temporal's lease-renewal model: the worker holds a soft lease; the scheduler revokes it on missed heartbeats.
+- **Components:** Client → API Gateway → Submission Handler → PostgreSQL.
+- **Flow:**
+  1. Client sends `GET /jobs/{id}/history`.
+  1. Handler queries `JobRun` rows for the given `job_id`, ordered by `attempt ASC`.
+  1. Returns the list: each entry has `attempt`, `status`, `started_at`, `ended_at`, `error`, `worker_id`.
+- **Design consideration:** `JobRun` is an append-only log per job — one row per execution attempt. The first attempt is `attempt = 0`; each retry increments by 1. This gives operators a complete audit trail: when each attempt started, which worker ran it, what error it hit, and whether it eventually succeeded.
 
-**Approach 4: Target-side idempotency**
+```sql
+SELECT attempt, status, worker_id, started_at, ended_at, error
+FROM job_run
+WHERE job_id = $1
+ORDER BY attempt;
+```
 
-Even if our system perfectly avoids internal duplicates, the external target can receive the same job twice if: worker succeeds → target processes request → HTTP response is lost → worker retries → target sees the same payload again. Pass the `idempotency_key` as `X-Idempotency-Key` header. The target is responsible for deduplication (Stripe's pattern: store key → response, replay on retry). This is documented as an API contract: "Targets requiring exactly-once side effects MUST implement idempotency key dedup."
+## 6. Deep dives
 
-**Decision:** Layered defense: `UNIQUE` constraint → heartbeat TTL → fencing token → `X-Idempotency-Key` header. This is the same stack used by Temporal (lease + sequence numbers), Stripe (idempotency keys), and Kafka (producer ID + epoch + sequence number).
+### DD1: Job polling at scale
 
-**Rationale:** No distributed system can guarantee exactly-once delivery (Two Generals Problem — the sender cannot distinguish "target processed the request but ack was lost" from "target never received the request"). The correct target is "at-least-once delivery + idempotent processing = effectively-once" (CrackingWalnuts' formulation). Each layer catches a specific failure mode:
+**Problem.** Multiple scheduler replicas poll the same table for due jobs. Without coordination, every replica picks up the same batch, wastes work on duplicate claims, and risks double-execution. The coordination primitive must be fast, PostgreSQL-native, and degrade gracefully under replica churn.
 
-| Layer | Failure mode caught | Misses |
-|---|---|---|
-| `UNIQUE(idempotency_key)` | Client retries (network timeout) | Worker crash after claim |
-| Heartbeat TTL (45s) | Worker crash mid-execution | Stale worker GC pause |
-| Fencing token CAS | Stale worker overwrite | External target duplicate delivery |
-| `X-Idempotency-Key` header | Duplicate external side effects | (target must implement dedup) |
+**Approach 1: Leader-elected polling**
+
+A single leader replica does all polling and dispatches work to followers. Leader election runs through a separate coordination service — etcd, ZooKeeper, or a PostgreSQL advisory lock.
+
+- **Pro:** Zero contention on the jobs table — only one poller.
+- **Con:** Leader is a SPOF with failover latency. Leader election adds infrastructure and operational complexity. Followers are idle outside failover windows, wasting capacity.
+
+**Approach 2:** **`FOR UPDATE SKIP LOCKED`**
+
+Every replica runs an identical poller loop. The claim query atomically locks rows and skips those already locked by another replica:
+
+```sql
+UPDATE job SET status = 'running', started_at = now()
+WHERE job_id IN (
+  SELECT job_id FROM job
+  WHERE status = 'scheduled' AND run_at <= now()
+  ORDER BY run_at
+  LIMIT 50
+  FOR UPDATE SKIP LOCKED
+)
+RETURNING *;
+```
+
+- **Pro:** No leader election, no external coordination service. PostgreSQL-native since 9.5. Replicas self-balance — each grabs an independent batch of up to 50 rows per tick. Adding or removing replicas requires zero reconfiguration.
+- **Con:** Poller overhead scales linearly with replica count — N replicas each issue one query per second. At 512 replicas, this is 512 queries/s, negligible against a 10K/s write throughput. `SKIP LOCKED` guarantees no duplicate claims but does not guarantee fairness — a fast replica may claim more rows per tick than a slow one.
+
+**Decision:** `FOR UPDATE SKIP LOCKED` with a 50-row batch limit per tick and a 1s poll interval. The batch size caps lock-hold duration; the interval keeps poller queries at a fraction of total DB capacity.
+
+**Rationale:** PostgreSQL row-level locking with `SKIP LOCKED` eliminates the need for a separate queue system. The job table doubles as the queue — no consistency gap between a queue and a state store, no dual-write atomicity problems. This pattern is proven at throughput well above 10K jobs/s on modern PostgreSQL instances.
 
 **Edge cases:**
 
-- **Heartbeat partition:** Worker can reach target but not scheduler. After 45s, scheduler re-enqueues. Original worker eventually succeeds but its status write is fenced. Re-enqueued job runs again → target gets duplicate. This is the fundamental limit of at-least-once: network partitions between worker and scheduler cause duplication. The target's idempotency key dedup is the backstop.
-- **Idempotency key expiry:** Keys retained for 30 days (configurable). After expiry, a duplicate submission with the same key creates a new job — acceptable because the original reached a terminal state long ago.
-- **Fencing token overflow:** `BIGINT` max = 9×10\^18. At 100K increments/sec, overflow in ~3 billion years. Not a practical concern.
+- **Empty poll:** Replicas that find no unlocked rows return an empty result set and sleep until the next tick — no wasted work beyond the query itself.
+- **Replica crash mid-claim:** Rows locked by a crashed replica are released when PostgreSQL detects the connection drop. The next poll cycle picks them up.
+- **Batch sizing:** Too small (1 row/tick) under-utilizes the poll cycle; too large (1000 rows/tick) holds locks too long and starves other replicas. 50 is a balanced default for sub-200ms query times.
 
-> Key insight: At-least-once is not one mechanism — it's a stack of defenses each catching a different failure mode, and the stack is intentionally incomplete. The last mile (external side effects) can only be made idempotent by the target. This is why Stripe's API requires idempotency keys and why Temporal's activities must be idempotent. The scheduler guarantees delivery; the target guarantees safe re-processing.
+### DD2: Idempotent submission
 
----
+**Problem.** A client's `POST /jobs` succeeds on the server but the response is lost to a network timeout. The client retries, creating a second identical job — causing duplicate execution at the scheduled time.
 
-### DD4: DAG dependency resolution — fan-in and fan-out at scale
+**Approach 1: Client-supplied idempotency key with application-level check**
 
-**Problem.** When task C depends on A and B completing first, the scheduler must fire C exactly once after both finish — without scanning the entire DAG on every tick. The challenge is not graph traversal (that's easy), but concurrency: two parents finishing within microseconds must both decrement a shared counter without double-firing the child or missing the trigger. At scale (thousands of tasks per workflow), polling the full DAG is O(E) per tick — 10K DAGs × 100 edges = 1M checks per scheduling cycle.
+Before inserting, the handler queries for an existing row with the same `idempotency_key`. If found, returns the existing `job_id` as `200` instead of `201`.
 
-**Approach 1: Polling scheduler walks every edge**
+- **Pro:** Simple to implement — a single `SELECT` before `INSERT`.
+- **Con:** TOCTOU race. Two concurrent `POST` requests with the same key both pass the `SELECT` check, both proceed to `INSERT`, and the second one either creates a duplicate or hits the constraint — the race window is the gap between the `SELECT` and the `INSERT`.
 
-Every tick, scan all workflows, check every upstream task's status. Fire children whose parents are all `SUCCESS`.
+**Approach 2: Database unique constraint as the guard**
 
-- **Pro:** Zero additional state beyond task status. Simple to implement.
-- **Con:** O(W × E) work per tick — 1M queries/sec just for dependency resolution at Shopify scale. This dominates scheduling CPU before any jobs are actually dispatched.
+The `idempotency_key` column carries a `UNIQUE` constraint. The handler does a `SELECT`-then-`INSERT`, but the constraint is the real defense — a concurrent duplicate insert is rejected by the database:
 
-**Approach 2: Denormalized** **`pending_parents`** **counter, atomic decrement**
-
-Store `pending_parents = count(upstream_parents)` per edge. On task completion, atomically decrement all its outgoing edges. Children reaching zero fire.
-
-- **Pro:** O(1) per completion event. Only the finishing task's immediate children are touched. Airflow's internal DAG resolution uses this exact model. Netfix Conductor's Decider state machine uses the same pattern (denormalized pending-parent counters in the workflow state).
-- **Con:** The atomic decrement must serialize concurrent parent completions. PostgreSQL row-level locking on `UPDATE` handles this naturally — two concurrent parent completions targeting the same child execute serially, the second sees the counter at 1 → 0 and triggers the enqueue.
-
-**Approach 3: Event-sourced state machine (Temporal/Cadence model)**
-
-Instead of counters, emit a `TASK_COMPLETED` event. A workflow orchestrator (deterministic state machine) subscribes to these events per workflow instance. On each event, the orchestrator replays the workflow code, determines which tasks are now unblocked, and fires them.
-
-- **Pro:** No polling, no counters. The workflow is entirely event-driven. Handles dynamic fan-out naturally — the workflow code can spawn new tasks at runtime, not just at DAG definition time. Temporal's workflow-as-code uses this model.
-- **Con:** Requires a durable state machine runtime per workflow instance. Workers must be deterministic. Replay must be exact. This is the right model for long-running business workflows (days to months at Uber) but overkill for a second-scale job scheduler where most DAGs complete in minutes.
-
-**Decision:** Denormalized `pending_parents` counter with atomic decrement (Approach 2). Dynamic fan-out handled by allowing executing tasks to insert new `workflow_edge` rows at runtime, registering spawned children with `pending_parents = 1`.
-
-**Rationale:** Airflow processes 150K DAG runs/day at Shopify and 800K task instances/day at Uber using this exact counter model. The counter serializes through Postgres row locks — no distributed coordination needed. Temporal's event-sourced model is more general (handles arbitrary workflow code with branching and loops) but introduces deterministic replay and event-sourcing complexity that adds operational burden without benefit for DAGs that complete in seconds or minutes. The counter model handles ~95% of production DAG patterns (ETL pipelines, cron-driven workflows, ML training pipelines).
-
-```mermaid
-graph TD
-    A["Task A<br/>SUCCESS"] --> B["Task B<br/>RUNNING"]
-    A --> C["Task C<br/>RUNNING"]
-    B --> D["Task D<br/>pending_parents=2"]
-    C --> D
-    B -->|"on SUCCESS:<br/>D.pending -= 1"| D
-    C -->|"on SUCCESS:<br/>D.pending = 0 → enqueue"| D
-
-    classDef done fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
-    classDef running fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
-    class A done;
-    class B,C running;
+```sql
+INSERT INTO job (job_id, status, run_at, payload, idempotency_key, max_retries, created_at)
+VALUES ($1, 'scheduled', $2, $3, $4, 3, now())
+ON CONFLICT (idempotency_key) DO NOTHING
+RETURNING job_id, status;
 ```
+
+- **Pro:** No TOCTOU race — the database enforces uniqueness atomically at commit time. `ON CONFLICT DO NOTHING` returns zero rows for a duplicate, so the handler can detect the conflict and re-query for the existing row.
+- **Con:** Requires the client to generate and store a unique key per submission. A client that reuses the same key for different jobs will see its second submission silently absorbed — this is a client bug, not a scheduler defect.
+
+**Decision:** `UNIQUE(idempotency_key)` with `ON CONFLICT DO NOTHING`. The application-level `SELECT` before `INSERT` is an optimization to return a clear `409` with the existing `job_id` in the response body; the constraint is the correctness guard.
+
+**Rationale:** This is the same pattern used by payment APIs — the idempotency key is the client's contract with the server. The database constraint is the only primitive that closes the TOCTOU window without distributed locking.
 
 **Edge cases:**
 
-- **Parent fails (retries exhausted):** Workflow transitions to `FAILED`. All downstream PENDING tasks are cancelled. Already-RUNNING tasks finish but their children remain blocked. The workflow status is `FAILED` even if some branches succeeded — partial failure.
-- **Diamond dependency:** A → B → D and A → C → D. When A completes, B and C fire. When B completes, D goes 2→1. When C completes, D goes 1→0 and fires. The counter handles diamonds without special casing.
-- **Cross-shard DAG:** Tasks within a workflow may hash to different shards. The workflow coordinator (the shard owning the workflow metadata) fans out job creation to each task's owning shard. Completion events route back via an internal event bus. In practice, tasks submitted together hash to the same shard, so cross-shard DAGs are rare.
-- **Dynamic fan-out:** A running task calls `POST /jobs` with `workflow_id` and `parent_task_id`. The scheduler inserts a new `workflow_edge` with `pending_parents = 1`. The child fires when the spawning task completes and triggers the decrement.
+- **Key collision across clients:** Two clients accidentally generate the same key. The second submission is rejected and the client receives the first client's `job_id` — the key should be a UUIDv4 or a hash of `(client_id, request_id)` to make collision astronomically unlikely.
+- **Idempotency key TTL:** Keys accumulate indefinitely if never pruned. A 30-day TTL matching the retention window — expired keys are irrelevant because the job itself is gone.
 
-> Key insight: DAG resolution is not a graph algorithm problem — it's a concurrency problem. The challenge is not "find tasks with no remaining dependencies" (trivial counter check), but "decrement a counter atomically when two parents finish within microseconds and fire the child exactly once." PostgreSQL's row-level locking on `UPDATE` solves this without distributed locks, without consensus, and without polling.
+### DD3: Stale-worker recovery
 
-## 7. Trade-offs
+**Problem.** A worker claims a job (sets `status = 'running'`, `started_at = now()`) but crashes before executing it. The job stays `running` forever — a zombie blocking its slot indefinitely.
 
-| Decision | Chosen | Rejected | Why |
-|---|---|---|---|
-| Scheduling precision | In-memory HTW (15-min window) + DB `SKIP LOCKED` | DB-only polling, Redis ZSET-only | HTW gives O(1) tick; DB is the durable source of truth. Redis alone risks data loss on restart. Pure DB polling P99 spikes under load. |
-| Horizontal scale | Fixed 512 shards, per-shard leader | Shared DB with multi-scheduler, consistent-hash ring | Temporal's model proven at 12B+ executions. Consistent-hash resizing adds complexity rarely needed — 512 shards gives 50× headroom at 10K/sec. |
-| Execution guarantees | 4-layer defense: idempotency key → heartbeat TTL → fencing token → target dedup | Single retry mechanism, 2PC | Each layer catches a different failure mode. 2PC blocks on partitions and doubles latency. |
-| DAG resolution | `pending_parents` counter, atomic decrement | Polling every tick, event-sourced state machine | O(1) per completion vs O(E) per tick. Event sourcing (Temporal) overkill for second-scale DAGs. |
-| Message queue | Kafka (persistent, partitioned) | Redis LIST, RabbitMQ | Kafka partitions map 1:1 to shards. Redis lists are ephemeral. RabbitMQ clustering adds operational cost without throughput benefit. |
-| Event store | Separate TimescaleDB, 7-day hot window | Same PostgreSQL as job store | Decouples append-heavy event writes from OLTP scheduling queries. Prevents event data from bloating the job table's buffer pool. |
-| Worker model | Consumer group pulling from Kafka | Push dispatch (scheduler → workers) | Pull lets workers scale independently and apply backpressure. Push requires scheduler to track per-worker capacity. |
-| Cron handling | Parse once, compute `next_fire_at` at create + after each completion | Re-parse cron string on every execution | Parsing is cheap but computing `next_fire_at` from parsed fields is deterministic and fast. Storing the parsed representation avoids CronExpression library overhead on the hot path. |
+**Approach 1: Heartbeat with lease expiration**
 
-## 8. References
+Every worker heartbeats on a `ScheduleLease` row for each claimed job. A reaper scans for leases whose `expires_at < now()` and resets the associated jobs to `scheduled`.
 
-1. [Google SRE Book — Distributed Periodic Scheduling with Paxos](https://sre.google/sre-book/distributed-periodic-scheduling/)
-2. [Temporal Architecture — History Shards and Matching Service](https://temporalio-temporal.mintlify.app/architecture/overview)
-3. [Cadence Architecture — Sharded History Service (Uber Engineering)](https://cadenceworkflow.io/docs/concepts/topology/)
-4. [Apache Airflow — Scheduler Internals (AIP-15, DAG Serialization)](https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/scheduler.html)
-5. [Shopify — Running Airflow at Scale (10K DAGs, 150K Runs/Day)](https://shopify.engineering/lessons-learned-apache-airflow-scale)
-6. [Hashed and Hierarchical Timing Wheels — Varghese & Lauck, SOSP '87](https://www.cs.columbia.edu/~nahum/w6998/papers/sosp87-timing-wheels.pdf)
-7. [CrackingWalnuts — Effectively-Once Execution, Fencing Tokens, DAG Resolution](https://crackingwalnuts.com/post/job-scheduler-system-design)
-8. [BullMQ Architecture — Redis Sorted Sets, Timestamp Baking, Lua Scripts](https://taskforcesh-bullmq.mintlify.app/architecture)
-9. [Fencing Tokens and Lease-Based Claims — Martin Kleppmann / DDIA](https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html)
-10. [Stripe — Idempotency Key Design Pattern](https://stripe.com/docs/api/idempotent_requests)
-11. [Kafka — Exactly-Once Semantics (Idempotent Producer, Transactions)](https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/)
-12. [Temporal Scaling Guide — Shards, Task Queues, Matching Service](https://temporalio-temporal.mintlify.app/operations/scaling)
+- **Pro:** Fine-grained — each job has its own lease. Workers can heartbeat at different intervals for different job types.
+- **Con:** Requires a `ScheduleLease` table and per-job heartbeat writes, doubling the write volume on the claim path. If a worker is slow but alive, a misconfigured lease TTL can trigger false-positive resets.
 
-Comparison sources: [Slack's Distributed Cron (Kafka→Redis→Worker Pipeline)](https://slack.engineering/executing-cron-scripts-reliably-at-scale/), [Netflix Maestro — 500K+ Daily Workflows](https://netflixtechblog.com/maestro-netflixs-workflow-orchestrator-ee13a06f9c78), [Pinterest Pacer — Helix-Partitioned Dequeue Brokers](https://medium.com/pinterest-engineering/pacer-pinterests-new-generation-of-asynchronous-computing-platform-5c338a15d2a0), [HelloInterview — Job Scheduler Problem Breakdown](https://www.hellointerview.com/learn/system-design/problem-breakdowns/job-scheduler), [InterviewLoop — Centralized vs Partitioned Scheduler Scale](https://interviewloop.app/learn/system-design/127-design-a-job-scheduler-cron-system-design-interview-guide).
+**Approach 2: Timeout-based reaper**
+
+No per-job lease. A secondary reaper scans for `status = 'running'` rows where `started_at < now() - execution_timeout` and resets them:
+
+```sql
+UPDATE job SET status = 'scheduled', retry_count = retry_count + 1, last_error = 'stale worker timeout'
+WHERE status = 'running' AND started_at < now() - interval '5 minutes'
+RETURNING *;
+```
+
+- **Pro:** Zero additional writes on the claim path. One reaper query per cycle covers all stale jobs. The timeout is a global constant — easy to tune.
+- **Con:** Coarse granularity. A job that completed in 2 minutes but the worker crashed before writing the result waits the full 5-minute timeout before re-scheduling. A job that legitimately runs for 6 minutes gets falsely reset unless the timeout exceeds the max expected execution time.
+
+**Decision:** Timeout-based reaper scanning every 30s with a 5-minute execution timeout. The timeout is generous enough to cover realistic job durations and short enough that a crash is detected within a few poll cycles.
+
+**Rationale:** The simplicity of a single reaper query outweighs the precision of per-job leases for this scale. At 10K jobs/s, a lease-based approach adds 10K writes/s for heartbeats — nearly doubling the write path. The 5-minute re-scheduling delay after a crash is acceptable because (a) worker crashes are rare, and (b) jobs that miss their `run_at` by 5 minutes are re-scheduled and still execute.
+
+**Edge cases:**
+
+- **Long-running jobs:** A job that legitimately needs 7 minutes gets falsely reaped at the 5-minute mark. The counter: `max_execution_seconds` on the job config overrides the global timeout per-job.
+- **Reaper replica coordination:** The reaper uses `FOR UPDATE SKIP LOCKED` like the poller — multiple replicas' reapers claim non-overlapping slices of stale rows.
+
+### DD4: Exponential backoff for retries
+
+**Problem.** A downstream service outage causes all jobs that depend on it to fail simultaneously. Retrying them all at fixed intervals reproduces the same failure at the same time — a retry storm that extends the outage.
+
+**Approach 1: Fixed-interval retry**
+
+On failure, re-schedule the job `run_at = now() + fixed_delay`. Every job retries at the same cadence.
+
+- **Pro:** Simplest possible retry logic. Predictable timing.
+- **Con:** A downstream outage at T+0 means every affected job retries at T+fixed_delay, fails again, retries at T+2*fixed_delay — the retry storm never dissipates. The downstream sees correlated spikes at every retry interval.
+
+**Approach 2: Exponential backoff with jitter**
+
+Each retry multiplies the wait by a base, capped at a maximum. A random jitter of ±10% staggers jobs so they spread across the retry window:
+
+```python
+def next_retry_at(retry_count: int, base_s: int = 2, max_s: int = 3600) -> datetime:
+    delay = min(base_s ** retry_count, max_s)
+    jitter = random.uniform(0.9, 1.1)
+    return datetime.utcnow() + timedelta(seconds=delay * jitter)
+```
+
+- **Pro:** Retry storms dissipate naturally — after the third retry, jobs that started together are spread across an ~8s window. The jitter ensures no two jobs land on the same second. The 1-hour cap prevents unbounded growth.
+- **Con:** Cumulative recovery time grows exponentially. A job that exhausts 3 retries waits ~14s total before failing permanently. A downstream recovering in 10s still sees failures from jobs retrying at 16s — wasteful but harmless.
+
+**Decision:** Exponential backoff with base=2s, max=3600s, ±10% jitter, cap of 3 retries by default.
+
+**Rationale:** The backoff gives transient failures time to recover. The jitter breaks correlation between jobs that failed together. The cap prevents a single stuck job from consuming poller attention for hours — after 3 retries (~14s cumulative), the job is marked `failed` and operators triage it directly.
+
+**Edge cases:**
+
+- **Max retries exhausted:** The job lands in `failed` state with `last_error` set. An operator can manually re-schedule it with `POST /jobs` or reset `retry_count` and `status = 'scheduled'` via a database command.
+- **Clock skew during DST transitions:** `run_at` is stored as a UTC timestamp. The backoff computation uses `utcnow()`. DST transitions have no effect on retry timing.
+
+> [!TIP]
+> **Key insight:** the exponential backoff + jitter pattern is load-bearing not for correctness but for system stability. Without jitter, N jobs failing together retry together indefinitely — the downstream sees a spike at every retry interval. With jitter, the spike flattens into a continuous low-level retry rate within 2–3 cycles.
+
+## 7. References
+
+1. [PostgreSQL Documentation — SELECT FOR UPDATE / SKIP LOCKED](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE)
+1. [PostgreSQL Documentation — Advisory Locks](https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS)
+1. [PostgreSQL Documentation — INSERT ON CONFLICT](https://www.postgresql.org/docs/current/sql-insert.html#SQL-ON-CONFLICT)
+1. [Stripe API Reference — Idempotent Requests](https://stripe.com/docs/api/idempotent_requests)
+1. [AWS Architecture Blog — Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/)
+1. [Google SRE Book — Handling Overload](https://sre.google/sre-book/handling-overload/)
+1. [PostgreSQL Documentation — MVCC and Row-Level Locking](https://www.postgresql.org/docs/current/mvcc.html)
+1. [Shopify Engineering — Resilient Job Scheduling at Scale](https://shopify.engineering/building-resilient-job-scheduler)

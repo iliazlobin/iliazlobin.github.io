@@ -2,8 +2,8 @@
 layout: post
 title: "System Design: Web Crawler"
 date: 2026-07-02
-tags: [System Design, Web Crawler, SEO]
-description: "A web crawler discovers and downloads 10B+ pages per month, managing crawl prioritization, politeness (rate limiting per domain), deduplication, and incremental freshness across a distributed index."
+tags: [System Design]
+description: "A web crawler that ingests ~10 billion web pages and extracts their text content to build an LLM training dataset. The crawl must complete in under 5 days, fetching pages from hundreds of millions of distinct hosts while respecting per-host rate limits and robots.txt."
 thumbnail: /images/posts/2026-07-02-system-design-web-crawler.svg
 ---
 
@@ -106,7 +106,7 @@ RobotsCache {
 
 ```mermaid
 graph TB
-    subgraph Clients[""]
+    subgraph Clients[" "]
         Operator["Operator"]
     end
 
@@ -122,7 +122,7 @@ graph TB
         Parser["Parser Pool<br/>text extraction"]
     end
 
-    subgraph Stores[""]
+    subgraph Stores[" "]
         URLDB[("URL<br/>Metadata DB")]
         RobotsDB[("Robots<br/>Cache")]
         ObjStore[("Object<br/>Storage")]
@@ -241,22 +241,36 @@ dequeue():
 
 Two tiers of queues — front queues for priority, back queues for politeness — with a heap scheduler bridging them.
 
-```javascript
-┌───────────────────────────┐
-│  Front Queues (priority)   │
-│  [Q1: highest] ... [Qk]    │
-└──────────┬────────────────┘
-           │ biased random draw
-           ▼
-┌───────────────────────────┐
-│  Back Queues (per-host)    │
-│  [host_a] [host_b] ...     │
-└──────────┬────────────────┘
-           │ heap by next_allowed_time
-           ▼
-┌───────────────────────────┐
-│     Fetcher Workers        │
-└───────────────────────────┘
+```mermaid
+graph TB
+    subgraph FrontQueues["Front Queues (Priority)"]
+        FQ1["Q1 (highest)"]
+        FQ2["..."]
+        FQk["Qk (lowest)"]
+    end
+
+    Selector["Biased Random Selector"]
+
+    subgraph BackQueues["Back Queues (Per-Host)"]
+        BQ1["host_a"]
+        BQ2["host_b"]
+        BQn["host_n"]
+    end
+
+    Heap["Min-Heap (next_allowed_time)"]
+    Fetchers["Fetcher Workers"]
+
+    FQ1 -->|draw| Selector
+    FQ2 -->|draw| Selector
+    FQk -->|draw| Selector
+    Selector -->|assign| BQ1
+    Selector -->|assign| BQ2
+    Selector -->|assign| BQn
+    BQ1 -->|schedule| Heap
+    BQ2 -->|schedule| Heap
+    BQn -->|schedule| Heap
+    Heap -->|pop| Fetchers
+    Fetchers -->|update timing| BQ1
 ```
 
 Front queues: k FIFO queues, one per priority level (k=10). A URL lands in the queue matching its priority score. The queue selector draws from front queues with probability proportional to priority — the highest-priority queue is sampled most often.
@@ -299,17 +313,28 @@ def dequeue():
 
 Each crawler node owns a subset of hosts (determined by consistent hashing on hostname) and runs its own local dual-queue frontier. URLs are routed to the owning node via a Kafka topic partitioned by `host_hash`.
 
-```javascript
-URL Frontier Topic (256 partitions, keyed by host_hash)
-       │
-       │ Kafka consumer group
-       ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│ Crawler 1    │  │ Crawler 2    │  │ Crawler N    │
-│ local f-q    │  │ local f-q    │  │ local f-q    │
-│ per-host b-q │  │ per-host b-q │  │ per-host b-q │
-│ local heap   │  │ local heap   │  │ local heap   │
-└──────────────┘  └──────────────┘  └──────────────┘
+```mermaid
+graph LR
+    subgraph KafkaTopic["URL Frontier Topic (256 partitions, keyed by host_hash)"]
+        P1["Partition 1"]
+        P2["Partition 2"]
+        P256["Partition 256"]
+    end
+
+    subgraph Node1["Crawler Node 1"]
+        L1["Local Dual-Queue Front"]
+    end
+
+    subgraph NodeN["Crawler Node N"]
+        LN["Local Dual-Queue Front"]
+    end
+
+    P1 -->|consumer group| Node1
+    P2 --> Node1
+    P256 --> NodeN
+
+    Node1 -->|"publish: key=hash(host)"| KafkaTopic
+    NodeN -->|"publish: key=hash(host)"| KafkaTopic
 ```
 
 Each crawler runs its own dual-queue frontier scoped to the hosts it owns. Kafka guarantees that all URLs from `cnn.com` land on the same partition and are consumed by the same crawler node. The politeness state (last fetch time, rate limit window) for `cnn.com` is local to that node — no distributed locking, no cross-node coordination.
@@ -531,21 +556,10 @@ def adjust_rate(host, response):
 **Edge cases:**
 
 - **Redirects (301/302):** the fetch duration for a redirect is short (the server responds quickly with the redirect). The k× multiplier would assign a short delay, but the redirect target is a different host. The politeness clock applies to the original host, not the target — redirects don't consume the target server's capacity until the redirect is followed.
-- **Robots.txt** `Crawl-delay` **directive:** when a host's robots.txt specifies an explicit `Crawl-delay: N`, that value overrides the k× multiplier. N is the minimum delay; the k× multiplier only applies if it would produce a longer delay. This preserves compliance with explicit site-owner preferences.
+- **Robots.txt** **`Crawl-delay`** **directive:** when a host's robots.txt specifies an explicit `Crawl-delay: N`, that value overrides the k× multiplier. N is the minimum delay; the k× multiplier only applies if it would produce a longer delay. This preserves compliance with explicit site-owner preferences.
 - **DNS failures:** a DNS resolution failure is not a server error — the host isn't being overloaded, it's unreachable. The URL is re-enqueued with a fixed 60 s backoff. The politeness clock for the host is not updated (no fetch occurred), so other URLs from the same host can proceed when DNS recovers.
 
-## 7. Trade-offs
-
-| Decision | Rejected alternative | Why |
-|---|---|---|
-| Dual-queue frontier (front for priority, back for politeness) | Single Kafka topic with per-host consumer-group assignment | Kafka's consumer-group rebalancing does not respect priority — all partitions are equal. The dual-queue front layer provides biased priority selection that Kafka alone cannot express. |
-| Bloom filter + exact DB for URL dedup | In-memory hash set | 600 GB vs 12.5 GB. The 0.8% false-positive rate is acceptable because skipped URLs are rediscovered through alternate link paths. |
-| SimHash (k=3) for content dedup | Full SHA-256 only | SHA-256 catches ~5% exact duplicates, SimHash catches an additional ~25% near-duplicates. The BPHS index costs ~320 GB RAM but reclaims ~2.5B pages of storage. |
-| Kafka-hosted frontier with local dual-queue per node | Centralized dual-queue with RPC-based fetcher coordination | Centralized queue is a single-machine bottleneck at 23K pages/s. Kafka partitioning scales linearly with nodes and eliminates cross-node coordination for politeness. |
-| k× multiplier politeness with error-signal overrides | Fixed 5 s per-host delay | Fixed delay wastes ~80% of fast-server capacity. The adaptive approach recovers that throughput while maintaining the strong politeness guarantee on slow servers. |
-| Stateless parser (one write per page) | Batch parser (accumulate N pages before writing) | Stateless parsers survive crashes without batch loss. At 2 KB per page, the PUT overhead (~23K/s) is well within object store limits. |
-
-## 8. References
+## 7. References
 
 1. Najork, M., & Heydon, A. (1999). ["Mercator: A Scalable, Extensible Web Crawler"](https://marc.najork.org/papers/src173.pdf). World Wide Web, 2(4), 219–229.
 1. Olston, C., & Najork, M. (2010). ["Web Crawling"](http://i.stanford.edu/~olston/publications/crawling_survey.pdf). Foundations and Trends in Information Retrieval, 4(3), 175–246.

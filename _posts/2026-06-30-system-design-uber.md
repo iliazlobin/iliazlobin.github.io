@@ -3,7 +3,7 @@ layout: post
 title: "System Design: Uber"
 date: 2026-06-30
 tags: [System Design]
-description: "How Uber matches 170M+ riders to 5M+ drivers across 10,000+ cities in under two seconds with H3 geospatial indexing, batched bipartite (DISCO) matching, a DeepETA hybrid model, and event-sourced exactly-once dispatch — a deep dive into the system design of real-time ride-hailing."
+description: "Uber connects 170M+ monthly active riders with 5M+ drivers across 10,000+ cities in 70+ countries, processing 15M+ daily trips."
 thumbnail: /images/posts/2026-06-30-system-design-uber.svg
 ---
 
@@ -271,7 +271,7 @@ Flow:
 1. When Ride Service calls `GET surge:{pickup_h3}`, the multiplier is read in <1ms.
 1. Multiplier locked at booking time — rider sees upfront fare, not fluctuating surge.
 
-Design consideration: Without surge pricing, high-demand events (stadium exit, sudden rain) drain supply faster than drivers can reposition, triggering the wild goose chase collapse. Surge dampens demand while attracting drivers to the undersupplied area. H3 resolution 7 (~5.16 km²) was chosen as the surge atom because it's large enough to be statistically significant (dozens of drivers/requests per window) but small enough to be hyper-local — roughly "a neighborhood." Square cells (geohash) would introduce directional bias: diagonal neighbors are 1.4× farther than edge neighbors, distorting the supply/demand ratio. H3 hexagons give uniform neighbor distances, ensuring surge reflects a roughly circular region at any latitude.
+Design consideration: Surge pricing raises ride fares in real-time when local demand exceeds driver supply, incentivizing more drivers to move to the area and encouraging riders to wait or share. Without it, high-demand events (stadium exit, sudden rain) drain supply faster than drivers can reposition, triggering the **wild goose chase collapse**. Surge dampens demand while attracting drivers to the undersupplied area. H3 resolution 7 (~5.16 km²) was chosen as the surge atom because it's large enough to be statistically significant (dozens of drivers/requests per window) but small enough to be hyper-local — roughly "a neighborhood." Square cells (geohash) would introduce directional bias: diagonal neighbors are 1.4× farther than edge neighbors, distorting the supply/demand ratio. H3 hexagons give uniform neighbor distances, ensuring surge reflects a roughly circular region at any latitude.
 
 ## 6. Deep dives
 
@@ -524,23 +524,7 @@ Edge cases:
 - **Driver app crash during match:** If the driver app crashes after receiving a dispatch but before acknowledging, the Ride Service detects a timeout (no `en_route` event within 30s), publishes a `match.expired` event, and re-queues the rider for the next batch. The driver's state transitions back to ONLINE via the event log.
 - **Late-arriving location data:** A driver's GPS ping from 10 seconds ago arrives after a dispatch decision. The Location Service writes it to Redis, but the driver's state is already BUSY — the stale location is filtered out by DISCO's status check.
 
-## 7. Trade-offs
-
-| Choice | Rejected Alternative | Why |
-|---|---|---|
-| H3 hexagonal spatial index | Geohash squares, Google S2 | Uniform neighbor distances produce truly circular searches; same spatial primitive for dispatch, surge, and ML features; no latitude-dependent distortion |
-| Batched bipartite matching | Greedy nearest-driver per request | 22% lower pickup times at scale; prevents wild goose chase collapse; Hungarian O(n³) remains microseconds for 50×50 batches |
-| Hybrid ETA (routing + ML residual) | Pure ML end-to-end, pure routing only | Routing engine provides physical grounding (roads exist); ML corrects systematic errors (traffic patterns); model never needs to learn the road network from scratch |
-| Event-sourced driver state + idempotency | Distributed locks (Redlock), CAS on DB | No lock TTL nightmares; Kafka ordering ensures serialization per driver; audit trail built into event log; naturally retry-safe |
-| Cassandra for trip records | PostgreSQL for trips | Wide-row `rider_id` partitions match append-heavy, no-join workload; operational simplicity at global multi-region scale; no painful archiving |
-| Kafka partitioned by H3 cell | Kafka partitioned by driver_id | H3 partitioning co-locates nearby drivers; proximity queries hit a single partition; driver_id partitioning scatters candidates across all partitions |
-| Upfront locked pricing | Displayed surge multiplier | Shifts route-deviation risk to platform (DeepETA absorbs it); simpler rider UX; non-repudiable fare anchor prevents disputes |
-| Adaptive ping interval (2–10s) | Fixed 1-second pings | 20–30% less infrastructure load; velocity-based adjustment preserves positional accuracy for matching and ETA |
-| RAMEN gRPC/QUIC push | HTTP SSE polling | Bidirectional gRPC streams enable real-time ACKs; QUIC survives network transitions (WiFi to 4G); 45% better connect latency |
-
-## 8. References
-
-### Primary Sources
+## 7. References
 
 1. [H3: Uber's Hexagonal Hierarchical Spatial Index](https://www.uber.com/us/en/blog/h3/) — Uber Engineering Blog, 2018. Architecture and rationale for H3.
 1. [H3 GitHub Repository](https://github.com/uber/h3) — Open-source hexagonal geospatial indexing library.
@@ -554,4 +538,3 @@ Edge cases:
 1. [Migrating Uber's Compute Platform to Kubernetes](https://www.uber.com/en-EG/blog/migrating-ubers-compute-platform-to-kubernetes-a-technical-journey/) — Uber Engineering Blog, 2024. 3M+ cores migrated from Mesos to K8s.
 1. [Scaling Uber's Realtime Market Platform](https://qconlondon.com/london-2015/presentation/scaling-ubers-realtime-market-platform.html) — Matt Ranney, QCon London 2015. Original DISCO architecture reveal.
 1. [Surge Pricing Solves the Wild Goose Chase](http://conferences.sigcomm.org/imc/2015/papers/p495.pdf) — Castillo, Knoepfle & Weyl, IMC 2015. Empirical proof that greedy matching fails without surge.
-

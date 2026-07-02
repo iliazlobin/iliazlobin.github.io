@@ -2,8 +2,8 @@
 layout: post
 title: "System Design: TikTok/Reels"
 date: 2026-07-02
-tags: [System Design, TikTok, Reels, Video]
-description: "TikTok/Reels delivers 1B+ users a personalized, infinitely scrolling feed of short-form videos, serving 20M queries/second with sub-200ms p99 latency through a multi-stage recommendation pipeline."
+tags: [System Design]
+description: "TikTok serves 71 billion video views daily to 1.9 billion monthly users, with 34 million new uploads flowing through a GPU transcoding pipeline every 24 hours."
 thumbnail: /images/posts/2026-07-02-system-design-tiktok-reels.svg
 ---
 
@@ -22,6 +22,15 @@ graph LR
     Core --> Cache[(Feed Cache)]
     Core --> Store[(Object Store)]
     Core --> Queue[Async Pipeline]
+
+    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
+    classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a
+    class Client,Edge edge
+    class Core svc
+    class Cache,Store store
+    class Queue async
 ```
 
 ## 2. Requirements
@@ -172,7 +181,7 @@ graph TB
 
 #### FR1: Upload and publish a video
 
-**Components:** API Gateway, Video Service, Object Store, Pulsar, GPU Transcode Workers, PostgreSQL.
+Components: API Gateway → Video Service → Object Store → Pulsar → GPU Transcode Workers → PostgreSQL.
 
 **Flow:**
 
@@ -186,7 +195,7 @@ graph TB
 
 #### FR2: View personalized feed
 
-**Components:** API Gateway, Feed Service, Feed Cache (Redis), Ranking Service, Search Index.
+Components: API Gateway → Feed Service → Feed Cache (Redis) → Ranking Service → Search Index.
 
 **Flow:**
 
@@ -199,7 +208,7 @@ graph TB
 
 #### FR3: Instant video playback on swipe
 
-**Components:** Client, CDN Edge (Multi-Provider + HyperEdge PCDN), Object Store.
+Components: Client → CDN Edge (Multi-Provider + HyperEdge PCDN) → Object Store.
 
 **Flow:**
 
@@ -212,7 +221,7 @@ graph TB
 
 #### FR4: Like, comment, share
 
-**Components:** API Gateway, Social Service, PostgreSQL, Pulsar.
+Components: API Gateway → Social Service → PostgreSQL → Pulsar.
 
 **Flow:**
 
@@ -225,7 +234,7 @@ graph TB
 
 #### FR5: Follow creators and view catalog
 
-**Components:** API Gateway, Social Service, PostgreSQL, Feed Cache.
+Components: API Gateway → Social Service → PostgreSQL → Feed Cache.
 
 **Flow:**
 
@@ -237,7 +246,7 @@ graph TB
 
 #### FR6: Search by hashtag, sound, creator
 
-**Components:** API Gateway, Search Service, Search Index (Elasticsearch).
+Components: API Gateway → Search Service → Search Index (Elasticsearch).
 
 **Flow:**
 
@@ -405,20 +414,7 @@ The GPU worker pool is partitioned by creator engagement tier:
 - **H.266/VVC backfill:** The 1080p variant is encoded in HEVC (H.265) for broad compatibility. A VVC (H.266) variant — offering ~40% better compression at the same quality — is backfilled asynchronously for devices that support it (newer flagships). The VVC variant is never on the critical path; if the VVC encoder pool is saturated, the video serves HEVC 1080p with no user-visible impact.
 - **Duplication at upload edge:** The client SHA-256 hash and Bloom filter check prevents re-transcoding of reposted videos (e.g., a viral video downloaded and re-uploaded by another user). The duplicate returns the existing `video_id` immediately — zero transcode cost.
 
-## 7. Trade-offs
-
-| Chosen | Rejected | Why |
-|---|---|---|
-| Two-tower ranking with online-trained collisionless embeddings | Batch-trained model with 6-hour redeployment | Batch training cannot incorporate same-session engagement. Online-trained embeddings with 60-second sync satisfy the 90-second adaptation target. Collisionless cuckoo hashing eliminates the 15% quality loss from hash collisions at 1.9B user scale. |
-| Two-stage retrieval-plus-ranking (recall then rank) | Single-stage model over full corpus | Scoring 1B candidates with a DNN is impossible at 150ms. Two-stage retrieval narrows candidates before the expensive model runs — the recall stage trades recall for speed, the ranking stage recovers precision. |
-| 720p-first parallel GPU transcode with priority preemption | Serial transcode or equal-priority parallel fan-out | Serial is a non-starter (100+ seconds). Equal-priority fan-out hits a straggler tail delaying 1% of uploads. 720p-first makes the video playable in ~20s, and priority preemption ensures high-engagement creators never queue behind bulk content. |
-| Multi-CDN with HyperEdge PCDN and manifest-driven lookahead | Standard single-CDN with LRU caching | Single CDN has 15-20% cold-start miss rate at peak. Manifest lookahead lets the CDN pre-position content before the client requests it. HyperEdge PCDN offloads 35% of last-mile bandwidth and reduces first-byte latency in dense areas. |
-| Three-player client carousel with byte-range first-3-seconds prefetch | Sequential fetch on swipe or full-ahead 10-video prefetch | Sequential fetch costs 330ms of loading per swipe — broken UX. Full prefetch wastes 7 unwatched downloads (~35 MB) per session. Three-player carousel pre-renders exactly one ahead (instant swipe) with bounded bandwidth. |
-| Interest graph (algorithm-driven) over social graph | Social graph as primary feed signal (Instagram Reels model) | Interest graph enables zero-follower creators to go viral based on content quality alone. Social graph creates echo chambers and locks out new creators. The viral amplification cohort engine is only possible with an interest-graph-dominant model. |
-| Cursor-based pagination with `(score, video_id)` token | Offset-based pagination | Offset pagination scans and discards rows. Cursor pagination does a direct index seek from the last-seen position, O(log N) regardless of page depth. The cursor is opaque — the client cannot manipulate page boundaries. |
-| Denormalized counters with async Pulsar consumer flush | Synchronous `COUNT(*)` on every feed render | A feed of 15 videos would require 45 aggregation queries per feed load. At 820K feed loads/s, that is 37M aggregation queries/s — impossible at sub-200ms. Async counters trade up to 2 seconds of staleness for a single integer read per video. |
-
-## 8. References
+## 7. References
 
 1. Liu et al. [Monolith: Real Time Recommendation System With Collisionless Embedding Table](https://arxiv.org/abs/2209.07663) (ACM RecSys, 2022) — ByteDance's online training architecture, cuckoo-hash embedding table eliminating 15% quality loss, two-queue Pulsar event stream, 60-second parameter sync.
 1. Zhang et al. [Belt and Suspenders: A Study of Resilience in TikTok's Global Video Delivery](https://aqualab.cs.northwestern.edu/publication/2026/yzhang-conext26/) (Proc. ACM Netw., CoNEXT 2026) — Northwestern measurement study of multi-CDN strategy, four fallback patterns, per-country provider mix.

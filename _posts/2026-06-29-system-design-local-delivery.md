@@ -2,607 +2,541 @@
 layout: post
 title: "System Design: Local Delivery"
 date: 2026-06-29
-tags: [System Design, Delivery, Real-time, Distributed Systems]
-description: "A local-delivery platform lets customers order convenience-store goods (snacks, drinks, household items) from nearby micro-fulfillment centers and receive them in 30 minutes. The operator runs ~500 dark stores across US metros, each stocking 2,000–4,000 SKUs within a 2–3 mile delivery radius."
+tags: [System Design]
+description: "Local Delivery connects customers, restaurants, and couriers in a three-sided marketplace — a customer opens the app, searches for restaurants near their address, builds a cart from a live menu, and checks out."
 thumbnail: /images/posts/2026-06-29-system-design-local-delivery.svg
 ---
 
-A local-delivery platform lets customers order convenience-store goods (snacks, drinks, household items) from nearby micro-fulfillment centers and receive them in 30 minutes. The operator runs ~500 dark stores across US metros, each stocking 2,000–4,000 SKUs within a 2–3 mile delivery radius.
+Local Delivery connects customers, restaurants, and couriers in a three-sided marketplace — a customer opens the app, searches for restaurants near their address, builds a cart from a live menu, and checks out.
 
 <!--more-->
 
 ## 1. Problem
 
-A local-delivery platform lets customers order convenience-store goods (snacks, drinks, household items) from nearby micro-fulfillment centers and receive them in 30 minutes. The operator runs ~500 dark stores across US metros, each stocking 2,000–4,000 SKUs within a 2–3 mile delivery radius. A user opens the app, sees what's available from the DC that serves their address, builds a cart, and checks out — the system reserves inventory, charges payment, dispatches a picker, and routes a driver. The core tension is that inventory sitting on a physical shelf depletes in real time: a customer entering checkout can lose items to another checkout that completes first, yet holding inventory too long blocks other users. Every piece of the stack — catalog, availability, reservation, fulfillment — is scoped to a single DC, making the DC the natural partition boundary.
+Local Delivery connects customers, restaurants, and couriers in a three-sided marketplace — a customer opens the app, searches for restaurants near their address, builds a cart from a live menu, and checks out. The system reserves the order, charges payment, notifies the restaurant, dispatches a nearby courier, and streams the courier's real-time GPS position to the customer with a continuously updated ETA. At scale, ~2M orders flow daily with ~100K couriers active at peak, each pinging GPS every 4 seconds. The core tension is coordinating three independent actors — a restaurant that may reject or delay an order, a courier whose position is stale seconds after it's reported, and a customer watching a countdown — with strong consistency where money and inventory are involved and eventual consistency everywhere else.
 
 ```mermaid
 graph LR
-    A["Mobile & Web Clients<br/>iOS / Android"] --> B["API Gateway<br/>auth, geo-locate, rate-limit"]
-    B --> C["Catalog Service<br/>spatial lookup + availability"]
-    B --> D["Order Service<br/>checkout + lifecycle"]
-    D --> E["Inventory Service<br/>stock + reservations"]
-    D --> F["Fulfillment Service<br/>picker dispatch + tracking"]
-    C --> E
-    A -.->|poll| G["Real-Time Events<br/>WebSocket / SSE"]
-
     classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a;
     classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
     classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
-    class A edge;
-    class B,C,D,E,F svc;
-    class G svc;
+
+    Client[Client Apps]:::edge --> Gateway[API Gateway]:::edge
+    Gateway --> Search[Search Service]:::svc
+    Gateway --> Order[Order Service]:::svc
+    Search --> DataStores[(Data Stores)]:::store
+    Order --> DataStores
+    Order --> RealTime[Real-Time Pipeline]:::svc
 ```
 
 ## 2. Requirements
 
 **Functional**
 
-- FR1: Browse a product catalog filtered to the DC serving the user's delivery address
-- FR2: Search products by name, category, or brand with real-time stock availability
-- FR3: Place a multi-item order for delivery within a 30-minute window
-- FR4: Track an order from placement through picking, packing, and delivery in real time
-- FR5: Receive substitution recommendations when a picked item is out of stock
-- FR6: View order history and re-order from a past purchase in one tap
+- FR1: Browse restaurants and menus filtered by delivery address, with real-time availability
+- FR2: Place a multi-item order with payment and idempotent submission
+- FR3: Dispatch a courier to the restaurant after the order is accepted
+- FR4: Track courier location on a map in real time during delivery
+- FR5: View predicted delivery ETA that updates as the order progresses
+- FR6: View order history and re-order from past purchases
 
 **Non-functional**
 
-- NFR1: Catalog reads with availability filtering return p95 under 200 ms
-- NFR2: 99.95% availability during peak evening hours (6pm–10pm local time)
-- NFR3: No customer is sold an item already allocated to another active checkout
-- NFR4: Order status events visible to the customer within 5 seconds of occurrence
+- NFR1: Catalog reads with geo-filtering return p95 under 200 ms
+- NFR2: Order placement is strongly consistent — no double-charge or oversell
+- NFR3: Courier location updates visible to the customer within 3 seconds
+- NFR4: 99.95% availability during peak meal hours (11am–2pm and 5pm–9pm local)
 
-*Out of scope: fleet routing and ETA optimization, driver onboarding and payouts, DC restocking and supply-chain forecasting, promotional pricing engines, subscription/membership tiers.*
+*Out of scope: restaurant onboarding and menu management, courier onboarding and payouts, promotional pricing, surge/dynamic pricing, fraud detection, and customer support tooling.*
 
 ## 3. Back of the envelope
 
-- `500 DCs × ~3,000 SKUs/DC` → 1.5M inventory rows total, ~10 GB without indexes. Small enough to fit in memory on a single modern host, but the workload is write-heavy at peak (reservations, deductions, restock) — practical ceiling is per-DC partitioning so hot DCs don't saturate a shared instance.
-- `500 DCs × 5 orders/min peak rush` → ~42 orders/s sustained. Each order touches inventory (reserve + deduct), payment (authorize + capture), and fulfillment (dispatch picker). The concurrency point is the per-DC inventory row — at 5 orders/min per DC, the contention window is ~12 seconds per order, well within row-lock tolerances.
-- `2M DAU × 3 page loads/session` → ~6M catalog reads/day ≈ 70 QPS average, 200 QPS peak. But each page load is a geo-filtered availability query: "show me all chips in stock at DC #247." If every SKU query fans out to inventory, that's 200 × 3,000 = 600K sub-queries — a DB killer.
+- **Read QPS:** 2M DAU × 5 page loads/session ÷ 86,400 s ≈ 116 QPS average, ~350 at peak → the browse path is read-heavy but the absolute QPS is modest; a well-indexed search cluster absorbs it.
+- **Write QPS:** 2M orders/day ÷ 86,400 s × 3x peak multiplier ≈ 70 order writes/s at peak → single-node PostgreSQL handles this comfortably; the write path is not the bottleneck.
+- **GPS volume:** 100K active couriers × 1 ping/4s ≈ 25K location writes/s sustained, 3–5× at dinner rush → raw GPS ingest is the throughput bottleneck; the location store must handle ~75K–125K writes/s at peak with sub-millisecond latency.
 
-## 4. Entities & API
+## 4. Entities
 
 ```
-DC {
-  dc_id:             string PK    ← short code, e.g. "PHL-12"
-  geo_hash:          string INDEX ← GeoHash-7 (~153m cell); spatial index key
-  center_lat:        float        ← actual lat/lon for drive-time routing
-  center_lon:        float
-  delivery_radius_mi:decimal(3,1) ← configurable per-DC; typically 2.0–3.5
-  status:            enum         ← active | paused | closed (paused = weather/incident)
-  address_line:      string
+Restaurant {
+  restaurant_id:  uuid     PK
+  name:           string
+  geo_hash:       string            ← GeoHash-7 prefix for spatial index
+  center_lat:     float
+  center_lon:     float
+  delivery_radius_mi: decimal(3,1)
+  status:         enum              ← active | paused | closed
 }
 
-Product {
-  product_id:bigint PK    ← global catalog; shared across all DCs
-  name:      string INDEX
-  category:  enum         ← snacks | beverages | household | frozen | alcohol
-  brand:     string
-  image_ref: string[]
-  is_alcohol:boolean      ← flags age-gating and compliance checks
-  is_active: boolean      ← soft-delete for discontinued products
-}
-
-Inventory {
-  dc_id:          string PK ← partition key; co-located per DC
-  product_id:     bigint PK ← sort key; one row per SKU per DC
-  stock_on_hand:  integer   ← physical count; updated on pick + restock
-  reserved_qty:   integer   ← sum of active Reservation rows for this SKU
-  available_qty:  integer   ← computed = stock_on_hand − reserved_qty; maintained by trigger
-  aisle:          string    ← picker-facing location, e.g. "A-4-2"
-  last_restock_at:timestamp
-}
-
-Reservation {
-  reservation_id:uuid PK
-  dc_id:         string CK ← scoped to the same DC partition as Inventory
-  product_id:    bigint CK
-  order_id:      string CK ← links to Order; key for idempotent release
-  quantity:      integer
-  expires_at:    timestamp ← TTL; released after 15 min if order incomplete
-  created_at:    timestamp
+MenuItem {
+  item_id:        uuid     PK
+  restaurant_id:  uuid     FK
+  name:           string
+  category:       enum
+  unit_price_cents: bigint
+  is_available:   boolean
+  is_active:       boolean           ← soft-delete when removed from menu
 }
 
 Order {
-  order_id:          string PK ← UUID, generated client-side for idempotency
-  user_id:           string CK ← partition key; user's order history is user-scoped
-  dc_id:             string
-  delivery_address:  jsonb     ← street, city, zip, lat, lon
-  status:            enum      ← cart | confirmed | picking | packed | en_route | delivered | cancelled
-  subtotal_cents:    bigint
-  delivery_fee_cents:bigint
-  total_cents:       bigint
-  created_at:        timestamp
+  order_id:       uuid     PK       ← client-generated for idempotency
+  user_id:        uuid     CK       ← partition key for user-scoped queries
+  restaurant_id:  uuid     FK
+  courier_id:     uuid?
+  status:         enum              ← placed | accepted | preparing | ready | picked_up | en_route | delivered | cancelled
+  subtotal_cents: bigint
+  total_cents:    bigint
+  delivery_address: jsonb
+  created_at:     timestamp
 }
 
-OrderLineItem {
-  order_id:           string PK
-  product_id:         bigint PK
-  quantity:           integer
-  unit_price_cents:   bigint    ← snapshot at checkout; decoupled from live catalog price
-  actual_product_id:  bigint?   ← null if exact match; non-null if picker substituted
-  substitution_reason:enum?     ← oos | damaged | customer_requested
+OrderItem {
+  order_id:       uuid     PK
+  item_id:        uuid     PK
+  quantity:       smallint
+  unit_price_cents: bigint          ← snapshot at checkout
+}
+
+Courier {
+  courier_id:     uuid     PK
+  status:         enum              ← available | busy | offline
+  current_lat:    float
+  current_lon:    float
+  last_ping_at:   timestamp
+  vehicle_type:   enum
 }
 ```
 
-**API**
+### API
 
-- `GET /v1/dc/lookup?lat=39.95&lon=-75.16` — find the DC serving an address; returns `dc_id`
-- `GET /v1/catalog?dc_id=PHL-12&category=snacks&q=chips&page=1` — browse/search products with real-time availability at a DC
-- `POST /v1/orders` — create an order; body: `{dc_id, items[{product_id, quantity}], delivery_address, payment_method_id}`; returns `order_id`
-- `GET /v1/orders/{order_id}` — current order status + line items + substitutions
-- `POST /v1/orders/{order_id}/cancel` — cancel before picking starts; releases reservations
-- `POST /v1/orders/reorder/{previous_order_id}` — re-create a cart from a past order; body may override delivery address; returns new `order_id`
+- `GET /v1/search?lat=...&lon=...&q=...&category=...` — browse restaurants and menus near an address; returns ranked restaurant list with distance and ETA
+- `GET /v1/restaurants/{id}/menu` — full menu with real-time item availability
+- `POST /v1/orders` — place an order; body includes items, delivery address, payment method; returns `order_id`
+- `GET /v1/orders/{id}` — current order status, line items, courier position, and ETA
+- `POST /v1/orders/{id}/cancel` — cancel before the restaurant accepts; releases payment hold
+- `GET /v1/orders/{id}/track` — SSE stream of courier location and status updates
+- `GET /v1/orders?user_id=...&page=...` — order history for a user
 
 ## 5. High-Level Design
 
 ```mermaid
 graph TB
-    subgraph Edge["Edge / Fronting"]
-        Client["Client<br/>Mobile App"]
-        CDN["CDN<br/>static assets<br/>product images"]
+    subgraph Clients["Clients"]
+        Customer["Customer App"]
+        CourierApp["Courier App"]
+        RestaurantApp["Restaurant Tablet"]
     end
 
     subgraph Gateway["API Gateway"]
-        GW["Gateway<br/>auth, geo-ip enrichment<br/>rate-limit, DC affinity cookie"]
+        GW["Gateway<br/>auth, rate-limit"]
     end
 
-    subgraph ReadPath["Read Path — Browse & Search"]
-        CatalogSvc["Catalog Service<br/>DC-scoped search<br/>availability from cache"]
-        CatalogCache[("Redis<br/>per-DC inventory<br/>snapshot TTL 30s")]
-        GeoIdx[("PostGIS / QuadTree<br/>address→DC mapping")]
-    end
-
-    subgraph WritePath["Write Path — Checkout & Fulfillment"]
-        OrderSvc["Order Service<br/>idempotent create<br/>state machine"]
-        InvSvc["Inventory Service<br/>reserve / deduct<br/>release TTL"]
-        FulfillSvc["Fulfillment Service<br/>picker dispatch<br/>substitutions"]
+    subgraph Services["Core Services"]
+        SearchSvc["Search Service<br/>geo + text"]
+        OrderSvc["Order Service<br/>state machine"]
+        DispatchSvc["Dispatch Engine<br/>matching"]
+        LocationSvc["Location Service<br/>GPS ingest"]
         PaymentSvc["Payment Service<br/>pre-auth + capture"]
     end
 
-    subgraph Data["Data Layer"]
-        OrderStore[("PostgreSQL<br/>partitioned by dc_id<br/>Order + LineItem")]
-        InvStore[("PostgreSQL<br/>partitioned by dc_id<br/>Inventory + Reservation")]
-        EventBus["Kafka<br/>OrderEvents<br/>dc_id partition key"]
+    subgraph Data["Data Stores"]
+        SearchIdx[("Elasticsearch<br/>restaurant + menu index")]
+        OrderDB[("PostgreSQL<br/>orders + payments")]
+        LocationStore[("Redis<br/>courier positions<br/>TTL 120s")]
+        EventBus["Kafka<br/>order events + GPS stream"]
     end
 
-    subgraph RealTime["Real-Time Events"]
-        WSPush["Event Push<br/>SSE per order_id<br/>→ Client"]
+    subgraph Push["Real-Time Push"]
+        WSPush["WebSocket Gateway<br/>per-order fan-out"]
     end
 
-    Client --> CDN
-    Client --> GW
-    GW --> CatalogSvc
+    Customer --> GW
+    CourierApp --> GW
+    RestaurantApp --> GW
+    GW --> SearchSvc
     GW --> OrderSvc
-    CatalogSvc --> CatalogCache
-    CatalogSvc --> GeoIdx
-    OrderSvc --> InvSvc
+    GW --> WSPush
+    SearchSvc --> SearchIdx
+    OrderSvc --> OrderDB
     OrderSvc --> PaymentSvc
-    OrderSvc --> OrderStore
     OrderSvc --> EventBus
-    InvSvc --> InvStore
-    FulfillSvc -->|consume| EventBus
-    FulfillSvc --> InvStore
+    DispatchSvc --> EventBus
+    DispatchSvc --> LocationStore
+    LocationSvc --> LocationStore
+    LocationSvc --> EventBus
     EventBus --> WSPush
-    WSPush -->|SSE| Client
+    WSPush --> Customer
 
     classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a;
     classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
     classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
     classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a;
-    class Client edge;
-    class GW,CatalogSvc,OrderSvc,InvSvc,FulfillSvc,PaymentSvc,WSPush svc;
-    class CatalogCache,GeoIdx,OrderStore,InvStore store;
+    class Customer,CourierApp,RestaurantApp edge;
+    class GW,SearchSvc,OrderSvc,DispatchSvc,LocationSvc,PaymentSvc,WSPush svc;
+    class SearchIdx,OrderDB,LocationStore store;
     class EventBus async;
 ```
 
-#### FR1: Browse a catalog filtered to the DC serving the user's delivery address
+#### FR1: Browse restaurants and menus by delivery address
 
-**Components:** Client → Gateway → Geo Index (PostGIS/QuadTree) → Catalog Service → Redis availability cache → Catalog response
+- **Components:** Customer App → Gateway → Search Service → Elasticsearch → ranked results.
+- **Flow:**
+  1. Customer opens the app; the client sends `GET /v1/search?lat=39.95&lon=-75.16&q=thai&category=dinner`.
+  1. Search Service builds a geo-filtered Elasticsearch query: a `geo_distance` filter (3 mi radius from user) + `multi_match` across `restaurant.name`, `menu_item.name`, and `cuisine` tags.
+  1. Elasticsearch returns `restaurant_id` + relevance score + distance. Search Service bulk-fetches availability from Redis (`HMGET restaurant:{id}:availability item:...`) and attaches an availability flag per restaurant.
+  1. Results are ranked: open restaurants with available items rank above closed or fully-booked ones. The response includes ETA estimates from a cached routing table.
+- **Design consideration:** The geo-prefix scan narrows the search space before full-text scoring. Each restaurant is indexed with a GeoHash-5 prefix (~2.4 km cell) so a 3-mile radius query hits at most 9 adjacent cells. This keeps the per-query doc count under ~200 restaurants even in dense urban cores, so full-text relevance scoring stays fast. The search index is rebuilt nightly via Spark batch and supplemented with a Kafka CDC stream for real-time menu changes (price updates, 86'd items).
 
-**Flow:**
+#### FR2: Place a multi-item order with payment
 
-1. Client calls `GET /v1/dc/lookup?lat=...&lon=...` on app open or address change. Gateway enriches with IP-derived location if lat/lon omitted.
-2. Geo Index runs a spatial query: nearest DC with `status=active` within its `delivery_radius_mi`. Query uses a GeoHash prefix scan (7-char ≈ 150m cell) followed by a Haversine filter on the candidates:
-
-```sql
-SELECT dc_id, center_lat, center_lon
-FROM dc
-WHERE geo_hash LIKE :geohash_prefix || '%'
-AND status = 'active'
-ORDER BY earth_distance(ll_to_earth(center_lat, center_lon),
-                        ll_to_earth(:lat, :lon))
-LIMIT 1;
-```
-
-1. Gateway caches the `user_id → dc_id` mapping in a session cookie (TTL 1 hour) and returns `dc_id` to the client. Subsequent catalog requests carry the cookie.
-2. Catalog Service receives `GET /v1/catalog?dc_id=PHL-12&category=snacks&q=chips&page=1`. It queries the Product table for matching SKUs, then bulk-fetches availability from Redis:
-
-```javascript
-HMGET dc:PHL-12:stock product:4821 product:1733 product:9012 ...
-```
-
-1. Products with `available_qty = 0` are either dropped or shown as "out of stock" (configurable per category). Results are paginated (30 items/page) and returned with availability flags.
-
-**Design consideration:** The DC lookup is the critical first touch. An address near the boundary of two DCs produces ambiguity — PostGIS chooses the closest by straight-line distance, but road-network drive time may favor the other DC. A 2-phase approach (straight-line candidate list → OSRM drive-time check before final assignment) is overkill for the browse path and adds 50–100ms. The chosen trade-off: assign to the closest DC by Haversine at browse time, re-verify with drive-time at checkout if the address is within 0.5 mi of another DC's boundary. 95%+ of addresses are unambiguously inside a single DC radius.
-
-#### FR2: Search products by name, category, or brand with real-time stock availability
-
-**Components:** Client → Catalog Service → Elasticsearch (full-text index) → Redis (availability) → merged response
-
-**Flow:**
-
-1. Client sends `GET /v1/catalog?dc_id=PHL-12&q=sparkling water`. Catalog Service routes text queries to Elasticsearch.
-2. Elasticsearch runs a `multi_match` against `name`, `brand`, and `category` fields with category boosting (exact matches rank higher). The query is scoped to `is_active=true`:
-
-```json
-{
-  "query": {
-    "bool": {
-      "must": [
-        { "multi_match": { "query": "sparkling water", "fields": ["name^3", "brand^2", "category"] } },
-        { "term": { "is_active": true } }
-      ]
-    }
-  },
-  "size": 30, "from": 0
-}
-```
-
-1. Elasticsearch returns `product_id` + relevance score. Catalog Service pipeline-fetches availability from Redis for all matching product IDs in a single `HMGET`.
-2. Service merges availability into the response and ranks: in-stock items first within each relevance tier (configurable: some DCs show OOS items at the bottom, others hide them).
-
-**Design consideration:** Full-text search is expensive relative to category browse. Elasticsearch is deployed as a single-cluster secondary index — not the system of record. Product data is written to PostgreSQL first, then CDC'd into Elasticsearch via Kafka Connect with < 1s lag. If Elasticsearch is unavailable, the Catalog Service falls back to PostgreSQL `ILIKE` with `pg_trgm` trigram indexes — slower (~50ms vs ~5ms) but functional. This avoids a hard dependency on the search engine for basic operations.
-
-#### FR3: Place a multi-item order for delivery within a 30-minute window
-
-**Components:** Client → Order Service → Inventory Service (reserve) → Payment Service (pre-auth) → Inventory Service (confirm/deduct) → Order Store → Kafka
-
-**Flow:**
-
-1. Client sends `POST /v1/orders` with `{dc_id, items: [{product_id, quantity}], delivery_address, payment_method_id}`. The client generates `order_id` as a UUIDv4 and includes it in the request body for idempotency.
-2. Order Service checks idempotency: `SELECT status, created_at FROM orders WHERE order_id = ?`. If found, return the existing order state immediately — no reprocessing.
-3. Order Service calls Inventory Service: `POST /v1/inventory/reserve` with `{dc_id, order_id, items: [{product_id, quantity}]}`. Inventory Service runs a transactional reserve:
-
-```sql
-BEGIN;
--- Lock rows for these products at this DC
-SELECT product_id, stock_on_hand, reserved_qty
-FROM inventory
-WHERE dc_id = :dc_id AND product_id = ANY(:product_ids)
-FOR UPDATE;
-
--- For each: if stock_on_hand - reserved_qty - :requested >= 0, create reservation
-INSERT INTO reservation (reservation_id, dc_id, product_id, order_id, quantity, expires_at)
-VALUES (:rid1, :dc_id, :pid1, :order_id, :qty1, NOW() + INTERVAL '15 minutes'),
-       ...
-ON CONFLICT (order_id, dc_id, product_id) DO NOTHING; -- idempotent reserve
-
-UPDATE inventory
-SET reserved_qty = reserved_qty + :qty
-WHERE dc_id = :dc_id AND product_id = :pid;
-
-COMMIT;
-```
-
-1. If any line item fails reservation (insufficient stock), Inventory Service returns `{status: "partial", unavailable: [{product_id, quantity_available}]}`. Order Service returns this to the client so the user can adjust their cart — the order is NOT created.
-2. On full reservation success, Order Service calls Payment Service for a pre-authorization hold on the total amount. Payment Service returns `auth_code`.
-3. Order Service inserts the `Order` + `OrderLineItem` rows and publishes `OrderCreated` to Kafka. The client receives `{order_id, status: "confirmed", estimated_delivery: <ISO8601>}`.
-
-**Design consideration:** The reservation window (15 minutes) is the central fairness trade-off. Too short: checkout-abandoned users lose their cart items silently. Too long: popular SKUs (e.g., White Claw at 9pm on a Friday) become starved. GoPuff uses 10 minutes; Instacart uses 15. At 5 orders/min/DC, a 15-min window means ~75 active reservations per DC — negligible lock contention per SKU. The reservation TTL is enforced by the Inventory Service: a background sweeper (`SELECT reservation_id FROM reservation WHERE expires_at < NOW() LIMIT 100 FOR UPDATE SKIP LOCKED`) runs every 30 seconds within each DC partition and releases expired holds.
+- **Components:** Customer App → Gateway → Order Service → PostgreSQL (order + payment) → Payment Service → Kafka.
+- **Flow:**
+  1. Customer submits `POST /v1/orders` with `{restaurant_id, items: [{item_id, quantity}], delivery_address, payment_method_id, idempotency_key}`. The client generates `idempotency_key` as a UUIDv4.
+  1. Order Service checks idempotency: `SELECT status FROM orders WHERE idempotency_key = $key`. If found, return the existing order state — no reprocessing.
+  1. Order Service validates the cart against the menu (item exists, currently available, price unchanged) via a single `SELECT ... WHERE restaurant_id = $rid AND item_id = ANY($item_ids)`.
+  1. Order Service calls Payment Service: `POST /v1/payments/pre-auth` with `{amount_cents, payment_method_id, idempotency_key}`. Payment Service proxies to the payment gateway with the `Idempotency-Key` header.
+  1. On successful pre-auth, Order Service inserts the `Order` + `OrderItem` rows in a single transaction and publishes `OrderPlaced` to Kafka. The restaurant tablet receives a push notification.
+  1. Response: `{order_id, status: "placed", estimated_delivery: "..."}`.
 
 ```mermaid
 sequenceDiagram
-    participant C as Client
+    participant C as Customer
     participant OS as Order Service
-    participant IS as Inventory Service
     participant PS as Payment Service
     participant DB as PostgreSQL
     participant K as Kafka
 
-    C->>OS: POST /v1/orders {order_id: uuid}
-    OS->>OS: idempotency check (order_id)
-    OS->>IS: reserve(dc_id, order_id, items)
-    IS->>DB: BEGIN, SELECT ... FOR UPDATE
-    DB-->>IS: stock_on_hand, reserved_qty
-    IS->>DB: INSERT reservation, UPDATE inventory
-    DB-->>IS: COMMIT
-    IS-->>OS: {status: "ok"} or {status: "partial"}
-    alt reservation ok
-        OS->>PS: pre-auth(total_cents, payment_method_id)
-        PS-->>OS: {auth_code}
-        OS->>DB: INSERT order + line_items
-        OS->>K: publish OrderCreated
-        OS-->>C: {order_id, status: "confirmed"}
-    else reservation failed
-        OS-->>C: {error: "partial", unavailable: [...]}
-    end
+    C->>OS: POST /v1/orders {idempotency_key}
+    OS->>OS: idempotency check
+    OS->>DB: SELECT menu items for restaurant
+    OS->>PS: pre-auth(amount, payment_method_id)
+    PS-->>OS: {auth_code}
+    OS->>DB: INSERT order + order_items
+    OS->>K: publish OrderPlaced
+    OS-->>C: {order_id, status: "placed"}
 ```
 
-#### FR4: Track an order from placement through picking, packing, and delivery in real time
+- **Design consideration:** The idempotency key is the load-bearing mechanism for exactly-once order creation. If the client's POST times out and it retries, the second request hits the idempotency check and returns the existing order state — no duplicate charge, no duplicate order. The key is stored on the `Order` row with a `UNIQUE` constraint, and the check + insert happen in the same transaction as the order write so there is no window for a race.
 
-**Components:** Order Service → Kafka (OrderEvents) → Fulfillment Service → Order Store (status update) → SSE Push → Client
+#### FR3: Dispatch a courier to the restaurant
 
-**Flow:**
+- **Components:** Dispatch Engine → Redis (courier positions) → scoring → push notification → Courier App.
+- **Flow:**
+  1. Dispatch Engine consumes `OrderPlaced` from Kafka. It waits for the restaurant to accept (via a `RestaurantAccepted` event) — if the restaurant rejects, the order is cancelled and payment voided.
+  1. On `RestaurantAccepted`, Dispatch Engine queries Redis for nearby available couriers: `GEOSEARCH couriers:locations FROMLONLAT <restaurant_lon> <restaurant_lat> BYRADIUS 3 km ASC COUNT 20`.
+  1. For each candidate, the engine computes a score from travel distance, courier rating, and historical acceptance probability. It sends an offer push notification to the top-ranked courier.
+  1. The courier has 30 seconds to accept. On accept: order `status` advances to `accepted`, `courier_id` is set, the courier's status changes to `busy`, and `CourierAssigned` is published to Kafka.
+  1. On decline or timeout: the engine offers to the next candidate. If all 20 decline or time out, the search radius expands to 5 km and the process repeats.
+- **Design consideration:** Dispatch latency is the hardest constraint — the matching loop must complete within 3 seconds from restaurant acceptance so the customer sees a timely ETA. A pure round-robin offer (one courier at a time with 30s windows) would take minutes to exhaust 20 candidates. The practical approach: batch-offer the top 3 couriers simultaneously with a 30-second window and pick the first acceptor. Race condition guard: a Redis `SETNX courier_lock:{courier_id}` with 60s TTL prevents the same courier from accepting two offers concurrently.
 
-1. After order confirmation (FR3), Fulfillment Service consumes `OrderCreated` from Kafka and dispatches to a picker at the DC via the internal picking app. Order status advances to `picking`.
-2. As the picker scans each line item, the picking app sends `POST /v1/fulfillment/scan` with `{order_id, product_id, actual_product_id?, substitution_reason?}`. Fulfillment Service:
-	- If `actual_product_id != product_id` (substitution): updates the `OrderLineItem` row with `actual_product_id` and `substitution_reason`, charges the customer the lower of the two prices.
-	- Publishes `OrderEvent {type: "item_picked", order_id, product_id, ...}` to Kafka.
-3. When all items are picked or substituted, the picker confirms the bag; status advances to `packed`. Fulfillment Service publishes `OrderEvent {type: "packed"}` and dispatches a driver via the routing system (out of scope).
-4. Driver marks pickup → status `en_route`. Driver marks delivery → status `delivered`. Payment Service captures the pre-auth.
-5. An SSE push worker consumes the Kafka topic, filters by `order_id`, and pushes events to the client via `GET /v1/events/{order_id}` SSE stream. The client subscribes on order confirmation and receives incremental status updates.
+#### FR4: Track courier location in real time
 
-**Design consideration:** The SSE worker filters Kafka at the consumer level — each worker subscribes to the full `OrderEvents` topic but only pushes events for actively-subscribed `order_id` values (tracked in a Redis set with TTL = max delivery time + 5 min). This avoids per-order Kafka partitions, which would create millions of partitions for historical data. At 42 orders/s peak and ~200 bytes/event, Kafka bandwidth is ~8 KB/s — negligible. The push path is the only customer-facing real-time component; the poll fallback is `GET /v1/orders/{order_id}`.
+- **Components:** Courier App → Location Service → Redis (position store) → Kafka (GPS stream) → WebSocket Gateway → Customer App.
+- **Flow:**
+  1. Courier App sends GPS pings every 4 seconds over a persistent WebSocket to the Location Service.
+  1. Location Service writes each ping to Redis: `GEOADD couriers:locations <lon> <lat> <courier_id>` with a 120s TTL. If the courier has an active delivery, the ping is also published to `courier.location.{order_id}` in Kafka.
+  1. A stream processor consumes the Kafka topic, updates the ETA model (FR5), and forwards the sanitized location to the WebSocket Gateway.
+  1. The WebSocket Gateway pushes the location update to the customer's open SSE connection at `GET /v1/orders/{id}/track`. The gateway uses consistent hashing on `order_id` so a given order's updates always route to the same gateway node.
+- **Design consideration:** WebSocket push inverts the fan-out cost. Without push, every customer would poll for courier location every few seconds — read load scales as O(active customers × ping frequency). With push, one courier ping produces one push to one watching customer: O(active couriers). At 100K couriers each with ~1 active delivery at peak, the push path handles ~25K messages/s — a single Kafka partition per order keeps the stream ordered per delivery.
 
-#### FR5: Receive substitution recommendations when a picked item is out of stock
+#### FR5: View predicted ETA that updates as the order progresses
 
-**Components:** Picker App → Fulfillment Service → Catalog Service (similarity) → Picker App (choice) → Order Store (update)
+- **Components:** ETA Service → Redis (prep-time cache) + OSRM (travel time) → Order Service → Customer App.
+- **Flow:**
+  1. At order placement, ETA Service computes an initial estimate: `base_prep_time(restaurant_id, item_count, hour) + travel_time(restaurant → delivery_address)`.
+  1. Prep time is a rolling median from the last 30 days of completed orders at that restaurant, keyed in Redis as `restaurant:{id}:prep_median`, refreshed hourly.
+  1. Travel time is queried from OSRM (OpenStreetMap routing) at order placement and re-queried every 60 seconds while the courier is en route.
+  1. When the courier is assigned (FR3), the ETA updates to `remaining_prep_time + travel(restaurant → courier) + travel(courier → customer)`. Each status transition (preparing → ready → picked_up → en_route) triggers a recalculation.
+  1. The updated ETA is published to the order's SSE stream alongside location updates.
+- **Design consideration:** OSRM is called on order placement and during active delivery only — not on every browse query. At 70 orders/s peak, that's ~70 table queries/s at placement plus another ~70/s for en-route recalculations, well within a single OSRM instance's capacity (~1,000 table queries/s on a loaded graph). The OSRM instance is pre-loaded with OpenStreetMap data for the service region and refreshed weekly.
 
-**Flow:**
+#### FR6: View order history and re-order from past purchases
 
-1. When a picker scans a product that is out of stock (shelf empty despite system inventory — a stock-count discrepancy), the picking app shows an "Item Unavailable" screen.
-2. Fulfillment Service queries Catalog Service for substitution candidates: `GET /v1/catalog/substitutions?product_id=4821&dc_id=PHL-12`. Catalog Service returns the top 3 candidates ranked by:
-	- Same category + same brand (exact variant: 12-pack → 6-pack of same SKU)
-	- Same category + similar price (within ±20%)
-	- Same category + historically successful substitution (based on prior substitution data with low rejection rate)
-
-```sql
-SELECT p.product_id, p.name, p.brand, i.available_qty, i.unit_price_cents
-FROM product p
-JOIN inventory i ON p.product_id = i.product_id
-WHERE p.category = (SELECT category FROM product WHERE product_id = :pid)
-AND p.is_active = true
-AND i.dc_id = :dc_id
-AND i.available_qty > 0
-AND p.product_id != :pid
-ORDER BY
-  CASE WHEN p.brand = :brand THEN 0 ELSE 1 END,
-  ABS(i.unit_price_cents - :price_cents) ASC,
-  i.substitution_success_rate DESC
-LIMIT 3;
-```
-
-1. The picker selects one or taps "skip item." The choice is written to `OrderLineItem` and the customer sees the substitution in their order status (FR4).
-2. Post-delivery, the customer can rate the substitution (thumbs up/down). This feeds back into `substitution_success_rate`.
-
-**Design consideration:** Substitution is the UX moment where internal stock-count errors become visible to the customer. The substitution query is a point-read at picking time — no caching, always fresh. If Catalog Service is down, the picker can manually search or skip. The substitution data model (`actual_product_id` on `OrderLineItem`) means the original ordered item is never lost — analytics and reorder logic (FR6) can distinguish "they ordered X but got Y" from "they intentionally ordered Y."
-
-#### FR6: View order history and re-order from a past purchase in one tap
-
-**Components:** Client → Order Service → Order Store (user-scoped query) → Reorder endpoint
-
-**Flow:**
-
-1. `GET /v1/orders?user_id=<id>&page=1&limit=20` queries the Order table scoped to the user's partition. Results are ordered by `created_at DESC`.
-2. For re-order: `POST /v1/orders/reorder/{previous_order_id}`. Order Service:
-	a. Reads the previous `OrderLineItem` rows.
-	b. Maps to current products: if `actual_product_id` is set, use that (they got a substitution and kept it — prefer it next time); otherwise use `product_id`.
-	c. Checks current DC availability for each item (same DC, or nearest active DC to the delivery address if the address changed).
-	d. Runs reservation (FR3, step 3). Returns `{order_id, items: [{product_id, available, quantity}]}` — the client shows which items made it into the cart and which are OOS.
-
-3. The returned `order_id` is now a live cart; the client transitions directly to checkout (FR3).
-
-**Design consideration:** Re-order is a convenience shortcut, not a guarantee. At the time of re-order, some items may be discontinued, out of stock, or unavailable at the user's current DC. The service does NOT silently drop OOS items — it returns them with `available: false` so the client can surface "these 2 items are currently unavailable" to the user before they check out. This avoids the surprise of a smaller-than-expected order.
+- **Components:** Customer App → Order Service → PostgreSQL → response.
+- **Flow:**
+  1. `GET /v1/orders?user_id=<id>&page=1&limit=20` queries the Order table scoped to the user's partition (`user_id`), ordered by `created_at DESC`.
+  1. For re-order: `POST /v1/orders/reorder/{order_id}`. Order Service reads the previous `OrderItem` rows, maps them to current menu availability at the original restaurant, and creates a new order via the FR2 flow. Items that are discontinued or unavailable are flagged in the response so the app can surface them before checkout.
+- **Design consideration:** Re-order is a convenience shortcut, not a guarantee. The service redirects through the standard FR2 checkout path (idempotency key, payment pre-auth, menu validation) rather than replicating the logic. This keeps a single code path for order creation.
 
 ## 6. Deep dives
 
-### DD1: Inventory consistency — preventing double-booking across concurrent checkouts
+### DD1: Dispatch engine — candidate generation, scoring, and offer concurrency
 
-**Problem.** Two customers A and B both add the last can of Red Bull from DC #247 to their carts. Customer A checks out 3 seconds before Customer B. If both checkouts process concurrently and neither sees the other's reservation, both succeed — the picker has one can but two orders. The system must ensure the quantity deducted never exceeds physical stock, even under concurrent checkout within the same DC, while keeping the reservation path fast enough that checkout latency stays under 200ms.
+**Problem.** The dispatch engine must match a newly accepted order to the best available courier among ~100K active couriers across a metro area. It must balance delivery speed (shortest ETA) against marketplace efficiency (batching multiple orders on one route) and courier fairness (idle couriers shouldn't be starved). The entire matching loop must complete within 3 seconds from restaurant acceptance, and no courier may be offered the same order twice concurrently.
 
-**Approach 1: Optimistic concurrency with version-column retry**
+**Approach 1: Full scan with Haversine filter and greedy assignment**
 
-The Inventory table carries a `version` column (integer, incremented on every update). On reserve, the service reads `stock_on_hand`, `reserved_qty`, and `version`. It computes the new reserved quantity client-side, then issues:
-
-```sql
-UPDATE inventory
-SET reserved_qty = reserved_qty + :delta, version = version + 1
-WHERE dc_id = :dc_id AND product_id = :pid
-AND stock_on_hand - reserved_qty - :delta >= 0
-AND version = :read_version;
-```
-
-If zero rows updated (version mismatch or stock exhausted), the caller retries from read. Under low contention (~5 orders/min per DC), retries rarely exceed 1. Under high contention (a flash sale on a popular item), retries spike and latency degrades non-deterministically — worst case, a customer sees a spinner for 3–5 seconds and bounces.
-
-**Challenges:** Retry storms under meaningful contention. No fairness guarantee — a retrying transaction can be starved by newer transactions that keep incrementing the version.
-
-**Edge case:** A checkout with 15 line items does 15 sequential single-row optimistic updates. If item #14 fails, items #1–13 are already reserved with rows locked by open transactions. The service must either roll back all 13 (leaving ghost locks until commit) or hold item #14 as "waitlisted" — both add complexity.
-
-**Approach 2: Pessimistic row-lock on cart-add with TTL**
-
-Each DC's inventory lives in a dedicated PostgreSQL partition. On cart-add (before checkout), the Inventory Service acquires a row-level lock with a short TTL:
-
-```sql
--- Checkout locks all line-item rows in one call
-BEGIN;
-SELECT product_id, stock_on_hand, reserved_qty
-FROM inventory
-WHERE dc_id = :dc_id AND product_id = ANY(:product_ids)
-ORDER BY product_id    -- deterministic lock order prevents deadlocks
-FOR UPDATE;            -- blocks concurrent checkouts on same SKU
-
--- Validate each, then reserve
-INSERT INTO reservation (...) VALUES (...), (...), ...;
-UPDATE inventory SET reserved_qty = reserved_qty + :qty WHERE ...;
-COMMIT;
-```
-
-All rows are locked in a consistent order (by `product_id ASC`), which eliminates deadlocks — every checkout at DC #247 locks rows in the same sequence. The lock is held only for the duration of the reserve transaction (~5–10ms) and released on commit. The reservation itself carries a 15-minute TTL (FR3).
-
-**Challenges:** Row locks serialize checkout on contested SKUs. At peak (5 orders/min/DC), the serialization window is ~12 seconds between orders for the same SKU — well within tolerances. If a single SKU gets 50 concurrent checkout attempts (a viral TikTok product), the lock queue becomes a bottleneck. The mitigation is the reservation TTL: if the hot SKU is fully reserved, subsequent attempts fail immediately (no lock wait) because `stock_on_hand - reserved_qty <= 0` is visible from the uncommitted reservation.
-
-**Normal path:** Two users checkout simultaneously for the same last-in-stock item. One acquires the lock, sees `qty_available - reservation_qty >= 1`, reserves it, commits. The other acquires the lock, sees `available = 0`, receives `{status: "partial", unavailable: [{pid, available: 0}]}` — no spin, no retry storm.
-
-**Decision:** Pessimistic row-level locking on checkout, with deterministic lock ordering by `product_id` within each DC-scoped partition.
-
-**Rationale:** This is the standard inventory pattern used at scale — Amazon's fulfillment-center inventory uses the same `SELECT FOR UPDATE` with TTL holds. At GoPuff's per-DC order rate (5/min peak), the serialization overhead is invisible. Optimistic locking would add retry complexity for a problem that doesn't exist at this write volume. The real danger at GoPuff scale is not lock contention but *stock-count drift* — physical inventory diverging from digital inventory due to theft, damage, or mis-picks. That is solved with cycle counts (out of scope), not a different locking strategy.
-
-**Edge cases:**
-
-- **Race between reservation expiry and checkout confirm:** Customer A checks out, the 15-min TTL fires 1ms before the confirm transaction commits, another customer B grabs the released reservation. Solution: the confirm step re-validates all reservations (`SELECT ... WHERE order_id = :oid AND expires_at > NOW() FOR UPDATE`) before deducting. If any reservation expired, confirm fails with an error and the customer is prompted to re-checkout.
-- **Partial fulfillment mid-checkout:** A picker grabs the last can while a customer is in checkout flow. The reservation prevented this — the picker's deduction only applies to `stock_on_hand - reserved_qty`, so the reserved can is invisible to picking until either confirmed (deducted) or expired (released).
-
-> 💡 **Why not Redis for inventory locking?** Redlock (Redis distributed lock) looks appealing for per-SKU locks — sub-millisecond acquire/release. But inventory locks must be transactional with the reservation insert (if the lock is acquired but the reservation write fails, the lock must be released atomically). Redis transactions (`MULTI`/`EXEC`) don't span the lock-and-write semantic. PostgreSQL row locks give you both in one `SELECT FOR UPDATE` + `INSERT` — and the lock survives a crash via WAL. At 5 orders/min/DC, PostgreSQL handles the lock throughput with headroom to spare.
-
-### DD2: Geo-spatial DC discovery — mapping an address to the right fulfillment center
-
-**Problem.** A user at 39.9526° N, 75.1652° W in Center City Philadelphia must be routed to DC PHL-03 (1.8 mi northeast) and not DC PHL-07 (2.1 mi southwest), even though PHL-07 is technically closer by straight-line distance because the user is on the wrong side of the Schuylkill River. A naive Haversine ranking assigns the wrong DC 5–8% of the time in dense urban grids with river crossings, highways, and one-way street networks. Getting the DC wrong means showing inventory from a DC that can't deliver to the user — a broken first experience.
-
-**Approach 1: Pre-computed service area polygons (GeoJSON) per DC**
-
-Each DC owns a hand-drawn or algorithmically-generated polygon defining its delivery area. On API call, the Geo Index runs `ST_Within(user_point, dc_polygon)` and returns the matching DC. This is O(1) if polygons are indexed.
-
-**Challenges:** Polygons require maintenance — when a DC adjusts its radius or street patterns change, polygons must be regenerated. Overlapping DC edges (two DCs can deliver to the same block) require a tiebreaker (closest center, load balancing, or explicit owner). At 500 DCs, manual polygon curation is a staffing problem, not a technical one.
-
-**Approach 2: GeoHash prefix scan + Haversine**
-
-Every DC is indexed by a GeoHash-7 prefix (~153m × 153m cell). A user at a given lat/lon hashes to a 7-char prefix. The DC lookup queries all DCs sharing that prefix (typically 1–3 DCs) and ranks by Haversine distance. This is what FR1 describes.
-
-**Challenges:** GeoHash cells are rectangular, not circular. A DC on the edge of a cell may be closer to a user in the neighboring cell than to users inside its own cell. Fixing this requires a 9-neighbor scan (the cell itself + 8 adjacent cells), which returns up to 20–30 candidate DCs. Still O(1) but post-filtering with Haversine can return the wrong DC near water crossings and highways for the 5–8% of edge cases.
-
-**Approach 3: Drive-time pre-computation with OSRM isochrones**
-
-At checkout time (not browse), the Order Service calls an OSRM routing server with the user's lat/lon and the top-2 DC candidates from the GeoHash lookup. OSRM returns `{driving_time_seconds: 720}` for each DC. The DC with the lowest drive time under the delivery radius wins. This corrects the 5–8% river-crossing and highway-boundary errors.
+Scan every available courier's position, compute straight-line distance to the restaurant, rank by distance, and offer to the closest.
 
 ```javascript
-OSRM GET /table/v1/driving/{user_lon},{user_lat};{dc1_lon},{dc1_lat};{dc2_lon},{dc2_lat}
-→ {durations: [[0, 680], [720, 0]]}   // 680s to DC1, 720s to DC2
+candidates = [c for c in active_couriers if haversine(c.pos, restaurant.pos) < 5_km]
+candidates.sort(key=lambda c: haversine(c.pos, restaurant.pos))
+offer(candidates[0])
 ```
 
-**Challenges:** OSRM table queries add 50–100ms to the checkout path. At 42 orders/s, the OSRM server handles this comfortably (a single OSRM instance does ~1,000 table queries/s on a loaded US Northeast graph). OSRM requires pre-loaded OpenStreetMap data for the service region. The graph must be refreshed weekly to reflect road closures.
+**Challenges:** A full scan of 100K courier positions per dispatch event is O(N) — at peak dinner rush with hundreds of concurrent orders, this saturates the CPU. Straight-line distance ignores road networks, river crossings, and one-way streets, so the "closest" courier by Haversine may be 8 minutes away by road while another courier 500m farther by air is 3 minutes away. Greedy assignment (one order at a time) misses multi-order batching opportunities that improve courier efficiency by 15–30%.
 
-**Decision:** GeoHash prefix scan + Haversine for DC assignment at browse time (FR1); OSRM drive-time verification at checkout (FR3) for addresses within 0.5 mi of a DC boundary. Only ~5% of checkouts trigger the OSRM call.
+**Approach 2: H3 geo-index with ML scoring**
 
-**Rationale:** This mirrors the Uber Eats dispatch pattern — fast spatial index for candidate generation, precise routing for final assignment. The 95% of users who are unambiguously inside a single DC radius never pay the 50ms OSRM penalty.
+Pre-partition courier positions into H3 hex cells at resolution 9 (~0.1 km² per cell, ~200 m edge). On dispatch, compute the restaurant's H3 cell, expand by k-ring (k=0..3 → up to 37 cells), and collect couriers within those cells. Score each candidate with an ML model, then offer to the top-ranked courier.
+
+```javascript
+restaurant_hex = h3.latlng_to_cell(restaurant.lat, restaurant.lon, 9)
+candidate_cells = h3.grid_disk(restaurant_hex, 3)
+candidates = redis.sunion([f"h3:{cell}:available" for cell in candidate_cells])
+
+for courier in candidates:
+    score = (w1 * travel_time_estimate(courier, restaurant)
+           + w2 * acceptance_probability(courier, order)
+           + w3 * courier_utilization(courier))
+offer(best_scored)
+```
+
+```sql
+-- Courier position write on each GPS ping
+GEOADD couriers:locations <lon> <lat> <courier_id>
+SADD h3:{hex}:available <courier_id>
+EXPIRE h3:{hex}:available 120
+
+-- Candidate generation on dispatch
+SMEMBERS h3:{hex_0}:available
+SMEMBERS h3:{hex_1}:available
+...
+```
+
+**Challenges:** H3 indexing reduces the candidate pool from 100K to ~200 per dispatch event — fast enough. But individual offer-and-wait (one courier at a time, 30s per offer) means exhausting 10 declines takes 5 minutes. The scoring function depends on real-time features (traffic, courier workload) that change between the score computation and the offer acceptance — stale scores produce suboptimal matches.
+
+**Approach 3: Batch-offer with concurrency guard and MIP optimization**
+
+Batch-offer the top 3 couriers simultaneously with a 30-second acceptance window. Use a Redis lock (`SETNX`) to prevent double-assignment. For dense markets, formulate dispatch as a Mixed-Integer Program that matches multiple orders to couriers in one optimization window.
+
+```javascript
+-- Lock courier during offer window
+SETNX courier_lock:{courier_id} {order_id}
+EXPIRE courier_lock:{courier_id} 60
+
+-- On accept: validate lock owner
+if redis.GET("courier_lock:{courier_id}") == order_id:
+    UPDATE orders SET courier_id = {courier_id}, status = 'accepted'
+    DEL courier_lock:{courier_id}
+```
+
+**MIP formulation (for dense markets, solved via Gurobi):**
+
+```javascript
+Variables:
+  x[d,o] in {0,1}  -- courier d assigned to order o
+  b[d,O] in {0,1}  -- courier d assigned to batch O (up to 2 orders per batch)
+
+Objective:
+  max sum score(d,o) * x[d,o] + sum batch_score(d,O) * b[d,O]
+
+Constraints:
+  sum_d x[d,o] <= 1   for all o       -- each order to at most 1 courier
+  sum_o x[d,o] <= 2   for all d       -- max 2 active orders per courier
+```
+
+The MIP runs periodically (every 10–30 seconds per region) and solves the "strategic delay" decision: hold an order a few seconds if a better courier is about to free up.
+
+**Decision:** Batch-offer with Redis locking for the common case; MIP optimization for dense metro regions where batching delivers 15–30% courier efficiency gains.
+
+**Rationale:** The batch-offer approach completes the full matching loop in ~2 seconds (score → offer top 3 → first-acceptor-wins). The Redis `SETNX` lock is validated server-side at order assignment time — a courier whose lock expired between acceptance and the database write is rejected by `SELECT ... WHERE courier_id IS NULL FOR UPDATE`, and the offer cascades to the next courier. The MIP layer is gated behind a market-density threshold — in sparse suburban regions, the greedy batch-offer is sufficient and avoids the operational cost of running a Gurobi solver.
+
+> [!TIP]
+> **Why not Redis Redlock for courier assignment?** Redlock (distributed lock across multiple Redis nodes) adds latency and complexity for a lock that must be validated against the order's database state. The `SETNX` single-node lock with server-side `SELECT ... FOR UPDATE` re-validation gives us the same protection — the order row is the ultimate arbiter of who gets it, not the Redis lock. At 70 assignments/s peak, a single Redis node handles the lock throughput with sub-millisecond latency.
 
 **Edge cases:**
 
-- **OSRM unavailable:** Fall back to Haversine ranking. The 5–8% boundary-error rate is temporarily exposed, but orders placed at the wrong DC during an OSRM outage are manually re-routed by the fulfillment team.
-- **New DC onboarding:** A new DC's GeoHash prefix is computed from its `center_lat, center_lon` on insert. Neighboring DCs may have overlapping prefixes — the Haversine tiebreaker handles this naturally.
-- **User moves during session:** The `dc_id` in the session cookie is invalidated if the user changes their delivery address. The client calls `GET /v1/dc/lookup` again.
+- **Courier app crashes after accepting but before the order write:** The order stays unassigned. The Dispatch Engine's reconciliation job (every 30 seconds) detects orders in `accepted` status older than 45 seconds with no `courier_id` and re-dispatches.
+- **Two couriers accept the same offer in the same millisecond:** `SETNX` is atomic — only the first write succeeds. The second courier sees the lock is held and their acceptance is rejected.
+- **All 20 candidates decline:** The search radius expands to 5 km and the cycle repeats. If no courier accepts within 3 cycles, the order is flagged for manual dispatch and the customer sees an adjusted ETA.
 
-### DD3: Scaling availability reads — caching inventory so catalog queries don't hit the transactional store
+### DD2: Real-time GPS pipeline — 25K writes/s with sub-3-second visibility
 
-**Problem.** The catalog browse path (FR1/FR2) needs per-product availability at the serving DC. At 200 QPS peak × 3,000 SKUs per query (worst case: unfiltered category browse), that's 600,000 inventory lookups per second — enough to saturate the transactional PostgreSQL instance that also handles the write path (reservations, deductions). The read path must not compete with the write path for the same database resources. Availability data has a specific tolerance for staleness: showing an item as "in stock" when the last can was reserved 2 seconds ago is acceptable; showing "out of stock" for 5 minutes after a restock is not.
+**Problem.** 100K couriers each pinging GPS every 4 seconds produces ~25K location writes/s sustained and ~75K–125K/s at dinner rush peaks. Each ping must update the courier's position for dispatch (millisecond-latency reads) and stream to the one customer watching that delivery (sub-3-second end-to-end visibility). A dropped ping means a stale position for dispatch.
 
-**Approach 1: Read replicas with async replication**
+**Approach 1: Direct Redis writes with HTTP polling**
 
-Deploy PostgreSQL read replicas per region. Catalog reads hit replicas; writes go to the primary. Replication lag is typically < 100ms.
+Courier App sends `POST /v1/location` with `{courier_id, lat, lon}`. Location Service writes to Redis directly. Customer App polls `GET /v1/orders/{id}/location` every 4 seconds.
 
-**Challenges:** Under peak write load (42 orders/s across all DCs), replication lag can spike to 2–5 seconds. During a replication lag spike, a user browsing catalog sees stale availability — they add an item to cart, then checkout fails because the primary shows it as reserved. This "ghost stock" problem erodes trust. PostgreSQL read replicas also don't scale writes — if write throughput grows with order volume, the primary becomes the bottleneck regardless of how many replicas serve reads.
+**Challenges:** HTTP is connection-heavy — 25K new TCP+TLS handshakes per second at the ingestion layer. Customer-side polling multiplies read load: 500K active customers × 1 poll/4s = 125K reads/s on the location store, most returning unchanged data. Polling also adds up-to-4-seconds of inherent visibility lag.
 
-**Approach 2: Redis per-DC inventory snapshot with TTL refresh**
+**Approach 2: WebSocket ingestion + Kafka pipeline with Redis state store**
 
-An `InventorySnapshotter` worker (one per DC partition, co-located with the Catalog Service) periodically bulk-loads the current inventory state into Redis:
+Courier App maintains a persistent WebSocket to the Location Ingestion Gateway. The gateway validates the payload, stamps a server timestamp, and produces to `courier.location.raw` (Kafka topic, partitioned by `courier_id`). A stream processor consumes each event and performs three writes atomically:
 
-```python
-# Runs every 30 seconds per DC partition
-def snapshot_dc(dc_id):
-    rows = db.query("""
-        SELECT product_id, available_qty, unit_price_cents
-        FROM inventory
-        WHERE dc_id = :dc_id AND stock_on_hand > 0
-    """, dc_id=dc_id)
+```java
+void process(CourierLocation event) {
+    // 1. Update Redis geospatial index
+    redis.geoAdd("couriers:locations", event.lon, event.lat, event.courierId);
+    redis.expire("couriers:locations", 120);
 
-    pipe = redis.pipeline()
-    key = f"dc:{dc_id}:stock"
-    pipe.delete(key)  # atomic replacement
-    pipe.hset(key, mapping={f"product:{r.product_id}": r.available_qty for r in rows})
-    pipe.expire(key, 60)  # 60s TTL — next snapshot replaces before expiry
-    pipe.execute()
+    // 2. Update H3 cell membership
+    String hex = h3.latLngToCell(event.lat, event.lon, 9);
+    redis.sAdd("h3:" + hex + ":available", event.courierId);
+    redis.expire("h3:" + hex + ":available", 120);
+
+    // 3. If courier has an active order, fan out to customer push
+    String orderId = redis.get("courier:active_order:" + event.courierId);
+    if (orderId != null) {
+        kafka.produce("courier.location." + orderId, event.toSanitized());
+    }
+}
 ```
 
-Catalog reads use `HMGET dc:PHL-12:stock product:4821 product:1733 ...` — a single Redis call, sub-millisecond, regardless of how many products are in the browse result.
+The WebSocket Gateway cluster subscribes to per-order Kafka topics and pushes to the customer's SSE connection. Each gateway node handles ~50K concurrent connections with consistent hashing on `order_id` for sticky routing.
 
-**Challenges:** The 30-second snapshot interval means availability is up to 30 seconds stale. During a flash sale (e.g., a new energy drink drops at 6pm), 30 seconds of overselling is possible — 10 users could all see "in stock" from the same snapshot while only 3 cans are physically available. The mitigation: at cart-add time (before checkout), the client calls `GET /v1/inventory/check?dc_id=PHL-12&product_id=4821`, which hits the transactional DB directly. If the snapshot was stale, the user sees "item no longer available" at cart-add, not at checkout — a less frustrating failure point.
+**Decision:** WebSocket ingestion + Kafka pipeline + Redis state store. Redis serves the hot dispatch path (sub-millisecond `GEOSEARCH`). Kafka provides durability and ordered replay for the streaming pipeline.
 
-**Normal path:** User browses chips, sees 15 in stock (from Redis, up to 30s stale). Adds to cart → real-time check against transactional DB → confirms 14 available (one was reserved in the last 28 seconds). User proceeds to checkout with accurate count.
+**Rationale:** Partitioning the raw GPS topic by `courier_id` ensures a single courier's pings are processed in order — a later ping cannot overtake an earlier one and produce a backwards-jumping position on the customer's map. The 120s TTL on Redis keys is the safety net: if a courier's phone dies mid-delivery, their position ages out automatically and dispatch stops considering them. The WebSocket Gateway's consistent hashing keeps a single order's entire location stream pinned to one node, so the node can buffer the last known position and serve it immediately to a reconnecting customer.
 
-**Decision:** Redis per-DC snapshot with 30-second TTL for browse-level availability; transactional DB check at cart-add for correctness.
+> [!TIP]
+> **Key insight:** The Redis write and Kafka produce are not atomic — if the stream processor crashes between them, the courier's position is in Kafka but not in Redis (or vice versa). The fix: Redis is the authoritative position store for dispatch because it carries a TTL — a missing position means "don't dispatch to this courier," which is the safe failure mode. Kafka is the durable replay log for the push pipeline. The two systems serve different readers with different consistency needs.
 
-**Rationale:** This is the standard two-level availability pattern — DoorDash uses the same approach (menu cache on Redis with 30s TTL, real-time check at cart-add). The snapshot approach also means the Catalog Service never calls the Inventory Service during browse — it talks only to Redis and the Product DB. The Inventory Service is called on cart-add and checkout only, keeping its QPS at ~84 (2 actions × 42 orders/s) — well within single-host PostgreSQL capability.
+**Edge cases:**
 
-> 💡 **Why not Redis Streams / CDC for real-time invalidation?** A more advanced approach uses Debezium CDC on the Inventory table to push real-time updates into Redis (item reserved → `HINCRBY dc:PHL-12:stock product:4821 -1`). This eliminates the 30s staleness window entirely. The trade-off: CDC pipeline complexity, exactly-once delivery challenges during Kafka rebalancing, and the fact that at GoPuff scale (42 orders/s), a 30s snapshot is perfectly adequate for browse. Implement the snapshot first. Add CDC only if customer complaints about ghost stock exceed 0.1% of sessions.
+- **Connection storm after gateway restart:** 100K courier apps reconnect simultaneously. The gateway applies jittered exponential backoff (0–5s random delay) and a connection rate limiter (500 new connections/s per node).
+- **Kafka consumer lag at dinner rush:** The `courier.location.raw` topic may accumulate millions of unprocessed events. The stream processor auto-scales based on consumer lag: when lag exceeds 30 seconds, new processor instances join the consumer group.
+- **Redis node failure:** If the Redis instance holding courier positions fails, dispatch falls back to the last known positions cached in the Dispatch Engine's in-memory H3 cell index (stale, but functional for a 30-second window until Redis recovers from a replica).
 
-### DD4: Order lifecycle — idempotency, cancellation, and partial fulfillment with Saga
+### DD3: ETA prediction — composite model across restaurant prep and road travel
 
-**Problem.** An order spans four services (Order, Inventory, Payment, Fulfillment) and a payment network. If the payment pre-auth succeeds but the order INSERT fails (DB connection drop mid-transaction), the customer's card has a hold with no corresponding order — they call support. If a picker discovers half the line items are missing from the shelf, the order must be partially fulfilled and the customer charged only for what they receive. The lifecycle must guarantee exactly-once order creation (idempotency), graceful partial fulfillment, and clean cancellation with reservation release — even when individual services fail mid-operation.
+**Problem.** Total delivery time is the sum of semi-independent segments: restaurant prep time (restaurant-controlled, right-censored — some restaurants never mark "ready"), courier travel to the restaurant (traffic-dependent), handoff/wait-at-restaurant, courier travel to the customer, and last-mile dwell (parking, apartment navigation). A single regression on total time misses the segment-level dynamics. And the ETA displayed at checkout must not jump dramatically when the customer moves to the tracking view.
 
-**Approach 1: Synchronous orchestration with compensating transactions (Saga)**
+**Approach 1: Single regression on total delivery time**
 
-The Order Service is the orchestrator. Each step (reserve inventory, pre-auth payment, confirm order) is a local transaction. If any step fails, the orchestrator runs compensating transactions in reverse: release reservation, void payment. This is a linear Saga.
+Train an XGBoost model with features: restaurant_id, item_count, distance, time_of_day, day_of_week, weather. Output: total ETA in minutes.
 
-**Challenges:** The payment network may not support synchronous voids (some gateways batch-process voids every 15 minutes). If the pre-auth succeeds and the order insert fails, the void may take 15 minutes — during which the customer's credit limit is reduced. The inventory compensating step (release reservation) is straightforward since it's a local DB operation. The Saga also adds complexity to the Order Service: it must track which steps completed so it knows which compensations to run.
+```javascript
+features = [restaurant_encoding, item_count, distance_mi, hour, dow, is_rain]
+eta_minutes = xgb_model.predict(features)
+```
 
-**Approach 2: Event-driven choreography with outbox pattern**
+**Challenges:** Total delivery time is the sum of independent processes with different feature sensitivities. Prep time depends on restaurant throughput and item count. Travel time depends on traffic and distance. A single model averages these effects, producing high variance — a restaurant known for fast prep but located in heavy traffic gets the same treatment as a slow-prep restaurant in light traffic.
 
-Each service publishes domain events to Kafka. Downstream services react to events. Idempotency is enforced at every consumer by the event's `order_id` + event type acting as a dedup key.
+**Approach 2: Segmented pipeline with per-segment models**
+
+Decompose ETA into four stages, each modeled independently:
+
+| Stage | Segment | Method |
+|---|---|---|
+| T1 | Order → restaurant accepted | Constant (5s offer window) |
+| T2 | Restaurant accepted → ready for pickup | Rolling median prep time per restaurant × hour, from last 30 days |
+| T3 | Courier → restaurant (travel to pickup) | OSRM duration × recency-smoothed ratio (actual/estimate from last 100 trips) |
+| T4 | Restaurant → customer (delivery) | OSRM duration × smoothed ratio + zone × hour dwell median |
+
+```javascript
+eta_total = T1 + T2 + T3 + T4
+```
+
+Prep time cache (Redis, refreshed hourly):
+
+```javascript
+HSET restaurant:4821:prep hour:18 median:14 p90:22
+HSET restaurant:4821:prep hour:19 median:18 p90:28
+```
+
+**Challenges:** The segmented approach produces accurate per-stage estimates but can give inconsistent total ETAs at different customer touchpoints. The browse view uses coarse category-level prep times (no cart data yet). The checkout view uses item-level estimates. The tracking view uses live courier GPS. These three numbers can differ by 5–10 minutes, and the apparent jump when the customer transitions from one view to the next undermines trust.
+
+**Approach 3: Multi-task deep learning with probabilistic output**
+
+A single model trained simultaneously on all ETA prediction contexts (browse, checkout, tracking), with a shared encoder backbone and task-specific heads:
+
+```javascript
+Encoder: MLP-gated Mixture of Experts
+  ├── DeepNet: embeddings for categoricals (restaurant_id, cuisine, hour)
+  ├── CrossNet: explicit feature interactions (item_count × restaurant_throughput)
+  └── Transformer: temporal patterns (rolling prep times, traffic, weather)
+
+Output: log-normal distribution params (mu, sigma)
+
+Task heads:
+  ├── browse_eta: P50 (optimistic, for discovery)
+  ├── checkout_eta: P50 with wider CI (committed estimate)
+  └── tracking_eta: P70 (conservative, en-route uncertainty)
+```
+
+**Decision:** Segmented pipeline with per-segment models for the initial implementation; multi-task deep learning as the v2 upgrade path. The segmented approach gets to production in weeks with off-the-shelf components (OSRM, Redis, periodic batch jobs).
+
+**Rationale:** The segmented pipeline's per-stage decomposition makes the ETA debuggable — if delivery ETAs drift 3 minutes late across a metro area, the operations team can isolate whether it's prep time (restaurants slowing down), travel time (new construction), or dwell time (parking enforcement changes). A black-box deep learning model cannot provide this operational insight. The segmented approach also handles data sparsity naturally: a new restaurant with no prep-time history falls back to the cuisine-category median.
+
+> [!TIP]
+> **Why not a single global OSRM call for travel time?** OSRM computes the fastest route given the current road graph, but it has no memory — it treats every trip as independent. In practice, the same restaurant-to-neighborhood segment has a consistent fudge factor (a particular intersection adds 45 seconds, a parking lot takes 90 seconds to exit) that OSRM's graph doesn't capture. The recency-smoothed ratio (actual / OSRM_estimate) learns these per-segment adjustments from observed data and corrects the OSRM baseline.
+
+**Edge cases:**
+
+- **Restaurant that never marks orders "ready":** The prep-time model only observes the courier's pickup time, creating right-censored data. The estimated prep time is the minimum of (observed pickup_time − order_placed_time) across all orders at that restaurant; the model treats unmarked orders as "at most N minutes."
+- **Extreme weather:** A sudden storm doubles all travel times. The recency-smoothed ratio adapts within ~100 trips (roughly 15 minutes at peak), and the OSRM baseline reflects the pre-storm road network — the ratio spikes, correcting the ETA upward.
+- **New restaurant with no history:** Falls back to cuisine-category median (e.g., "pizza places in this metro average 16 min prep"). After 50 orders, the restaurant's own data gains enough weight to override the category prior.
+
+### DD4: Order lifecycle — idempotency, payment, and cancellation across service boundaries
+
+**Problem.** An order touches four services (Order, Payment, Dispatch, Location) and an external payment gateway. A single order creation involves 5 network calls — any of which can fail, timeout, or succeed without the caller knowing. The system must guarantee that no customer is double-charged, that a payment hold without a corresponding order is eventually released, and that a cancelled order releases its courier and voids the payment — even when the cancellation arrives mid-dispatch.
+
+**Approach 1: Synchronous orchestration with compensating transactions**
+
+The Order Service acts as a central orchestrator. Each step (validate menu → pre-auth payment → insert order → dispatch courier) is called synchronously. If any step fails, the orchestrator runs compensating transactions in reverse: void payment, release courier, delete order.
+
+```javascript
+try:
+    validate_menu(items, restaurant_id)
+    auth = payment_service.pre_auth(amount, payment_method_id)
+    order = insert_order(auth.order_id, items, restaurant_id)
+    dispatch_service.assign_courier(order.id)
+except PaymentDeclined:
+    # No order created -- nothing to compensate
+except DispatchFailed:
+    payment_service.void(auth.id)
+    delete_order(order.id)
+```
+
+**Challenges:** The orchestrator holds the transaction open across multiple network calls — if the orchestrator crashes after `insert_order` but before `assign_courier`, the order is orphaned with a payment hold and no courier. The compensating step for `void(auth.id)` may itself fail (the payment gateway could be unreachable), requiring a retry queue. The orchestrator becomes the single point of failure for every order.
+
+**Approach 2: Event-driven choreography with outbox pattern and reconciliation**
+
+Each service owns its own state transitions and publishes domain events to Kafka. Downstream services react to events. Idempotency is enforced at every consumer. No central orchestrator — each service knows how to compensate its own failures.
 
 **Normal path:**
 
-1. Order Service receives `POST /v1/orders`, validates, inserts `Order (status=cart)` and publishes `OrderCreated` via the outbox.
-2. Inventory Service consumes `OrderCreated`, reserves items, publishes `InventoryReserved` or `InventoryUnavailable`.
-3. Payment Service consumes `InventoryReserved`, pre-auths, publishes `PaymentAuthorized` or `PaymentDeclined`.
-4. Order Service consumes `PaymentAuthorized`, advances status to `confirmed`, publishes `OrderConfirmed`.
-5. Fulfillment Service consumes `OrderConfirmed`, dispatches picker.
+1. Order Service receives `POST /v1/orders`, validates the cart, inserts `Order (status=placed)`, and publishes `OrderPlaced` via the outbox (a row in an `outbox` table, CDC'd to Kafka by Debezium).
+1. Payment Service consumes `OrderPlaced`, calls the payment gateway for pre-auth, updates `Payment (status=authorized)`, publishes `PaymentAuthorized`.
+1. Order Service consumes `PaymentAuthorized`, advances order status to `confirmed`, publishes `OrderConfirmed`.
+1. Dispatch Engine consumes `OrderConfirmed`, waits for restaurant acceptance, then assigns a courier (DD1), publishes `CourierAssigned`.
 
-**Failure handling:** If Payment Service crashes after pre-auth but before publishing `PaymentAuthorized`, the pre-auth is dangling. A reconciliation job (every 5 minutes) queries for orders in `cart` status older than 2 minutes and checks with the payment gateway — if an auth exists, it publishes `PaymentAuthorized` and the flow resumes. If Inventory Service reserves items but Payment Service declines, Inventory Service publishes `PaymentDeclined` → Inventory Service consumes its own event and releases the reservation. No orchestrator; each service owns its own compensation.
-
-```mermaid
-sequenceDiagram
-    participant OS as Order Service
-    participant IS as Inventory Service
-    participant PS as Payment Service
-    participant FS as Fulfillment Service
-    participant K as Kafka
-
-    OS->>K: OrderCreated
-    K->>IS: consume
-    IS->>IS: reserve items
-    IS->>K: InventoryReserved
-    K->>PS: consume
-    PS->>PS: pre-auth
-    PS->>K: PaymentAuthorized
-    K->>OS: consume
-    OS->>OS: status → confirmed
-    OS->>K: OrderConfirmed
-    K->>FS: consume
-    FS->>FS: dispatch picker
+```sql
+-- Idempotent payment record insert
+INSERT INTO payment (payment_id, order_id, amount_cents, status, idempotency_key)
+VALUES ($pid, $oid, $amt, 'authorized', $key)
+ON CONFLICT (idempotency_key) DO NOTHING
+RETURNING payment_id, status;
 ```
 
-**Partial fulfillment path:** If the picker finds 3 of 5 items and substitutes 1, the Fulfillment Service publishes `OrderPartiallyFulfilled {line_items: [{product_id, status: picked|substituted|oos}]}`. Payment Service consumes this and adjusts the capture amount to match what was actually delivered. The customer is charged only for picked + accepted substitutions.
+**Failure and cancellation paths:**
 
-**Cancellation path:** `POST /v1/orders/{order_id}/cancel` triggers Order Service to publish `OrderCancelled`. Inventory Service consumes and releases reservations. Payment Service consumes and voids the pre-auth. If the order is already `picking`, cancellation is rejected — the picker is already handling the order.
+- **Payment gateway timeout:** The Payment Service called the gateway but never received a response. A reconciliation job (every 2 minutes) queries the payment gateway for orphaned authorizations matching recent order amounts. If found, it publishes `PaymentAuthorized`. If not found after 3 cycles, the order is cancelled.
+- **Restaurant rejects order:** The restaurant tablet publishes `OrderRejected`. Payment Service consumes and voids the pre-auth. Order Service advances status to `cancelled`.
+- **Customer cancels mid-delivery:** `POST /v1/orders/{id}/cancel`. If order status is `confirmed` or earlier: Order Service publishes `OrderCancelled`. Payment Service voids the auth. Dispatch Engine releases the courier lock. If the order is already `picked_up`, cancellation is rejected.
 
-**Decision:** Event-driven choreography with outbox pattern, idempotency keyed on `order_id + event_type`, with a reconciliation job for dangling gateway states.
+**Decision:** Event-driven choreography with outbox pattern, per-service idempotency, and a reconciliation job for payment gateway edge cases.
 
-**Rationale:** DoorDash's order lifecycle uses the same choreography pattern with Kafka — the outbox ensures the event is published atomically with the local DB write, eliminating the dual-write problem. The reconciliation job is the safety net: in production, the #1 cause of stuck orders is not service crashes but payment gateway timeouts (the gateway accepted the charge but the response was lost). A 5-minute reconciliation sweep catches these without manual intervention.
+**Rationale:** The outbox pattern eliminates the dual-write problem — a service writes its local state and the event to the same database in one transaction, and the CDC connector publishes to Kafka atomically. If a service crashes, the event is still in its outbox and is published on restart. The reconciliation job is the safety net for the one boundary the system does not control: the external payment gateway. The 2-minute reconciliation sweep catches the production failure mode where the gateway accepted a charge but the response was lost, without manual intervention and without blocking the happy path.
+
+> [!WARNING]
+> **The payment gateway is the one boundary with no exactly-once guarantee.** The system can deduplicate its own events (Kafka consumer groups, `ON CONFLICT` upserts), but the payment gateway's `Idempotency-Key` header only protects against client-side retries for 24 hours. If the gateway's response is lost and the key expires before reconciliation, a duplicate charge is possible. Mitigation: the reconciliation job queries the gateway by `(amount_cents, timestamp +/- 2 min, merchant_id)` and flags ambiguous matches for manual review — this catches the long-tail case before it reaches the customer.
 
 **Edge cases:**
 
-- **Duplicate `OrderCreated` event:** The consumer deduplicates on `order_id`. If the event is re-delivered (Kafka at-least-once), the Inventory Service's reservation insert uses `ON CONFLICT (order_id, dc_id, product_id) DO NOTHING` — idempotent at the DB level.
-- **Payment capture after partial fulfillment:** The final charge amount differs from the pre-auth. Some payment gateways require pre-auth amount ≥ capture amount. The initial pre-auth includes a 10% buffer (e.g., pre-auth $42 even if estimated total is $38) to cover substitutions that are slightly more expensive. If no substitution occurs, the capture is for the actual amount and the unused hold is released.
-- **Order stuck in `cart` > 15 minutes:** The reservation TTL sweep (DD1) releases expired reservations. The Order Service reconciliation job cancels orders in `cart` status older than 15 minutes and publishes `OrderCancelled` to clean up any dangling payment authorizations.
+- **Duplicate** **`OrderPlaced`** **event due to Kafka at-least-once delivery:** The Payment Service consumer deduplicates on `order_id + event_type`. The `UNIQUE(idempotency_key)` constraint on the `Payment` table catches any that slip past consumer dedup.
+- **Courier accepts but the customer cancels 30 seconds later:** The order is already `accepted` (courier en route to restaurant). The cancellation is rejected — the restaurant has already started preparing the food. The customer is charged the restaurant's preparation fee.
+- **Order stuck in** **`placed`** **with no** **`PaymentAuthorized`** **for > 5 minutes:** The reconciliation job cancels the order and alerts the on-call engineer. This indicates a systemic failure (Payment Service is down, Kafka partition is stalled) rather than a transient one.
 
-## 7. Trade-offs
+## 7. References
 
-| Decision | Chosen | Rejected | Why |
-|---|---|---|---|
-| Inventory locking | Pessimistic row-lock (PostgreSQL `SELECT FOR UPDATE`) per DC partition | Optimistic concurrency with version column; Redis Redlock | Contention is too low to justify retry complexity; row-locks are transactional with reservation insert; no distributed coordination needed |
-| DC discovery | GeoHash prefix scan + Haversine; OSRM drive-time at checkout for boundary cases | Full drive-time routing for every lookup; pre-computed GeoJSON polygons | 95% of addresses are unambiguous with Haversine; OSRM adds 50ms only for the 5% edge cases; polygon maintenance at 500 DCs is a staffing cost |
-| Availability caching | Redis per-DC snapshot (30s TTL) with transactional check at cart-add | Read replicas; CDC-based real-time Redis updates | 30s staleness is acceptable for browse; snapshot is 50 lines of code vs a CDC pipeline; add CDC later only if ghost-stock complaints exceed threshold |
-| Order lifecycle | Event-driven choreography (Kafka + outbox) with reconciliation job | Synchronous Saga orchestration | Decouples services — each owns its own compensation; reconciliation handles the real-world failure mode (payment gateway timeouts); outbox eliminates dual-write problem |
-| Substitution engine | Deterministic ranking (same brand + price proximity + historical success rate) | ML model for personalized substitutions | 500 DCs × 2,000 SKUs = too few products for a meaningful per-user model; a simple ranking covers 90%+ of substitution satisfaction; add ML later as A/B experiment |
-| Database topology | PostgreSQL partitioned by `dc_id` with one partition per physical DC | Single global PostgreSQL; distributed SQL (CockroachDB/Spanner) | Per-DC partitioning isolates hot DCs, simplifies backup/restore, and matches the physical boundary; no cross-DC transactions exist in the product; 500 partitions is well within PostgreSQL limits |
-
-## 8. References
-
-**Primary sources**
-
-1. [Uber: Evolution and Scale of Uber's Delivery Search Platform](https://www.uber.com/us/en/blog/evolution-and-scale-of-ubers-delivery-search-platform/) — two-tower semantic search, HNSW indexing, biweekly index refresh, blue/green column-level deployment for catalog updates
-2. [Uber: Cart Assistant — Agentic Grocery Shopping on Uber Eats](https://www.uber.com/us/en/blog/uber-cart-assistant/) — multi-prompt state graph with 8 stages, parallel item processing, guardrail architecture for product recommendations
-3. [PostgreSQL: SELECT FOR UPDATE and Row-Level Locks](https://www.postgresql.org/docs/current/explicit-locking.html) — row-level locking semantics, deadlock detection, lock ordering
-4. [Redis: Pipelining and Hashes for Bulk Reads](https://redis.io/docs/latest/develop/use/pipelining/) — `HMGET` for batch field retrieval, pipeline batching for snapshot loads
-5. [Kafka: Exactly-Once Semantics and the Outbox Pattern](https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/) — transactional outbox, idempotent producers, consumer deduplication
-6. [OSRM: Open Source Routing Machine — Table Service](https://project-osrm.org/docs/v5.24.0/api/#table-service) — distance/duration matrices for candidate routing at < 50ms per query
-
+1. [DoorDash: Using ML and Optimization to Solve Dispatch](https://careersatdoordash.com/blog/using-ml-and-optimization-to-solve-doordashs-dispatch-problem/) — DeepRed three-layer dispatch architecture, MIP formulation with Gurobi, switchback experimentation
+1. [DoorDash: Next-Generation Optimization for Dasher Dispatch](https://careersatdoordash.com/blog/next-generation-optimization-for-dasher-dispatch-at-doordash/) — evolution from Hungarian algorithm to MIP, batching support, strategic delay modeling
+1. [DoorDash: Deep Learning for Smarter ETA Predictions](https://careersatdoordash.com/blog/deep-learning-for-smarter-eta-predictions/) — MLP-gated Mixture of Experts, multi-task learning for ETA, probabilistic output
+1. [DoorDash: Improving ETAs with Multi-Task Models](https://careersatdoordash.com/blog/improving-etas-with-multi-task-models-deep-learning-and-probabilistic-forecasts/) — transfer learning across ETA contexts, DeepNet/CrossNet/Transformer encoder architecture
+1. [Uber: Evolution and Scale of Delivery Search Platform](https://www.uber.com/us/en/blog/evolution-and-scale-of-ubers-delivery-search-platform/) — two-tower semantic search, H3 geosharding, Lambda architecture with Lucene indexes
+1. [Uber: Fulfillment Platform Re-architecture](https://www.uber.com/us/en/blog/fulfillment-platform-rearchitecture/) — migration from Node.js/Cassandra to Google Cloud Spanner, outbox pattern with Kafka/Cadence
+1. [Stripe: Idempotent Requests](https://docs.stripe.com/api/idempotent_requests) — `Idempotency-Key` header semantics, 24-hour key retention
+1. [Redis: Geospatial Indexes](https://redis.io/docs/latest/commands/geoadd/) — `GEOADD`, `GEOSEARCH`, TTL-based auto-expiry for ephemeral position data

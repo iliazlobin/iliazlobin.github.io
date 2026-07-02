@@ -376,11 +376,8 @@ Memcache is organized into pools by workload:
 | Pool | Data | TTL | Hit rate target |
 |---|---|---|---|
 | Feed | Ranked post IDs per user | 60s | 95% |
-|---|---|---|---|
 | Post | Post metadata (caption, URLs) | 300s | 98% |
-|---|---|---|---|
 | User | Profile info, follower count | 30s (hot), 300s (cold) | 99% |
-|---|---|---|---|
 | Graph | Following list per user | 120s | 96% |
 
 The pool separation prevents a spike in one workload from evicting data needed by another. Each pool is independently sized and scaled — Feed cache needs the most capacity (~50TB), User cache is small but needs the lowest latency for auth-critical paths.
@@ -434,31 +431,7 @@ graph TB
     class cdn_edge edge
 ```
 
-## 7. Trade-offs
-
-| Chosen | Rejected | Why |
-|---|---|---|
-| Feed fan-out strategy: Hybrid — write-fan-out for celebrities, read-fan-out for normal users | Pure fan-out on read | Pure read fan-out multiplies DB load by ~300x (average following count) — 150B queries per feed cycle is untenable |
-|---|---|---|
-| Feed fan-out strategy: Hybrid (cont.) | Pure fan-out on write | A single post from a 100M-follower user triggers 100M cache writes; the write path collapses |
-|---|---|---|
-| Celebrity feed delivery: Shared celebrity timeline shard, one write per post | Push to every follower's feed cache | Turns O(followers) writes into O(1) at the cost of one extra cache read per celebrity per feed request |
-|---|---|---|
-| Media variant production: Pre-transcode to 3 fixed variants at upload time | On-the-fly resize at CDN edge | Upload-time CPU cost is amortized; edge resize latency burns CDN capacity and worsens tail latency for cold content |
-|---|---|---|
-| Blob storage model: Append-only Haystack volumes with in-memory index | File-per-object on a general-purpose filesystem | Inode overhead and directory traversal cost kill random-read throughput at billions of objects; sequential volume I/O is ~100x faster per disk seek |
-|---|---|---|
-| Graph storage: TAO-like association store — objects + edges as first-class entities | Relational join table (user_follows) | Both directions of the edge are queried equally often; a join table requires an index for each direction, doubling write cost. TAO serves either direction in one lookup |
-|---|---|---|
-| Graph partitioning: Shard by object ID (user_id) — outbound queries hit one shard | Shard by edge ID | "Who do I follow?" (outbound) dominates every feed read; inbound queries ("who follows me?") are rare and tolerate scatter-gather latency |
-|---|---|---|
-| Cache architecture: Pooled Memcache — separate pools per workload (feed, post, user, graph) | Single unified cache cluster | Workload isolation prevents feed traffic spikes from evicting auth-critical user data; independent scaling per pool |
-|---|---|---|
-| Multi-DC replication: Per-user master DC, async replication to followers | Multi-master / active-active | Avoids conflict resolution complexity for a data model (feed, graph) that tolerates 100ms replication lag; user-visible consistency model remains simple |
-|---|---|---|
-| Feed ranking placement: Rank at read time, cache raw post IDs | Pre-rank at fan-out write time | Decouples ranking model updates from cache invalidation; the model can be redeployed without touching billions of feed cache entries |
-
-## 8. References
+## 7. References
 
 1. Beaver, D. et al. ["Finding a Needle in Haystack: Facebook’s Photo Storage"](https://www.usenix.org/legacy/event/osdi10/tech/full_papers/Beaver.pdf). OSDI 2010.
 1. Bronson, N. et al. ["TAO: Facebook’s Distributed Data Store for the Social Graph"](https://www.usenix.org/system/files/conference/atc13/atc13-bronson.pdf). USENIX ATC 2013.

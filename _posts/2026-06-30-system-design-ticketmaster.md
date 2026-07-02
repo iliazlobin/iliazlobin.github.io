@@ -2,449 +2,518 @@
 layout: post
 title: "System Design: Ticketmaster"
 date: 2026-06-30
-tags: [System Design, Distributed Systems, Concurrency, Booking, Interview Prep]
-description: "How Ticketmaster sells 500M tickets a year and survives 14M-concurrent-user onsales with a virtual waiting room, three-layer oversell prevention (Redis + Postgres OCC + unique index), Elasticsearch real-time availability, and saga-based exactly-once payments — a deep dive into high-contention ticketing."
+tags: [System Design]
+description: "Ticketmaster sells 500M tickets a year across 30 countries as the dominant primary-ticketing marketplace. The hard problem is the flash onsale: 14M people compete for 60,000 seats when Taylor Swift or the Super Bowl goes on sale. Demand outstrips supply 83:1, browse traffic hits 2."
 thumbnail: /images/posts/2026-06-30-system-design-ticketmaster.svg
 ---
 
-How Ticketmaster sells 500M tickets a year and survives 14M-concurrent-user onsales with a virtual waiting room, three-layer oversell prevention (Redis + Postgres OCC + unique index), Elasticsearch real-time availability, and saga-based exactly-once payments — a deep dive into high-contention ticketing.
+Ticketmaster sells 500M tickets a year across 30 countries as the dominant primary-ticketing marketplace. The hard problem is the flash onsale: 14M people compete for 60,000 seats when Taylor Swift or the Super Bowl goes on sale. Demand outstrips supply 83:1, browse traffic hits 2.
 
 <!--more-->
 
 ## 1. Problem
 
-Ticketmaster sells 500 million tickets per year across 30+ countries, serving as the primary ticketing platform for Live Nation venues worldwide. The system enables fans to discover events, view interactive seat maps, reserve specific seats, pay, and receive authenticated mobile tickets. During a major onsale — Taylor Swift's Eras Tour drew 14 million concurrent users and 3.5 billion daily requests — the system must gate traffic through a virtual waiting room, meter admission to the booking service at 100K seat-lock TPS, and never sell the same seat twice. The adversary is real: 566 million bot attacks per day, driving $1B+ in anti-bot investment over the past decade.
+Ticketmaster sells 500M tickets a year across 30 countries as the dominant primary-ticketing marketplace. The hard problem is the flash onsale: 14M people compete for 60,000 seats when Taylor Swift or the Super Bowl goes on sale. Demand outstrips supply 83:1, browse traffic hits 2.8M requests per second, and the booking path must never double-sell a seat. The system splits cleanly into a read-heavy browse path (99% of traffic, served from caches) and a correctness-critical purchase path (1% of traffic, with strong consistency guarantees).
 
 ```mermaid
 graph LR
-    Client[Client<br/>Web + Mobile] --> Edge[CloudFront +<br/>Lambda Edge]
-    Edge --> API[API Gateway]
-    API --> Queue[Queue-it<br/>Waiting Room]
-    API --> Search[Elasticsearch<br/>Search Cluster]
-    API --> Inv[Inventory Service<br/>Redis + Postgres]
-    API --> Pay[Payment Service<br/>Stripe + Temporal]
-    Inv --> Kafka[Kafka<br/>Event Bus]
-    Kafka --> Search
+    U[Users] --> CDN[CDN / Edge]
+    CDN --> GW[API Gateway]
+    GW --> SVC[Core Services]
+    SVC --> DB[(Primary DB)]
+    SVC --> CACHE[(Cache)]
+
+    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
+    class U,CDN,GW edge
+    class SVC svc
+    class DB,CACHE store
 ```
 
 ## 2. Requirements
 
 **Functional**
 
-- FR1: Browse events by date, location, category, price
-- FR2: View an interactive seat map with real-time availability
-- FR3: Search events by keyword, performer, venue
-- FR4: Reserve seats for a limited time
-- FR5: Complete purchase with secure payment
-- FR6: Deliver mobile tickets
+- FR1: Browse events by artist, venue, date, and location
+- FR2: View seat maps with real-time availability
+- FR3: Reserve seats for a limited time
+- FR4: Complete purchase with secure payment
+- FR5: Queue fairly for high-demand onsales
 
 **Non-functional**
 
-- NFR1: Inventory writes must be strongly consistent — the same seat must never be sold twice
-- NFR2: Survive 14M concurrent users during hot onsales
-- NFR3: Search results must reflect seat availability within 1-2 seconds
-- NFR4: Exactly-once payment semantics across retries and failures
+- NFR1: Browse P99 under 500ms, seat refresh under 2s
+- NFR2: No seat sold twice under any failure
+- NFR3: 14M concurrent users during flash sales
+- NFR4: 100:1 read-to-write ratio at peak
 
-*Out of scope: dynamic pricing algorithms, artist payout settlements, venue box-office point-of-sale integration, secondary market resale.*
+*Out of scope: Dynamic pricing, secondary market resale, venue management tools, anti-bot detection.*
 
 ## 3. Back of the envelope
 
-- **Seat-lock burst throughput:** 100K seat locks/sec at peak onsale → single Redis node (sub-ms SET NX EX) handles this; DynamoDB queue state engine handles 200K TPS for admission.
-- **Seat inventory storage:** 50K seats × 200 bytes × 100K events = ~1 TB. At peak onsale, read:write ratio shifts from 50:1 (browsing) to 2:1 (checkout), making the seat-map read path the dominant load outside onsale windows.
-- **Hold TTL:** Payment p99 latency (5-15s card auth + 3D Secure) + user hesitation + network retries = 10 minutes. Shorter → premature release during legitimate checkout. Longer (30 min) → blocked inventory from abandonment.
+- **Browse peak:** 14M concurrent × 1 poll/5s = 2.8M req/s; at 90% CDN hit rate → 280K origin req/s → origin must sustain 280K req/s; CDN absorption is mandatory
+- **Onsale write rate:** 60K seats per venue, admitted at 5K users/sec → peak hold issuance ~5K writes/s → write throughput is modest; the hard problem is admission fairness and ordering, not DB write capacity
+- **Storage volume:** 500M tickets/yr × 1 KB/order ≈ 500 GB/yr → 5-year footprint ~2.5 TB → storage volume is modest and not the binding constraint
 
-## 4. Entities & API
+## 4. Entities
 
 ```
 Event {
-  event_id:   uuid PK   ← shard key; all seats/holds/bookings co-located per event
-  name:       text
-  performer:  text
-  venue_id:   uuid FK
-  onsale_time:timestamp
-  status:     enum      ← draft | onsale | completed | cancelled
+  event_id:    uuid      PK
+  venue_id:    uuid      FK
+  name:        string
+  onsale_at:   timestamp
+  status:      enum      ← draft, announced, on_sale, completed
+}
+
+Venue {
+  venue_id:    uuid      PK
+  name:        string
+  city:        string
+  capacity:    integer
+  seat_map:    jsonb     ← serialized layout: sections, rows, seat grid
 }
 
 Seat {
-  seat_id:      uuid PK
-  event_id:     uuid PK ← composite key with seat_id; event-based sharding
-  section:      string
-  row:          string
-  seat_label:   string
-  price_tier_id:uuid FK
-  status:       enum    ← available | held | sold; never cached, read from primary
-  version:      integer ← OCC fencing; must match on status transitions
-  UNIQUE (event_id, seat_label)
+  seat_id:     uuid      PK
+  event_id:    uuid      PK FK  ← composite PK; shard key for Redis
+  section:     string
+  row:         string
+  number:      smallint
+  status:      enum      ← available, held, sold
+  price:       decimal(8,2)
+  held_until:  timestamp? ← hold TTL; null when available/sold
 }
 
-Reservation {
-  reservation_id:uuid PK
-  user_id:       uuid
-  event_id:      uuid      ← shard key
-  seat_ids:      uuid[]
-  owner_token:   uuid      ← random fencing token; Redis lock value + release guard
-  expires_at:    timestamp ← now() + 10 minutes
-  status:        enum      ← pending | confirmed | expired | cancelled
+Order {
+  order_id:    uuid      PK
+  user_id:     uuid      FK
+  event_id:    uuid      FK
+  total:       decimal(8,2)
+  status:      enum      ← pending, confirmed, cancelled
+  idem_key:    string    ← idempotency key for payment retry safety
+  created_at:  timestamp
 }
 
-Booking {
-  booking_id:       uuid PK
-  reservation_id:   uuid FK
-  user_id:          uuid
-  payment_intent_id:string  ← Stripe PaymentIntent; idem key = SHA-256(booking_id, attempt)
-  total_cents:      bigint
-  status:           enum    ← pending | charged | fulfilled | refunded
-  UNIQUE (reservation_id)            ← one booking per reservation; prevents double-finalization
+OrderItem {
+  order_id:    uuid      PK FK
+  seat_id:     uuid      PK FK
+  price:       decimal(8,2)
+  -- UNIQUE INDEX (event_id, seat_id) prevents double-booking at DB level
 }
 
-BookingSeat {
-  booking_id:uuid PK
-  seat_id:   uuid PK
-  UNIQUE (seat_id)                   ← final oversell guarantee; DB rejects duplicate seat
+User {
+  user_id:     uuid      PK
+  email:       string
+  name:        string
 }
 ```
 
-**API**
+### API
 
-- `GET /events?category=&date=&lat=&lon=&radius=&page=` — browse and discover events with geo-faceted filters
-- `GET /events/:eventId/seats` — fetch seat map as section-partitioned vector tiles with real-time status
-- `GET /search?q=&fq=&sort=` — full-text search across event name, performer, venue with BM25 ranking
-- `POST /reservations` — reserve seats; body `{event_id, seat_ids, user_id}`; returns `{reservation_id, owner_token, expires_at}` or 409 if any seat unavailable
-- `POST /reservations/:reservationId/confirm` — confirm reservation and initiate payment; body `{payment_token}`; returns `{booking_id, status}`
-- `GET /bookings/:bookingId` — fetch booking and ticket delivery status
+- `GET /events/search?q=&city=&date=&genre=` — full-text search, returns paginated event list
+- `GET /events/{id}` — event detail with seat map layout and pricing
+- `GET /events/{id}/seats` — real-time seat availability bitmap for seat map rendering
+- `POST /holds` — reserve seats, returns hold token and TTL expiry
+- `POST /orders` — confirm purchase with hold token and payment method
+- `GET /orders/{id}` — order status and ticket delivery state
 
 ## 5. High-Level Design
 
 ```mermaid
 graph TB
-    subgraph clients[Clients]
-        WEB[Web Browser]
-        MOB[Mobile App]
+    U[User] --> CDN[CDN]
+    CDN --> LB[Load Balancer]
+    LB --> GW[API Gateway]
+
+    subgraph Browse[Browse Path 99%]
+        CDN --> EC[Event Cache]
+        GW --> SS[Search Service]
+        SS --> ES[(Elasticsearch)]
     end
 
-    subgraph edge[Edge]
-        CF[CloudFront CDN]
-        LE[Lambda Edge<br/>Queue-it Connector]
+    subgraph Book[Booking Path 1%]
+        GW --> WR[Waiting Room]
+        WR --> SH[Seat Hold<br/>Service]
+        SH --> HC[(Hold Cache)]
+        SH --> PS[Payment Saga]
+        PS --> OD[(Order DB)]
     end
 
-    subgraph services[Services]
-        GW[API Gateway]
-        SRCH[Search Service<br/>Elasticsearch]
-        INV[Inventory Service<br/>Redis + Postgres]
-        PAY[Payment Service<br/>Temporal Saga]
-        TKT[Ticket Issuer<br/>SafeTix]
-    end
+    EC --> RC[(Redis Cache)]
+    HC --> RC
+    SH --> KF[Kafka] --> AV[Availability<br/>Updater]
+    AV --> RC
 
-    subgraph stores[Stores]
-        ES[(Elasticsearch<br/>Search Index)]
-        RD[(Redis<br/>Seat Locks + Cache)]
-        PG[(PostgreSQL<br/>Seats + Bookings)]
-        DDB[(DynamoDB<br/>Queue State)]
-    end
-
-    subgraph async[Async]
-        KAF[Kafka<br/>Event Bus]
-        CDC[CDC Stream<br/>Debezium]
-    end
-
-    WEB --> CF
-    MOB --> CF
-    CF --> LE
-    LE -->|valid token| GW
-    LE -.->|no token| DDB
-    GW --> SRCH
-    GW --> INV
-    GW --> PAY
-    SRCH --> ES
-    INV --> RD
-    INV --> PG
-    PAY --> PG
-    PAY --> TKT
-    INV --> KAF
-    KAF --> SRCH
-    PG --> CDC
-    CDC --> KAF
-    PAY --> KAF
-
-    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a;
-    classDef svc  fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
-    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
-    classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a;
-
-    class CF,LE edge
-    class GW,SRCH,INV,PAY,TKT svc
-    class ES,RD,PG,DDB store
-    class KAF,CDC async
+    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
+    classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a
+    class U,CDN,LB,GW edge
+    class SS,WR,SH,PS,AV svc
+    class EC,ES,HC,OD,RC store
+    class KF async
 ```
 
-#### FR1: Browse and discover events
+#### FR1: Browse events by artist, venue, date, and location
 
-**Components:** Client → CloudFront CDN → API Gateway → Search Service → Elasticsearch index (fed by Kafka CDC from PostgreSQL).
-
-**Flow:**
-
-1. Client requests `GET /events?category=concerts&date=2026-07-04&lat=40.7&lon=-74.0&radius=50&page=1`
-2. API Gateway routes to Search Service with pagination defaults (page size = 20)
-3. Search Service queries Elasticsearch with `bool` query: `must` match on category + date range, `filter` on geo distance, `must_not` on status=cancelled
-4. Search Service reads from Redis cache (5 min TTL on event metadata); cache miss → ES query → populate cache
-5. Returns paginated event list with venue, date, price range, and availability indicator
-
-**Design consideration:** Event metadata (name, performer, venue, date) is cacheable with aggressive TTLs (5 min Redis, 24h CDN for static venue data). Availability indicators are read from a separate lightweight count query against Redis seat-lock keys — `SCAN seat:{event_id}:* COUNT` — not from Elasticsearch, because stale ES indexes would show availability for sold-out events. The Search Service handles 17 languages via language-specific ES fields (`name_en`, `name_de`, `name_es`), avoiding analyzer one-size-fits-all degradation.
-
-#### FR2: View interactive seat map
-
-**Components:** Client → API Gateway → Inventory Service → Redis (seat status cache) → Kafka consumer refreshes.
+**Components:** CDN (CloudFront), Search Service, Elasticsearch cluster, Event Cache (Redis).
 
 **Flow:**
 
-1. Client requests `GET /events/:eventId/seats`
-2. API Gateway resolves `eventId` to the correct Inventory Service shard (by `event_id`)
-3. Inventory Service reads section-partitioned vector tiles from Redis — one key per section: `seatmap:{event_id}:{section}` → compressed SVG/Canvas tile
-4. Seat status colors applied server-side from Redis state: green (available), gray (held/sold), blue (user-selected in session)
-5. Real-time updates pushed via SSE channel: Inventory Service subscribes to `seat.held` and `seat.released` Kafka topics, fans out to connected clients
+1. User opens Ticketmaster or searches. The CDN serves cached event listing pages — 90% of requests never reach origin.
+1. For cache misses or dynamic search, the request hits the Search Service.
+1. Search Service queries Elasticsearch with full-text, geo, and date-range filters. Elasticsearch indexes are continuously refreshed from the primary database via CDC (change-data-capture through Kafka).
+1. Search results include event metadata and a compact availability summary. Event detail pages are cached in Redis with a 60-second TTL.
 
-**Design consideration:** A full arena seat map (70K seats × 200 bytes) is ~14 MB. Serving it as section-partitioned tiles (one per bowl/section, ~2-5 KB each) means the client only requests visible viewport tiles. Seat status is read from Redis with 1-2s staleness — refreshed by a Kafka consumer group that listens to `seat.held` and `seat.released` events from the Inventory Service. The critical rule: **never cache seat availability to CDN**. CDN-cached availability turns into overselling when the CDN edge node serves stale "available" status for a seat sold 30 seconds ago. Seat-map GETs always hit the service layer, not the CDN.
+**Design consideration:** Search read volume dominates. Elasticsearch handles full-text, faceted filtering, and geo queries far better than SQL `LIKE` — and the CDC pipeline decouples search indexing from the operational database so write pressure on PostgreSQL never slows down search.
 
-#### FR3: Search events
+#### FR2: View seat maps with real-time availability
 
-**Components:** Client → API Gateway → Search Service → Elasticsearch cluster (I3 instances) with BM25 ranking, geo filters, and custom plugins.
-
-**Flow:**
-
-1. Client requests `GET /search?q=taylor+swift&fq=date:[2026-07-01+TO+2026-07-31]&sort=relevance`
-2. Search Service constructs ES query: `multi_match` on `name^4`, `performer^2`, `description`, `venue`, with `fuzziness: AUTO`
-3. ES geo distance filter applied for location-aware queries; faceted aggregations compute date ranges, price buckets, category counts
-4. Results filtered post-query: availability checked against Redis seat-lock key existence (seat count > 0 for event)
-5. Spellcheck: if zero results, ES `suggest` API returns Did-You-Mean candidates; service re-runs query with top suggestion
-
-**Design consideration:** Ticketmaster migrated from Solr (2010) to Elasticsearch (2017) to support real-time seat availability in search results — 15 kiloseats indexed per second per host. The ES cluster uses I3 instances (double performance, 6× storage, half cost vs R3) with custom plugins for seat adjacency scoring and price-aware ranking. The CDC pipeline from PostgreSQL (Debezium → Kafka → ES indexing consumer) refreshes search within 1-2 seconds of seat state changes. "Miss-driven" spellcheck — retry with first suggestion when zero results found — guarantees a suggestion exists for every query, learned from 570 out of 2,000 failed searches producing 30% better results.
-
-#### FR4: Reserve seats with hold
-
-**Components:** Client → API Gateway → Inventory Service → Redis (SETNX lock) → Kafka (seat.held event) → PostgreSQL (async write).
+**Components:** Availability Cache (Redis bitmap), Seat Service, Kafka availability stream.
 
 **Flow:**
 
-1. Client selects seats, calls `POST /reservations` with `{event_id, seat_ids, user_id}`
-2. Inventory Service (sharded by `event_id`) generates `owner_token = UUIDv4()`
-3. For each `seat_id`, executes Redis `SET seat:{event_id}:{seat_id} {owner_token} NX PX 600000` via pipelined commands
-4. If all `SET NX` calls succeed → publish `seat.held` event to Kafka (event_id, seat_ids, owner_token) → return `{reservation_id, owner_token, expires_at}`
-5. If any `SET NX` fails → run Lua script to release already-acquired locks (check owner_token match, then DEL) → return 409
-6. Kafka consumer writes held state to PostgreSQL: `UPDATE seats SET status='HELD', version=version+1 WHERE seat_id=? AND status='AVAILABLE'`
+1. User opens an event's seat map. The client requests `GET /events/{id}/seats`.
+1. The Seat Service reads a compact bitmap from the Availability Cache — one bit per seat, 7.5 KB for a 60,000-seat venue.
+1. The client renders the seat map locally, coloring each seat based on the bitmap (available, held, sold). No per-seat requests to the server.
+1. The bitmap is refreshed every 1–2 seconds via a Kafka consumer that replays seat-state-change events. The client polls or receives a server-sent event on bitmap version change.
 
-**Design consideration:** The all-or-nothing multi-seat reservation uses pipelined Redis commands without MULTI/EXEC — each `SET NX` is independent because seat keys have no shared state. On partial failure, the Lua release script verifies owner_token before DELETE, preventing a race where TTL expiry grants the seat to User B, then User A's retry frees the wrong seat. The async PostgreSQL write via Kafka decouples the fast path (Redis, sub-ms) from the durable path (Postgres, ~5ms). Sharding by `event_id` colocates all seats for a hot event on a single Redis node, enabling single-shard multi-seat reservations and hot-event isolation.
+**Design consideration:** Without the bitmap, 5M concurrent viewers scanning 60K seats would require 300B Redis reads per second — impossible. The bitmap compresses the seat map into a single 7.5 KB payload per event. CDN edge caching of the bitmap further reduces origin load; each CDN edge point serves a slightly stale copy that refreshes every 2 seconds.
 
-#### FR5: Complete purchase with payment
+#### FR3: Reserve seats for a limited time
 
-**Components:** Client → API Gateway → Payment Service → Temporal Saga Orchestrator → Redis (seat status) + Stripe (payment) + PostgreSQL (booking finalization).
+**Components:** Seat Hold Service, Hold Cache (Redis), Order DB (PostgreSQL), Kafka.
 
 **Flow:**
 
-1. Client calls `POST /reservations/:reservationId/confirm` with `{payment_token}` (Stripe.js tokenized card, never raw PAN)
-2. Saga orchestrator (Temporal) starts workflow with reservation state loaded from previous step
-3. Step 1 — Verify hold: check Redis lock still exists and `owner_token` matches; if expired, return 410 Gone
-4. Step 2 — Charge: `Stripe.PaymentIntent.create(amount, currency, payment_method=token, idempotency_key=SHA256(booking_id, attempt_n))`
-5. Step 3 — Finalize: `UPDATE seats SET status='SOLD', version=version+1 WHERE seat_id=? AND version=?` (OCC guard) → insert `BookingSeat` rows (UNIQUE INDEX on seat_id catches any race)
-6. Step 4 — Issue: Ticket Issuer generates SafeTix rotating barcode → publish `booking_made` to Kafka → email/SMS/wallet push
-7. On any step failure: compensate — release Redis locks (Lua ownership check), void Stripe charge if captured, update booking status=FAILED, notify user
+1. User selects seats and submits a hold request: `POST /holds` with `{event_id, seat_ids, user_id}`.
+1. The Seat Hold Service executes a Lua script on Redis that atomically checks and sets each seat key: `SET seat:{event_id}:{seat_id} {owner_token} NX PX 600000` (set-if-not-exists with a 10-minute TTL). All seats for the same event share the same Redis shard (sharded on `event_id`), so the Lua script runs on a single node.
+1. If all seats are acquired, the service returns a hold token. If any seat is already held, the entire reservation is rejected and no seats are locked.
+1. On success, a `seat.held` event is published to Kafka, which triggers the Availability Updater to flip those bits in the bitmap.
+1. If the user does not complete purchase within 10 minutes, the Redis keys expire automatically. A background sweeper reconciles expired holds against the Order DB.
 
-**Design consideration:** 2PC is impossible because Stripe cannot participate as a resource manager — card authorization is fire-and-forget. The saga pattern with explicit compensating transactions replaces atomicity with eventual correctness: every forward step has a corresponding undo step. Temporal's durable execution means a worker crash mid-saga resumes from the last completed step with full event history. The idempotency key is server-generated at reservation time and persisted in Temporal state — network retries reuse the same key, and Stripe caches the key→response mapping for 24 hours, so a retry returns the cached result instead of charging twice. Card numbers never touch Ticketmaster servers; Stripe.js tokenizes on the client side, keeping PCI scope minimal.
+**Design consideration:** Redis SETNX with TTL is the core mechanism because it provides sub-millisecond atomicity without row-level database contention. The PostgreSQL `UNIQUE INDEX (event_id, seat_id)` on `OrderItem` is the belt-and-suspenders — even if Redis loses a hold (crash, partition), the database rejects a duplicate seat at commit time. The hold TTL of 10 minutes exceeds the 99th-percentile payment latency plus user decision time; a shorter TTL frustrates users mid-checkout, while a longer TTL ties up inventory for bots.
 
-#### FR6: Deliver authenticated mobile tickets
+#### FR4: Complete purchase with secure payment
 
-**Components:** Ticket Issuer → SafeTix engine → push notification (APNs/FCM) → mobile wallet integration.
+**Components:** Order Service, Payment Saga (Temporal), Order DB (PostgreSQL), Stripe.
 
 **Flow:**
 
-1. After payment confirmed and booking finalized, Ticket Issuer generates SafeTix ticket with rotating encrypted barcode
-2. Barcode tied to fan account ID + ticket ID + timestamp; refreshes every ~15 seconds via HMAC-based rotation
-3. Ticket pushed to Apple Wallet / Google Wallet via pass update API; also sent via email and SMS
-4. Mobile app blocks screen recording during ticket display (platform DRM APIs)
-5. At venue gate: scanner validates rotating barcode against current expected HMAC output
+1. User submits `POST /orders` with the hold token and payment details.
+1. The Order Service validates the hold token against Redis (the token must match the owner recorded in the seat key). Invalid or expired tokens are rejected immediately.
+1. The Payment Saga orchestrator (Temporal) begins a workflow:
+  - **Step 1 (Charge):** Call Stripe with a server-generated idempotency key: `hash(user_id, seat_ids, attempt_nonce)`. The key is persisted in the Order DB *before* the Stripe call, so a retry reuses the same key and Stripe returns the original result instead of double-charging.
+  - **Step 2 (Confirm):** On successful charge, update each seat's status to `sold` in PostgreSQL. The update uses a fencing token (version column) — `UPDATE seats SET status = 'sold', version = version + 1 WHERE seat_id = $1 AND version = $expected_version AND status = 'held'`. If the hold expired between the charge and the confirm, the version check fails and the saga triggers a refund.
+  - **Step 3 (Notify):** Publish `ticket.confirmed` to Kafka. The Ticket Service generates the mobile ticket.
+1. On any failure, Temporal retries with the same idempotency key. If the charge succeeded but the confirm failed, the saga issues a refund.
 
-**Design consideration:** SafeTix encrypts the barcode payload with a key derived from the fan's account, so a screenshot is valid for at most 15 seconds before the rotation renders it stale. The rotation interval balances security (shorter = harder to screenshot-share) against offline gate scanning reliability (longer = more tolerant of brief connectivity loss). The barcode generation uses HMAC-SHA256 with a venue-specific secret key, validated at scan time by the gate scanner's offline cache of expected codes for the current time window.
+**Design consideration:** Two-phase commit (2PC) is not used because Stripe does not support a prepare/commit protocol. The saga pattern with compensating transactions (refund on confirm failure) provides exactly-once semantics across the payment boundary. The idempotency key generated server-side before the provider call is the critical detail — a client-supplied key can be replayed across sessions.
+
+#### FR5: Queue fairly for high-demand onsales
+
+**Components:** Waiting Room, Smart Queue (Redis sorted sets), JWT Admission Gateway.
+
+**Flow:**
+
+1. 30 minutes before onsale, the waiting room opens. Users sign in and are assigned random queue positions via `ZADD queue:{event_id} {score} {user_id}`, where the score is a random value. This eliminates the advantage of loading the page early.
+1. At onsale time, the Admission Worker calls `ZPOPMIN` in batches of 5,000 users. Each admitted user receives a signed JWT token (HS256, 15-minute TTL, with a nonce for replay prevention).
+1. The admitted user's browser redirects to the seat selection page, presenting the JWT. The Seat Hold Service validates the JWT before processing any `POST /holds` — unadmitted users cannot bypass the queue.
+1. The release rate (5,000/sec) is matched to the Seat Hold Service's sustainable throughput. If the Seat Hold Service slows down, the Admission Worker reduces the batch size — the queue absorbs the backpressure.
+1. When all seats are sold, remaining queue members are notified.
+
+**Design consideration:** The JWT token decouples queue admission from seat selection. Without it, an admitted user could share the seat-selection URL with a thousand bots. The 15-minute TTL matches the expected seat-selection and checkout window; expired tokens force re-entry through the queue. The random queue position assignment (lottery, not first-come-first-served) is a business choice that reduces the incentive to script page-load bots. The queue and inventory paths are isolated — if the queue layer buckles under 14M concurrent users, the inventory system (which only sees admitted traffic at 5K/sec) remains stable.
 
 ## 6. Deep dives
 
-### DD1: Ticket reservation and inventory — three-layer oversell prevention
+### DD1: Seat reservation and inventory consistency
 
-**Problem.** The system must guarantee that a seat is never sold to two buyers, even under 100K seat-lock TPS with concurrent requests for the same seat arriving at different application instances. A single application-level lock is insufficient — bugs, race conditions, and operational failures require defense in depth. This directly addresses NFR1 (strong consistency for inventory writes) and NFR2 (surviving 14M concurrent users).
+**Problem.** 5M users compete for 60K seats at onsale. Every user sees a live seat map refreshed every 2 seconds. A reservation must be atomic (all selected seats or none), must prevent double-booking under any failure, and must release unconfirmed holds so inventory is not stranded. Reads outnumber writes 100:1, and the read path must stay fast while the write path stays correct.
 
-**Approach 1: Database row locks (SELECT FOR UPDATE)**
+**Approach 1: Database row locking**
 
-The application begins a transaction, executes `SELECT * FROM seats WHERE seat_id = ? FOR UPDATE`, checks status, updates to HELD, and commits.
+Run `SELECT ... FOR UPDATE` on the seats table inside a transaction. The database serializes conflicting reservations through row-level locks.
 
-- **Pro:** Single source of truth. No distributed state. Standard SQL, easy to reason about.
-- **Con:** At >1K concurrent seat selectors, 9,999 transactions block in the DB lock waiter queue — the convoy effect exhausts the connection pool before any transaction completes. The system collapses faster than if it had no locking at all. This was Ticketmaster's pre-2000s architecture and failed under real onsale load.
+```sql
+BEGIN;
+SELECT status FROM seats WHERE event_id = $1 AND seat_id IN ($2, $3)
+  FOR UPDATE;
+-- If all are 'available', UPDATE to 'held'.
+UPDATE seats SET status = 'held', held_by = $4,
+  held_until = NOW() + INTERVAL '10 minutes'
+  WHERE event_id = $1 AND seat_id IN ($2, $3)
+  AND status = 'available';
+COMMIT;
+```
 
-**Approach 2: Application-level distributed lock with optimistic concurrency control**
+**Challenges:** Row locks cause contention under high concurrency — each `SELECT FOR UPDATE` blocks others on the same rows. Deadlocks occur when two users select overlapping seat sets in different orders. The database connection pool saturates quickly. For 5K concurrent reservation attempts per second, the lock manager becomes the bottleneck. A background cron job must sweep expired holds, adding write pressure.
 
-A distributed mutex (Redis/ZooKeeper) guards seat access. The application acquires the lock, checks a version column, updates with `WHERE version = ?`, and releases.
+**Approach 2: Single-node Redis SETNX with TTL**
 
-- **Pro:** Moves locking out of the database, reducing connection pressure. Version-based OCC detects stale writes.
-- **Con:** Still requires a database write on every lock attempt. Under 100K TPS contention, version conflicts force retry loops that cascade into exponential database load. The distributed lock becomes a choke point — Redis can handle the throughput, but the downstream DB writes to record each hold cause write amplification.
+Move the hold state out of the database entirely. Use Redis `SET key NX PX` — an atomic "set if not exists" with a built-in expiry. A Lua script acquires multiple seats atomically on a single shard.
 
-**Approach 3: Three-layer defense with Redis fast path, PostgreSQL OCC, and UNIQUE INDEX**
+```lua
+-- Lua script: atomic multi-seat hold
+local user_token = ARGV[1]
+local ttl_ms = ARGV[2]
+for i = 3, #ARGV do
+    local key = 'seat:' .. KEYS[1] .. ':' .. ARGV[i]
+    local ok = redis.call('SET', key, user_token, 'NX', 'PX', ttl_ms)
+    if not ok then
+        -- Rollback: release keys already acquired
+        for j = 3, i - 1 do
+            local rk = 'seat:' .. KEYS[1] .. ':' .. ARGV[j]
+            redis.call('DEL', rk)
+        end
+        return 0
+    end
+end
+return 1
+```
 
-Layer 1: Redis `SET seat:{event_id}:{seat_id} {owner_token} NX PX 600000` — sub-millisecond, atomic, auto-expiring. Only the first caller succeeds. Layer 2: The eventual PostgreSQL write uses `UPDATE seats SET status='HELD', version=version+1 WHERE seat_id=? AND version=? AND status='AVAILABLE'` — catches TTL edge cases. Layer 3: `CREATE UNIQUE INDEX ON booking_seats(seat_id)` — the database rejects a duplicate row even if application code has bugs in Layers 1-2.
+**Challenges:** Redis is in-memory and can crash, losing all active holds. A network partition can make holds invisible. Hold expiration during payment (TTL race) leaves a user charged for an unreservable seat. The read path now depends on Redis — if it is down, seat maps show stale data.
 
-- **Pro:** The fast path (Redis) handles 100K TPS on a single node. The durable path (PostgreSQL) runs asynchronously via Kafka, decoupled from the user-facing response. The UNIQUE INDEX is the final correctness guarantee — it costs nothing in the success path and catches rare races that slip past Redis and OCC.
-- **Con:** Added infrastructure (Redis + Kafka + CDC pipeline). Must manage TTLs correctly — too short and holds expire during checkout; too long and abandoned carts block inventory. The owner_token Lua release adds complexity to the release path.
+**Approach 3: Redis + PostgreSQL UNIQUE INDEX + Availability Bitmap (layered defense)**
 
-**Decision.** Approach 3 — Redis SETNX + PostgreSQL OCC + UNIQUE INDEX.
+Keep Redis for the fast hold path, but add three safety layers:
 
-**Rationale.** Ticketmaster's Eras Tour postmortem confirmed inventory service held up under 3.5B daily requests — it was the code-validation service that buckled, not the seat-lock mechanism. The three-layer pattern is documented across the AWS Well-Architected Framework for ticketing workloads and employed by SeatGeek's virtual waiting room architecture on DynamoDB + Lambda. The UNIQUE INDEX pattern in particular is the belt-and-suspenders answer at FAANG interview depth — relying on application-level locking alone is a known failure pattern.
-
-**Edge cases.** *TTL expiry during payment:* If a hold's 600s TTL expires while the user is on the Stripe checkout page, the Lua ownership check on `confirm` fails, the saga compensates, and the user must re-select seats. *Crash between Redis SETNX and Kafka publish:* The seat is locked in Redis but no event is emitted. The seat map SSE channel won't update, but the lock prevents double-booking — the Kafka consumer catches up via full reconciliation on restart. *Multi-seat partial failure:* If 3 of 4 seats succeed at SETNX, the Lua release undoes the 3 successful locks, and the user retries — all-or-nothing semantics prevent partial holds. *Redis node failure during onsale:* The PostgreSQL OCC layer catches writes from the Redis-less window; seat availability briefly drops to eventual consistency but no overselling occurs.
+1. **PostgreSQL UNIQUE INDEX on** **`(event_id, seat_id)`** **in** **`OrderItem`****:** The database is the final arbiter. The `INSERT INTO order_items` at purchase confirmation fails with a unique-constraint violation if the seat was already sold — even if Redis incorrectly reported it available. This is the belt-and-suspenders.
+1. **Fencing token on confirm:** The seat row carries a `version` column. The confirm step uses an optimistic concurrency check: `UPDATE seats SET status = 'sold', version = version + 1 WHERE seat_id = $1 AND version = $2 AND status = 'held'`. If the hold expired (status reverted to `available`) between the charge and the confirm, the update affects zero rows and the saga triggers a refund. The version column detects mid-flight hold expiry.
+1. **Availability Bitmap in Redis:** The seat map read path does not query individual seat keys. A compact bitmap (1 bit per seat, 7.5 KB for 60K seats) is built from Kafka seat-state-change events and cached in Redis. The client fetches the bitmap and renders locally. CDN edges cache the bitmap for 1–2 seconds, absorbing virtually all read traffic.
 
 ```mermaid
 sequenceDiagram
-    participant U as User
-    participant INV as Inventory Service
-    participant RD as Redis
+    participant C as Client
+    participant SH as Seat Hold Service
+    participant R as Redis
     participant K as Kafka
-    participant PG as PostgreSQL
+    participant AB as Availability<br/>Updater
+    participant DB as PostgreSQL
 
-    U->>INV: POST /reservations<br/>{event_id, seat_ids}
-    INV->>RD: SET seat:e1:s42 owner NX PX 600000
-    RD-->>INV: OK
-    INV->>INV: Generate owner_token
-    Note over INV: All seat locks acquired
-    INV->>K: publish seat.held<br/>{event_id, seat_id, owner_token}
-    INV-->>U: 201 {reservation_id, expires_at}
-    K->>PG: Consumer: UPDATE seats<br/>SET status='HELD', version=version+1<br/>WHERE id=? AND version=?
-    PG-->>K: OK
+    C->>SH: POST /holds (seats)
+    SH->>R: Lua SET NX PX (multi-seat)
+    R-->>SH: OK + owner_token
+    SH->>K: seat.held events
+    K->>AB: consume
+    AB->>R: SETBIT (flip to held)
+    SH-->>C: hold token + TTL
+    Note over C,DB: ... user completes payment ...
+    C->>SH: POST /orders (hold token)
+    SH->>DB: INSERT order_items<br/>UNIQUE INDEX guards
+    SH->>DB: UPDATE seats SET sold<br/>WHERE version = expected
+    SH->>K: ticket.confirmed
 ```
 
-> [!TIP]
-> **Hold TTL is a business constraint, not a technical one.** The 10-minute window derives from payment processor latency (Stripe auth = 5-15s, 3D Secure challenges add 30-60s), user cart behavior (average checkout time is 2-3 minutes for known events), and the tradeoff between conversion rate (longer TTL = more completed checkouts) and inventory utilization (shorter TTL = more seats recycled to waiting users). Ticketmaster's verified fan pre-registration reduces the abandonment rate by pre-qualifying intent, making the 10-minute window efficient for most onsales.
+**Decision:** Approach 3 — the layered defense.
 
-### DD2: Onsale queue and traffic management — surviving 14M concurrent users
+**Rationale:** A single Redis node (not Redlock) is used because the cost of losing a hold (a user must re-select seats) is far lower than the cost of double-selling a seat (chargeback, customer trust, regulatory action). The PostgreSQL UNIQUE INDEX is the invariant — it cannot be bypassed by any code path. The Availability Bitmap decouples the read path (millions of viewers) from the write path (thousands of buyers) so that Redis hold-key operations only serve the booking path, and the bitmap serves the browse path from CDN edges.
 
-**Problem.** During hot onsales, 14M concurrent users hit the booking service simultaneously. Without admission control, the inventory service collapses under a thundering herd within ~30 seconds. The queue must absorb arbitrary spikes and meter admission at a rate the backend can sustain — this directly addresses NFR2 (14M concurrent survival).
+**Edge cases:**
 
-**Approach 1: Simple FIFO waiting room with Redis sorted set**
+- **Redis crash during onsale:** All active holds are lost. Users holding seats see them revert to available. The background sweeper reconciles PostgreSQL seat status against Redis and restores consistency. The UNIQUE INDEX still prevents double-booking of any seat already sold.
+- **Hold expiry mid-payment:** The saga's fencing-token check fails (version mismatch). The saga issues a refund if the charge already completed, and the user must restart seat selection.
+- **Multi-seat partial failure:** The Lua script is all-or-nothing — if any seat in the selection is already held, the entire reservation is rejected. No partial holds.
+- **Bitmap staleness:** A seat shown as available in a 2-second-old bitmap may already be held. The hold attempt fails at Redis, and the client refreshes the bitmap. The user sees a brief flash of corrected state.
 
-Users are assigned a rank by arrival time in a Redis sorted set. Top N users are admitted per batch. SSE pushes queue position.
+> **Key insight:** A single Redis node (not Redlock) is the right choice because the failure mode is asymmetric: a lost hold (Redis crash) is a recoverable inconvenience — the user re-selects seats. But a broken consensus that double-sells a seat is an unrecoverable violation — chargeback, trust loss, regulatory action. The PostgreSQL UNIQUE INDEX is the invariant, not the lock manager.
 
-- **Pro:** Simple implementation. Redis sorted set ZADD/ZPOPMIN operations are O(log N) and handle the throughput. Queue position is transparent to users.
-- **Con:** Pure FIFO rewards bots that optimize for arrival-time microsecond advantages. Real fans lose to scripts. No prioritization for Verified Fan pre-registrants who proved identity over a 1-2 week window. This was the naive approach that failed against sophisticated scalping operations.
+> **Why not Redlock?** Redlock adds consensus latency (~3–5 round trips across nodes) and introduces a new failure mode: if the coordinator's clock advances between lock acquisition and confirmation, two nodes can both believe they hold the same seat. The single-node approach accepts availability risk (losing holds) to eliminate consistency risk (double-selling).
 
-**Approach 2: Priority queue with Verified Fan scoring**
+### DD2: Onsale queue and traffic management
 
-Users pre-register 1-2 weeks before onsale. ML models score each registrant on purchase history, account age, phone verification, device fingerprinting, and social graph signals. During onsale, the queue sorts by a combined score — Verified Fan status is weighted highest, then fan engagement score, then random shuffle within score bands. Still uses Redis sorted set, with score replacing timestamp as the sort key.
+**Problem.** 14M users arrive within seconds of an onsale. Without a queue, all 14M hammer the seat-selection and reservation endpoints simultaneously — the inventory layer collapses under the connection load regardless of how well the hold mechanism is designed. The queue must admit users at a rate the downstream system can sustain, must prevent bypass (users skipping the queue), and must survive its own load without spilling pressure into the inventory layer.
 
-- **Pro:** Shifts the battle from "microsecond zero" (who clicks fastest at onsale time) to "registration window" (who proved they're a real fan over weeks). Bots cannot win by optimizing arrival time because the queue is not purely FIFO. Ticketmaster's Smart Queue uses exactly this priority model.
-- **Con:** Requires a pre-registration infrastructure separate from the onsale system. Score computation must be offline to avoid per-user ML inference in the hot path. "Random shuffle within score bands" still has a luck component that frustrates some real fans.
+**Approach 1: Rate-limited API gateway**
 
-**Approach 3: Queue-it DynamoDB edge architecture with JWT admission tokens**
+Apply per-IP rate limiting at the CDN and API gateway. Users who exceed the rate receive 429 responses. Those who get through compete directly for seats.
 
-A dedicated queue engine (Queue-it, deployed at 100B+ visitors processed) runs on DynamoDB at the CloudFront edge. Lambda@Edge intercepts every request, checks for a valid `queueittoken` JWT, and either redirects to the waiting room or forwards to Ticketmaster's API Gateway. The waiting room issues HMAC-SHA256-signed admission tokens when a user is dequeued. The token is validated at the API Gateway — no token, no access to booking services.
+**Challenges:** No fairness — users on fast connections or behind large NATs (many users sharing one IP) are penalized or advantaged. No admission control: during a flash onsale, even the "allowed" rate can overwhelm the seat-selection service. Bots can distribute requests across IPs.
 
-- **Pro:** Traffic intercepted at the edge before it reaches origin servers. DynamoDB handles 100-200K TPS per table, with on-demand scaling to absorb spikes. The admission token is cryptographically signed — users cannot forge tokens or replay expired ones. Queue state lives in DynamoDB, not application memory, so crashes recover with no state loss. Batch dequeue at 5K/sec leaks users into the checkout flow at exactly the rate the booking service can sustain.
-- **Con:** Adds a third-party dependency (Queue-it) at the critical path. Token validation adds latency (~10ms per request at Lambda@Edge). The HMAC secret must be rotated and distributed to all edge locations — operational complexity.
+**Approach 2: Redis sorted-set queue with JWT admission tokens**
 
-**Decision.** Approach 3 — Queue-it DynamoDB edge architecture for the production system; Approach 2 (Redis sorted set priority queue) for interview-appropriate depth.
+Place every user into a Redis sorted set as they arrive. A background worker admits users in controlled batches by issuing cryptographically signed JWT tokens that the seat-selection endpoint validates.
 
-**Rationale.** Queue-it is the production system powering Ticketmaster, processing 13B+ bots blocked across 1,000+ events. DynamoDB was chosen over Redis for queue state because, as Queue-it's Distinguished Product Architect Mojtaba Sarooghi explained on SE Radio 700: "DynamoDB can be seen as persistent storage that is pretty fast... when you have a cache you need to be careful about the cache being stale — we can trust DynamoDB for this scenario." The edge deployment model (Lambda@Edge + CloudFront) isolates queue traffic from origin servers entirely. The 2022 Eras Tour meltdown confirmed the priority: 3.5M pre-registered, 1.5M Verified Fan codes sent, 14M concurrent users arrived — 4× the design target. The code-validation service buckled under bot-targeted traffic, not the queue or inventory service.
+```javascript
+Queue Structure (per event):
+  Redis Sorted Set: queue:{event_id}
+    Members: user_id, Score: random float
+  Admission Worker:
+    ZPOPMIN queue:{event_id} 5000  →  returns 5,000 user_ids
+    For each: issue JWT(user_id, event_id, exp=+15min, nonce)
+  Seat Hold Service:
+    Validate JWT signature + expiry + nonce before processing holds
+```
 
-**Edge cases.** *Queue position spoofing:* Users cannot forge tokens because the HMAC-SHA256 signature is validated at every edge. *Admitted user's browser crashes:* The admission token includes a TTL (15 minutes); if the user reconnects within the window, the existing token works. After expiry, they re-enter the queue at the back. *Batch dequeue rate mismatch:* If dequeue at 5K/sec exceeds booking service capacity (e.g., due to degraded Redis), the admission rate is dynamically throttled based on backend health metrics pushed to the queue engine. *CDN edge location failure:* CloudFront automatically routes to the next nearest edge; the queue state is in DynamoDB (regional), not edge-local, so queue position is preserved.
+**Challenges:** The Redis sorted set itself must handle 14M `ZADD` operations at the start of onsale. At 14M writes over 60 seconds, that is ~233K ops/sec — near the limit of a single Redis node. The admission worker is a single point of bottleneck. JWT validation adds latency to every hold request.
 
-> [!TIP]
-> **The real threat during onsales is bot traffic, not human traffic.** Ticketmaster blocks 566 million bots per day — 25 million fake sign-up attempts daily with a 99.7% rejection rate. The queue architecture must treat adversarial load as the dominant design constraint. Pre-registration + Verified Fan scoring + device fingerprinting + rate limiting at the CDN edge have reduced bot success rates, but the arms race continues. The Eras Tour's code-validation service failure was caused by bots targeting passcode validation "for the first time" at 3× the prior peak — the queue successfully held, but the adjacent anti-bot service was the weak link.
+**Approach 3: Multi-layer gating with Queue-it DynamoDB + JWT admission**
 
-### DD3: Search at scale — real-time availability in full-text results
+Add a pre-queue waiting room on DynamoDB (chosen for its high write throughput — 100K+ writes per second per table) and fan out the admission workers horizontally.
 
-**Problem.** Search must combine traditional full-text retrieval (17 languages, BM25 ranking, geo filters, faceted navigation) with real-time seat availability — a volatile signal that changes every second as seats are held and released. A stale search index shows "available" for sold-out events. This addresses NFR3 (1-2 second freshness for seat availability in search).
+1. **Waiting room layer (DynamoDB):** Users arrive and are registered with a random position. DynamoDB absorbs the 14M write burst with auto-scaling.
+1. **Admission layer (Redis sorted set):** A batch process migrates users from DynamoDB into Redis sorted sets for efficient ordered admission. Multiple admission workers run in parallel, each responsible for a partition of the queue.
+1. **Rate-matching feedback loop:** The Admission Worker monitors the Seat Hold Service's latency and error rate. If p99 hold latency exceeds 200ms or the error rate rises above 1%, the worker reduces the batch size from 5,000 to 2,500 to 1,000, allowing the inventory layer to recover. When latency drops, the batch size scales back up.
+1. **Load isolation boundary:** The queue tier (waiting room + admission) and the inventory tier (seat hold + payment) run on separate service clusters with separate connection pools, Redis instances, and rate limiters. A queue-tier failure (DynamoDB throttling, Redis OOM) saturates *only* the queue — the inventory tier continues serving already-admitted users from its own Redis and PostgreSQL instances.
 
-**Approach 1: Search index refreshed on a cron schedule**
+**Decision:** Approach 3 — multi-layer gating with load isolation and rate-matching feedback.
 
-Rebuild the search index nightly from PostgreSQL. Availability indicators are a stale approximation.
+**Rationale:** The Taylor Swift Eras Tour onsale failure in 2022 was caused by a queue layer that buckled under 3.5B requests (4x the prior peak) and spilled instability into the inventory system. Approach 3 prevents this in two ways: (1) DynamoDB absorbs the initial write burst at a scale Redis cannot match for pure ZADD throughput, and the migration into Redis is paced; (2) the queue and inventory tiers are fully isolated — if the queue crashes, admitted users with valid JWTs continue checking out. The rate-matching feedback loop is critical because a fixed admission rate (always 5,000/sec) either underutilizes the system during normal load or overwhelms it during a degraded state.
 
-- **Pro:** Simplest architecture. Search queries are fast because the index is static between rebuilds.
-- **Con:** During an onsale, 100K seats change state per second. A 1-hour-old index shows completely wrong availability. This was Ticketmaster's pre-2010 home-grown search and "officially sucked" — users clicked "Buy" on events shown as available that had sold out hours earlier.
+**Edge cases:**
 
-**Approach 2: PostgreSQL full-text search with GIN indexes**
+- **Queue position randomization:** Users who arrive 30 minutes early get no advantage over users who arrive 1 second before onsale. The Redis ZADD score is `random()`, not `timestamp()`. This eliminates the incentive to script early arrival.
+- **JWT replay prevention:** Each JWT carries a server-side nonce stored in Redis with the same 15-minute TTL. The first use of a nonce succeeds; subsequent uses are rejected. A user cannot share their admission token.
+- **Queue re-entry:** If a user's browser crashes after admission, the JWT (unexpired) lets them resume. If the JWT expires, they re-enter the waiting room at the back of the queue — no position restoration.
+- **Bot surge at admission start:** The waiting room absorbs the initial connection flood. Bots without a valid JWT cannot reach the seat-selection endpoint. A CDN-level rate limiter drops obvious bot patterns (identical headers, no JS execution) before they reach DynamoDB.
 
-Use PostgreSQL's `tsvector` with GIN indexes for full-text, and JOIN against the live `seats` table for availability.
+> **Key insight:** The queue and inventory tiers must share no state — separate Redis instances, separate connection pools, separate service deployments. When the queue buckles under 14M concurrent arrivals, the inventory tier continues serving already-admitted users from its own resources. The 2022 Eras Tour failure happened precisely because the two tiers were coupled: queue instability cascaded into inventory unavailability, and even admitted users could not complete checkout.
 
-- **Pro:** Single source of truth — availability is always current because it queries the live database. No separate search infrastructure to maintain.
-- **Con:** PostgreSQL full-text search lacks the ranking sophistication, faceting performance, and language-specific analyzer support of a dedicated search engine. Joining full-text results with seat availability tables creates query plans that degrade under concurrent load — a search during a hot onsale competes with inventory writes for database resources.
+> **Why not a fixed admission rate?** A fixed 5,000/sec release rate either underutilizes the system during normal operations or overwhelms it during degraded states (a database slowdown, a cache miss storm). The rate-matching feedback loop — monitor p99 hold latency, reduce batch size when latency rises, increase when it recovers — lets the system find the sustainable throughput for current conditions without human intervention.
 
-**Approach 3: Elasticsearch with real-time CDC availability feed**
+### DD3: Payment idempotency and saga orchestration
 
-Elasticsearch indexes event metadata + seat availability from a Kafka CDC stream. Debezium captures PostgreSQL changes → Kafka → ES indexing consumer updates the search index with seat count deltas within 1-2 seconds. Search queries hit Elasticsearch directly; availability is embedded in the index, not joined at query time.
+**Problem.** A user clicks "Purchase." The request reaches the server, which charges their card, but the response is lost to a network timeout. The user retries. Without idempotency, the second attempt double-charges the card. The payment provider (Stripe) does not support two-phase commit — there is no `PREPARE` phase to coordinate the charge with the seat confirmation. The system must guarantee exactly-once payment and exactly-once seat assignment across retries, network failures, and service crashes.
 
-- **Pro:** BM25 ranking with field boosting (name\^4, performer\^2), faceted aggregations, geo distance filters, and 17-language analyzer support — all in one query. Availability freshness is 1-2 seconds because the CDC pipeline streams every `seat.held` and `seat.released` event. I3 instances deliver 15 kiloseats indexed per second per host at half the cost of previous R3 hardware.
-- **Con:** Elasticsearch is not strongly consistent — the index may lag the PostgreSQL source of truth by 1-2 seconds. During that window, a search result might show a seat as available that was just sold. This is acceptable for discovery (users click through to the seat map, which queries live Redis state), but must never be used for the final booking decision.
+**Approach 1: Client-supplied idempotency key**
 
-**Decision.** Approach 3 — Elasticsearch with CDC availability feed. PostgreSQL full-text search for moderate scale; Elasticsearch for Ticketmaster's 30-country, 17-language, real-time scale.
+The client generates a UUID and sends it with each purchase request. The server checks a deduplication cache before processing. If the key is seen, return the cached result.
 
-**Rationale.** Ticketmaster's 2017 Elasticsearch migration was presented at Elastic{ON} by CDO John Carnahan. Key findings: pushing data through a stream (Kafka) first is the architectural invariant — "flexibility on where data lands, as long as it goes through a stream first." Compression settings were critical — "not obvious that compression would help at first but made a huge difference because data between nodes was large." Custom Elasticsearch plugins for seat adjacency scoring and price-aware ranking produced results that generic search could not. The critical design rule: **Elasticsearch is for search, not for serving seat data to browsers quickly en masse** — the seat map and booking services use Redis, not Elasticsearch, for the operational data path.
+**Challenges:** The client can reuse the same key across different purchase attempts (intentionally or due to a bug). A malicious client can guess or brute-force keys to cause false deduplication hits. If the client crashes and generates a new key on retry, the original charge is orphaned. The client is not a trustworthy source of idempotency.
 
-**Edge cases.** *CDC lag during onsale burst:* If Kafka consumer lag exceeds 5 seconds, search results may show stale availability. The API Gateway adds a response header `X-Availability-Freshness: stale` when lag exceeds a threshold, and the UI displays a warning banner. *Elasticsearch cluster degradation:* Circuit breakers at the Search Service return cached event metadata (Redis, 5 min TTL) without availability indicators when ES is unhealthy. *Index corruption:* The full reindex from PostgreSQL runs nightly — recovery is a complete reindex from the source of truth, not a log replay. *Language-specific queries:* "P!NK" must match "Pink" in English and German indexes — synonym rules handle artist-name variations across languages.
+**Approach 2: Server-side idempotency key with saga pattern**
 
-### DD4: Payment and idempotency — exactly-once charge semantics
+Generate the idempotency key on the server at reservation time (before the payment call), persist it to the database, and use it to drive a saga workflow that coordinates the charge, the seat confirmation, and the ticket issuance as a single durable workflow.
 
-**Problem.** Charging a card twice is worse than selling a seat twice — refunds cost $15-25 per transaction in interchange fees, damage reputation, and trigger regulatory scrutiny. But network retries, timeouts, and crash recovery make exactly-once delivery impossible at the transport layer. The system must guarantee at-most-once charging through application-level idempotency. This directly addresses NFR4 (exactly-once payment semantics).
+```javascript
+Saga workflow (Temporal):
+  Input: hold_token, payment_method, seat_ids, user_id
+  State persisted in Order DB row (status = 'pending')
 
-**Approach 1: Single long transaction spanning database and payment processor**
+  Step 1 — Charge:
+    idem_key = hash(user_id, seat_ids, attempt_nonce)
+    INSERT INTO idempotency_keys (key, order_id, status)
+      VALUES (idem_key, order_id, 'in_progress')
+    result = stripe.PaymentIntent.create(
+      amount=total,
+      idempotency_key=idem_key  ← Stripe deduplicates on this
+    )
+    UPDATE idempotency_keys SET status = 'charged', charge_id = result.id
 
-`BEGIN; reserve seats; charge card; UPDATE seats; COMMIT;`
+  Step 2 — Confirm seats:
+    UPDATE seats SET status = 'sold', version = version + 1
+      WHERE seat_id IN (...) AND version = $expected AND status = 'held'
+    -- If rows affected < len(seat_ids): a hold expired → compensate
 
-- **Pro:** Appears atomic — if any step fails, roll back everything.
-- **Con:** 2PC is impossible because Stripe cannot participate as a resource manager. You cannot `PREPARE` a card authorization — it's fire-and-forget. If the `charge card` call succeeds but the `COMMIT` fails, the user is charged but has no ticket. If `charge card` times out, you don't know whether the charge was processed. This approach produces exactly the double-charge and lost-ticket outcomes it claims to prevent.
+  Step 3 — Issue tickets:
+    INSERT INTO tickets (...) VALUES (...)
+    UPDATE orders SET status = 'confirmed'
 
-**Approach 2: Two-phase booking (reserve then confirm) with client retries**
+  Compensation (if step 2 fails after step 1 succeeded):
+    stripe.Refund.create(charge=charge_id)
+    UPDATE orders SET status = 'refunded'
+```
 
-Phase 1: `POST /reservations` reserves seats and returns a `reservation_id`. Phase 2: `POST /reservations/:id/confirm` charges the card and finalizes. Client retries on timeout.
+**Challenges:** Temporal adds operational complexity — a separate workflow engine to deploy and monitor. The saga must handle the case where the charge succeeds, the confirm fails, and the refund also fails (Stripe downtime). The `attempt_nonce` must be globally unique across retries.
 
-- **Pro:** Separates reservation from payment — the fast path (Redis lock) completes before payment begins. If confirm fails, the hold is still active and the user can retry.
-- **Con:** If the confirm request times out (Stripe processed the charge, but the response was lost in transit), the client retries and charges the card a second time. Without idempotency, at-least-once delivery at HTTP means at-least-once charging. A crash between Stripe charge success and database write leaves the seat in HELD state and the user charged — no ticket, no automatic recovery.
+**Approach 3: Outbox pattern with payment polling**
 
-**Approach 3: Saga orchestration with server-generated idempotency keys**
+Instead of a workflow engine, write the payment intent to an outbox table. A background worker polls the outbox, calls Stripe, and updates the order. On failure, the worker retries with the same idempotency key.
 
-A Temporal saga orchestrator executes a 4-step workflow: verify hold → charge with idempotency key → finalize seats → issue ticket. The idempotency key is `SHA-256(booking_id || attempt_number)`, generated at reservation time and persisted in Temporal's workflow state. Every external call (Stripe charge, DB update) uses the same key on retry. Stripe caches the key→response mapping for 24 hours — a retry with the same key returns the cached result. On any step failure, compensation runs: release Redis locks (Lua ownership check), void Stripe charge, update booking status.
+**Challenges:** Polling introduces latency between the user's purchase click and the charge. The outbox worker must be single-threaded per order to avoid concurrent charge attempts. Error handling (refunds on partial failure) is ad-hoc, not a reusable saga primitive.
 
-- **Pro:** Exactly-once charging through idempotency, not transport guarantees. Crash recovery is built into Temporal — if the worker dies mid-saga, the next worker replays the workflow from the last completed step, reusing the same idempotency key. Compensation is automatic and exhaustive — every forward step has a corresponding undo. PCI scope is minimal because card numbers never touch Ticketmaster servers (Stripe.js tokenization).
-- **Con:** Temporal adds operational complexity — a separate cluster with its own Cassandra/PostgreSQL backing store. Saga workflows are eventually consistent, not immediately consistent — there's a window where the seat is still HELD but the charge is processing. The idempotency key format must be carefully namespaced to avoid collisions across bookings.
+**Decision:** Approach 2 — server-side idempotency key with Temporal saga.
 
-**Decision.** Approach 3 — saga orchestration with server-generated Stripe idempotency keys.
+**Rationale:** The saga pattern maps directly to the problem: each step has a compensating action. Stripe does not support 2PC, so the compensating-refund model is the only correct path. Temporal provides durable execution — if the server crashes mid-saga, Temporal replays from the last persisted step, with the same idempotency key, so the charge is never duplicated and the seat is never double-confirmed. The server-side key generation (`hash(user_id, seat_ids, attempt_nonce)`) binds idempotency to a specific purchase intent — a retry of the *same* intent reuses the key, while a *new* selection of seats produces a different key. Stripe retains idempotency keys for 24 hours, so retries within that window are safe.
 
-**Rationale.** Stripe's idempotency key contract (documented at [stripe.com/blog/idempotency](http://stripe.com/blog/idempotency)) is the industry standard: keys are cached for 24 hours, and the response includes the original HTTP status code and body. This means a timeout on the charge call can be safely retried — if Stripe already processed it, the cached response is returned; if not, it processes the charge exactly once. Uber's Cadence (later Temporal) was built for exactly this use case: long-running business transactions across unreliable service boundaries. The 2022 Eras Tour processed 2M ticket sales in one day without reported double-charge incidents, validating the idempotency-key approach at scale.
+**Edge cases:**
 
-**Edge cases.** *Stripe idempotency key collision:* Two different bookings generating the same key (astronomically unlikely with SHA-256, but the keys are namespaced by booking_id to eliminate even theoretical risk). *Stripe 24-hour cache expiry:* A retry after 24 hours with the same key is treated as a new charge. The saga enforces a maximum retry window of 1 hour with exponential backoff, well within Stripe's 24-hour cache window. *Saga timeout during 3D Secure:* The 10-minute hold TTL is designed to cover the full 3D Secure challenge window. If the challenge exceeds 10 minutes, the hold expires, the saga compensates, and the user must re-enter the queue. *Payment processor outage:* Sagas are paused (not failed) during downstream unavailability. Temporal retries with exponential backoff (1s → 2s → 4s → 8s → ... → 60s max) for up to the hold TTL, then compensates.
+- **Charge succeeds, confirm fails, refund fails:** The saga enters a manual intervention state. An on-call engineer verifies in the Stripe dashboard whether the charge completed and issues the refund manually. The order row is flagged for reconciliation.
+- **Stripe timeout:** The saga's charge step times out after 30 seconds. Temporal retries with the same idempotency key. Stripe returns the original result if the first attempt succeeded silently, or processes the charge if it did not. Exactly-once is preserved.
+- **Hold expiry during saga:** The fencing-token check in the confirm step catches this. The saga issues a refund and the user is notified that their seats were released due to inactivity.
+- **Nightly reconciliation:** A batch job compares the Order DB against Stripe's settlement reports. Any order with `status = 'confirmed'` but no matching settlement, or vice versa, is flagged for investigation.
 
-> [!TIP]
-> **Idempotency keys are server-generated, never client-generated.** Client-generated keys (e.g., a UUID from the browser) introduce a trust boundary — a malicious or buggy client can replay a key for a past successful charge. Server-generated keys bound to the booking state eliminate this vector. The key derivation formula `SHA-256(booking_id || attempt_number)` means: the first attempt is attempt_0, a network retry reuses attempt_0, and a genuine re-charge (user explicitly retries after a declined card) gets attempt_1 — a different key and a new Stripe PaymentIntent.
+> **Load-bearing detail:** The idempotency key must be generated server-side and persisted *before* the Stripe call — not supplied by the client. A client can replay an old key for a new purchase; a server-generated key binds idempotency to the specific purchase intent. The key survives process crashes because it's stored in the Order DB row: if the saga worker dies after charging but before confirming, Temporal replays from the persisted state, reuses the same `idem_key`, and Stripe returns the original charge result.
 
-## 7. Trade-offs
+### DD4: Search and discovery at scale
 
-| Decision | Chosen | Rejected | Why |
-|---|---|---|---|
-| Seat lock mechanism | Redis SETNX + PostgreSQL OCC + UNIQUE INDEX | SELECT FOR UPDATE, pure application mutex | Convoy effect collapses DB under >1K concurrent; 3-layer defense survives 100K TPS with each layer independently preventing oversell |
-| Queue engine store | DynamoDB (Queue-it) for queue state; Redis for seat locks | Single store (Redis or DynamoDB for everything) | DynamoDB: persistent, no stale-cache risk for queue position. Redis: sub-ms for seat-lock fast path. Each store optimized for its access pattern |
-| Search engine | Elasticsearch with CDC availability feed | Solr (previous), PostgreSQL GIN (smaller scale) | 15K seats/sec indexing, BM25 ranking, 17-language analyzers, custom plugins for seat adjacency. PostgreSQL GIN degrades under concurrent search+write |
-| Payment coordination | Temporal saga with idempotency keys | 2PC, simple two-phase with client retries | Stripe can't 2PC. Client retries without idempotency = double-charge. Saga + idempotency key = exactly-once charging with automatic compensation |
-| Admission control | Priority queue (Verified Fan scoring) at edge (Lambda@Edge) | Pure FIFO queue | FIFO rewards bots optimizing arrival time. Priority queue shifts competition to a 1-2 week registration window where bots are detected via ML scoring |
-| Seat map delivery | SSE from Redis via Kafka consumer | WebSocket, polling | SSE is unidirectional (server→client), cheaper per connection than WebSocket for seat status updates. Polling burns resources on 90% no-change responses |
-| Cache policy for seat availability | Never cache to CDN; Redis with 1-2s staleness for seat-map tiles | Cache seat availability to CDN | Stale CDN-cached availability = overselling. Seat status is the one data that must always come from the service layer |
+**Problem.** Users search for events by artist name, venue, city, date range, genre, and price tier. Queries can be partial ("tayl"), geo-scoped ("near me"), or faceted ("rock under $100 this weekend"). A naive SQL `WHERE name ILIKE '%tayl%'` on a table with millions of events is slow, blocks on table scans, and cannot support relevance ranking or geo-distance sorting. The search index must stay in sync with the primary event database without adding write latency to event creation or seat-status updates.
 
-## 8. References
+**Approach 1: Database full-text search**
 
-**Primary sources**
+Use PostgreSQL's built-in `tsvector` and GIN indexes. Event names and descriptions are tokenized into a `tsvector` column, searched with `@@ to_tsquery`.
+
+```sql
+SELECT * FROM events
+WHERE tsv @@ to_tsquery('tayl:*')
+  AND city = 'Los Angeles'
+ORDER BY event_date;
+```
+
+**Challenges:** PostgreSQL full-text search lacks relevance scoring tuned for ticket search (artist-name match should outrank venue-description match). Geo-distance sorting requires a separate PostGIS extension and index. Faceted filtering (genre, price range, date buckets) forces the query planner to combine multiple indexes. Under 280K origin req/s, the database becomes the read bottleneck.
+
+**Approach 2: Elasticsearch with CDC indexing**
+
+Use Elasticsearch as the search engine, populated via change-data-capture from the primary PostgreSQL database. The search service queries Elasticsearch directly; the primary database is never touched for search reads.
+
+```javascript
+CDC pipeline:
+  PostgreSQL WAL → Debezium connector → Kafka topic → Elasticsearch sink
+  (events, venues, seat availability)
+```
+
+```json
+// Elasticsearch query: faceted search with geo + relevance
+{
+  "query": {
+    "bool": {
+      "must":   { "multi_match": { "query": "taylor swift", "fields": ["artist^3", "event_name^2", "venue"] } },
+      "filter": [
+        { "term": { "city": "Los Angeles" } },
+        { "range": { "date": { "gte": "2026-07-01", "lte": "2026-07-31" } } },
+        { "range": { "min_price": { "lte": 100 } } }
+      ]
+    }
+  },
+  "aggs": {
+    "by_genre":  { "terms": { "field": "genre" } },
+    "by_date":   { "date_histogram": { "field": "date", "interval": "week" } },
+    "by_price":  { "histogram": { "field": "min_price", "interval": 25 } }
+  }
+}
+```
+
+**Challenges:** Elasticsearch adds operational complexity — a separate cluster to manage, monitor, and scale. The CDC pipeline introduces eventual consistency: a newly created event is visible in search only after the WAL → Kafka → Elasticsearch pipeline completes (typically under 1 second). Seat-availability changes (held/sold) are high-frequency updates that can overwhelm the Elasticsearch indexing rate.
+
+**Approach 3: Elasticsearch for event metadata + Redis bitmap for availability**
+
+Split the search concern. Elasticsearch indexes event metadata (name, artist, venue, date, genre, price) — fields that change rarely. Seat availability is NOT indexed in Elasticsearch. Instead, search results include an `event_id`, and the client fetches the availability bitmap from the Availability Cache (Redis, as described in DD1) in a separate lightweight call. This keeps Elasticsearch write volume low (only event creation and metadata edits) and keeps availability reads fast (CDN-cached bitmaps).
+
+**Decision:** Approach 3 — split metadata search from availability.
+
+**Rationale:** Elasticsearch handles relevance-ranked full-text search, geo-distance queries, and faceted aggregations efficiently — these are the features that SQL full-text search lacks for a consumer-facing event discovery experience. But seat availability changes at up to 5K updates/sec during onsale, and pushing those through the CDC → Kafka → Elasticsearch pipeline would create indexing backpressure and stale search results. By keeping availability out of Elasticsearch and serving it from the CDN-cached bitmap, the search cluster stays small and stable regardless of onsale activity. The CDC pipeline only carries low-frequency event-metadata changes, keeping indexing lag under 1 second.
+
+**Edge cases:**
+
+- **New event indexing delay:** A newly created event is visible in search within 1 second (CDC pipeline latency). For the event-creation admin workflow, this is acceptable — the event is created days or weeks before onsale.
+- **Event cancellation:** When an event is cancelled, the CDC pipeline updates Elasticsearch. A separate cache-invalidation message is sent to CDN to purge cached event pages.
+- **Search during onsale:** The Elasticsearch cluster is sized for steady-state search load. During an onsale surge, search for *other* events is unaffected — the onsale event's page is served from CDN, and the availability bitmap is a separate Redis read. The search cluster does not see the onsale traffic spike.
+- **Geo-search precision:** Elasticsearch supports geo-distance queries natively. A "near me" search uses the user's lat/lon and a configurable radius (default 50 mi), sorted by distance.
+
+> **Key insight:** Availability data (which seats are held or sold) changes at 5,000 updates per second during onsale. Pumping that through the CDC → Kafka → Elasticsearch pipeline would create indexing backpressure that slows down all search queries — not just for the onsale event, but for every event on the platform. Splitting availability out to the Redis bitmap (served from CDN edges, not Elasticsearch) means the search cluster is sized for steady-state metadata queries and is completely unaffected by onsale activity.
+
+## 7. References
 
 1. [Ticketmaster — Taylor Swift Eras Tour Onsale Explained](https://business.ticketmaster.com/press-release/taylor-swift-the-eras-tour-onsale-explained/)
-2. [Live Nation — Bot Arms Race & TICKET Act](https://newsroom.livenation.com/news/live-nation-ticketmaster-stand-with-artists-calling-for-meaningful-ticketing-reform/)
-3. [Ticketmaster — SafeTix Security & $1B Anti-Bot Investment](https://newsroom.livenation.com/news/ticketmaster_advances_ticket_security_efforts_with_new_mobile_ticket_design_and_enhanced_protections/)
-4. [AWS Blog — Ticketmaster Serverless Data Stream (1M req/s)](https://aws.amazon.com/blogs/media/ticketmaster-optimizes-add-on-purchases-for-fans-with-a-unified-serverless-data-stream-powered-by-aws/)
-5. [AWS Executive Insights — Live Nation Cloud Migration (58% cost reduction)](https://aws.amazon.com/executive-insights/enterprise-strategists/jake-burns/)
-6. [Elastic{ON} 2017 — Revolutionizing Fan Experience with Search at Ticketmaster](https://speakerdeck.com/elastic/revolutionizing-the-fan-experience-with-search-at-ticketmaster)
-7. [ApacheCon NA 2010 — Implementing Solr at Ticketmaster](http://www.modperlcookbook.org/~geoff/slides/ApacheCon/2010/solr-at-ticketmaster-printable.pdf)
-8. [Queue-it — Virtual Waiting Room Architecture](https://queue-it.com/smooth-scaling-podcast/ep017-virtual-waiting-room-architecture/)
-9. [SE Radio 700 — Mojtaba Sarooghi on Waiting Rooms for High-Traffic Events](https://se-radio.net/2025/12/se-radio-700-mojtaba-sarooghi-on-waiting-rooms-for-high-traffic-events/)
-10. [Stripe — Idempotency Key Design](https://stripe.com/blog/idempotency)
-11. [Temporal — Saga Pattern Made Easy](https://temporal.io/blog/saga-pattern-made-easy)
-12. [Ticketmaster — 100M Transactions/Day Traced with Jaeger](https://medium.com/jaegertracing/ticketmaster-traces-100-million-transactions-per-day-with-jaeger-38ec6cf599f0)
-13. [TechTarget — Ticketmaster Unifies DevOps with Confluent Kafka](https://www.techtarget.com/searchitoperations/news/252472217/Ticketmaster-unifies-DevOps-monitoring-with-Confluent-Kafka)
-
+1. [How Ticketmaster Queue Works](https://blog.ticketmaster.com/how-ticketmaster-queue-works/)
+1. [Ticketmaster Smart Queue Technology](https://business.ticketmaster.com/smart-queue/)
+1. [SafeTix: Encrypted Digital Ticketing](https://business.ticketmaster.com/safetix-encrypted-digital-ticketing/)
+1. [Ticketmaster Optimizes Add-On Offers with AWS Serverless Data Streams](https://aws.amazon.com/blogs/media/ticketmaster-optimizes-add-on-offers-for-fans-with-a-unified-serverless-data-stream-powered-by-aws/)
+1. [Confluent — Ticketmaster Customer Case Study](https://www.confluent.io/customers/ticketmaster/)
+1. [Revolutionizing the Fan Experience with Search at Ticketmaster — Elastic{ON} 2017](https://speakerdeck.com/elastic/revolutionizing-the-fan-experience-with-search-at-ticketmaster)
+1. [Hybrid Cloud Patterns and Architectural Evolution at Ticketmaster — LISA '17](https://www.usenix.org/sites/default/files/conference/protected-files/lisa17_slides_osborn.pdf)
+1. [Leveraging Services in Stream Processor Apps at Ticketmaster — Kafka Summit SF 2019](https://www.slideshare.net/slideshow/leveraging-services-in-stream-processor-apps-at-ticketmaster-derek-cline-ticketmaster-kafka-summit-sf-2019/179741428)
+1. [Ticketmaster — Enhancing Live Event Experiences with AWS — re:Invent 2025](https://www.antstack.com/talks/reinvent25/aws-reinvent-2025---ticketmaster-enhancing-live-event-experiences-for-fans-with-aws-spf206/)
+1. [Ticketmaster Performance Tests: ScyllaDB vs Cassandra — Scylla Summit 2021](https://www.scylladb.com/2022/05/18/benchmarking-apache-cassandra-40-nodes-vs-scylladb-4-nodes/)
+1. [Live Nation Entertainment — FY2024 Earnings Release (SEC Filing)](https://www.sec.gov/Archives/edgar/data/1335258/000133525819000022/lyv-2018q4xex991.htm)
