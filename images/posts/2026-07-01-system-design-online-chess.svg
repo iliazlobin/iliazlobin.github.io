@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#16213e;stop-opacity:1"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)" rx="0"/>
+  <text x="80" y="280" font-family="system-ui,-apple-system,sans-serif" font-size="48" font-weight="700" fill="#e0e0e0">System Design: Online Chess</text>
+  <text x="80" y="380" font-family="system-ui,-apple-system,sans-serif" font-size="24" fill="#888888">System Design • iliazlobin.com</text>
+  <line x1="80" y1="420" x2="400" y2="420" stroke="#4a90d9" stroke-width="4" stroke-linecap="round"/>
+</svg>
