@@ -3,15 +3,15 @@ layout: post
 title: "System Design: Post Search"
 date: 2026-07-02
 tags: [System Design, Search]
-description: "Post Search powers real-time full-text retrieval across billions of posts for a large social network, handling 50K queries per second with sub-50ms latency and supporting complex filtering across time, relevance, and multi-dimensional ranking."
+description: "Post Search powers real-time full-text retrieval across billions of posts for a large social network, handling 50K queries per second with sub-200ms latency and supporting complex filtering across time, relevance, and multi-dimensional ranking."
 thumbnail: /images/posts/2026-07-02-system-design-post-search.svg
 ---
-Post Search lets users find social media posts by keyword, phrase, or semantic meaning across billions of posts, returning ranked results in under 200ms. The system ingests millions of new posts per minute, indexes them in near real-time, and serves search traffic from a global user base.
+Post Search lets users find social media posts by keyword, phrase, or semantic meaning across billions of posts, returning ranked results in under 200ms. The system ingests 100M new posts per day, indexes them in near real-time, and serves search traffic from a global user base.
 
 <!--more-->
 
 ## 1. Problem
-Post Search lets users find social media posts by keyword, phrase, or semantic meaning across billions of posts, returning ranked results in under 200ms. The system ingests millions of new posts per minute, indexes them in near real-time, and serves search traffic from a global user base. Three tensions shape the architecture: (1) the inverted index must absorb writes at line rate without blocking reads — every millisecond of indexing lag is a post the user cannot find; (2) relevance ranking must fuse lexical match signals (BM25) with semantic similarity (embeddings) without blowing the latency budget; and (3) storage spans hot in-memory posting lists, warm SSD-resident segments, and cold archival shards — the index footprint grows ~3× the raw text size.
+Three tensions shape the architecture: (1) the inverted index must absorb writes at line rate without blocking reads — every millisecond of indexing lag is a post the user cannot find; (2) relevance ranking must fuse lexical match signals (BM25) with semantic similarity (embeddings) without blowing the latency budget; and (3) storage spans hot in-memory posting lists, warm SSD-resident segments, and cold archival shards — the index footprint grows ~3× the raw text size.
 
 ```mermaid
 graph LR
@@ -168,7 +168,7 @@ FR4: Real-time indexing
   1. The worker also calls the Embedding Service to generate the 256d vector and writes it to the Faiss shard.
   1. The indexer acknowledges the Kafka offset after both lexical and semantic writes succeed.
   1. A separate Segment Compactor periodically flushes Redis posting lists that are >30 days old into immutable SSD segments (SSTable-like format), freeing Redis memory.
-- **Design consideration:** Redis `ZADD` gives us O(log N) insert into time-sorted posting lists, which is fast enough at 12K peak writes/sec. The trade-off is Redis memory cost — keeping 30 days of the hot index in memory for 10B posts (~300M posts/day × 30 days = 9B post entries in posting lists) requires roughly 200GB of Redis cluster memory. Posts older than 30 days live in SSD segments where reads are slower (~5ms vs ~0.5ms) but acceptable for infrequently searched tail content.
+- **Design consideration:** Redis `ZADD` gives us O(log N) insert into time-sorted posting lists, which is fast enough at 12K peak writes/sec. The trade-off is Redis memory cost — keeping 30 days of the hot index in memory for 10B posts (~100M posts/day × 30 days = 3B post entries in posting lists) requires roughly 200GB of Redis cluster memory. Posts older than 30 days live in SSD segments where reads are slower (~5ms vs ~0.5ms) but acceptable for infrequently searched tail content.
 FR5: Pagination
 - **Components:** Aggregator uses cursor-based pagination tokens.
 - **Flow:**
