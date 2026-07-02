@@ -394,7 +394,7 @@ Use Valkey 7+ sharded Pub/Sub: `SPUBLISH` routes the message to the shard that o
 ```mermaid
 graph TD
     BP["Bid Processor<br/>(per partition)"] -->|publishes bids.accepted| FO["Fan-Out Service<br/>batch 100ms<br/>SPUBLISH"]
-    FO -->|auction:{id}:updates| VK(("Valkey Sharded<br/>Pub/Sub"))
+    FO -->|"auction:{id}:updates"| VK(("Valkey Sharded<br/>Pub/Sub"))
     VK --> WS_A["WS Gateway Pod A<br/>SSUBSCRIBE only<br/>watched auctions"]
     VK --> WS_B["WS Gateway Pod B<br/>SSUBSCRIBE only<br/>watched auctions"]
     VK --> WS_C["WS Gateway Pod C<br/>SSUBSCRIBE only<br/>watched auctions"]
