@@ -149,7 +149,7 @@ FR2: Semantic search
   1. Aggregator fans out the vector to all ANN shards (same shard key as lexical index; embedding and posting list co-located per shard).
   1. Each Faiss shard performs approximate nearest-neighbor search (IVF+PQ, nprobe=32) and returns the top 200 posts by cosine similarity.
   1. Aggregator merges shard results into a global top 200.
-  1. Ranker re-ranks using a lightweight cross-encoder for the final top 50, and returns snippets.
+  1. Ranker re-ranks using Reciprocal Rank Fusion (RRF) for the final top 50, and returns snippets.
 - **Design consideration:** Embedding generation is the write-path bottleneck — a 256d sentence transformer encodes ~500 posts/sec per GPU. At 1,200 writes/sec steady-state, 3 GPUs cover the load. Vectors are stored in Faiss with IVF+PQ compression (256d × 1KB raw → ~64 bytes compressed), keeping the full ANN index for 10B posts at ~640GB.
 FR3: Filter by author, date, language
 - **Components:** Aggregator applies filters during post-fetch from DocStore before ranking.
@@ -168,7 +168,7 @@ FR4: Real-time indexing
   1. The worker also calls the Embedding Service to generate the 256d vector and writes it to the Faiss shard.
   1. The indexer acknowledges the Kafka offset after both lexical and semantic writes succeed.
   1. A separate Segment Compactor periodically flushes Redis posting lists that are >30 days old into immutable SSD segments (SSTable-like format), freeing Redis memory.
-- **Design consideration:** Redis `ZADD` gives us O(log N) insert into time-sorted posting lists, which is fast enough at 12K peak writes/sec. The trade-off is Redis memory cost — keeping 30 days of the hot index in memory for 10B posts (~300M posts/day × 30 days = 9B post entries in posting lists) requires roughly 200GB of Redis cluster memory. Posts older than 30 days live in SSD segments where reads are slower (~5ms vs ~0.5ms) but acceptable for infrequently searched tail content.
+- **Design consideration:** Redis `ZADD` gives us O(log N) insert into time-sorted posting lists, which is fast enough at 12K peak writes/sec. The trade-off is Redis memory cost — keeping 30 days of the hot index in memory for 10B posts (~100M posts/day × 30 days = 3B post entries in posting lists) requires roughly 200GB of Redis cluster memory. Posts older than 30 days live in SSD segments where reads are slower (~5ms vs ~0.5ms) but acceptable for infrequently searched tail content.
 FR5: Pagination
 - **Components:** Aggregator uses cursor-based pagination tokens.
 - **Flow:**

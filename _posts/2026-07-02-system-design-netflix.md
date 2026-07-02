@@ -233,7 +233,7 @@ FR4: Resume playback
 **Components:** Playback Service, Cassandra (WatchHistory).
 **Flow:**
 1. During playback, the client sends `POST /playback/heartbeat` every 30 seconds with `session_id` and `last_position`.
-1. The Playback Service upserts `WatchHistory` in Cassandra: `UPDATE watch_history SET last_position = ?, updated_at = now() WHERE profile_id = ? AND video_id = ?`. The upsert is lightweight (one row, two columns changed) and runs at ~65M heartbeats per minute peak — Cassandra absorbs this with its append-only write path.
+1. The Playback Service upserts `WatchHistory` in Cassandra: `UPDATE watch_history SET last_position = ?, updated_at = now() WHERE profile_id = ? AND video_id = ?`. The upsert is lightweight (one row, two columns changed) and runs at ~130M heartbeats per minute peak — Cassandra absorbs this with its append-only write path.
 1. When the client loads `GET /profiles/{id}/continue-watching`, the Playback Service queries `SELECT * FROM watch_history WHERE profile_id = ? AND completed = false ORDER BY updated_at DESC LIMIT 20`. The partition key (`profile_id`) makes this a single-partition read.
 
 **Design consideration:** Heartbeats are fire-and-forget — the Playback Service does not acknowledge them. A lost heartbeat means the resume position drifts backward by at most 30 seconds on the next session, which is acceptable. The heartbeat interval trades positional accuracy for write volume: 30 seconds at 65M concurrent streams = ~2.2M writes/s, which is within Cassandra's comfortable range with appropriate partitioning.
