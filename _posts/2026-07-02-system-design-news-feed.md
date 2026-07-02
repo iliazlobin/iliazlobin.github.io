@@ -31,7 +31,6 @@ flowchart LR
     class Client,Core,Async svc
     class Edge edge
     class Storage store
-    class Redis store
 
 ```
 
@@ -276,7 +275,7 @@ FR6: Report, hide, and mute content
 **Approach 1: Pure fan-out-on-write (push).**
 When a post is created, the Fanout Worker writes the post ID and ML score to every follower's feed timeline.
 
-```javascript
+```python
 for follower_id in get_followers(author_id, active_only=False):
     redis.zadd(f"feed:{follower_id}", score, post_id)
     redis.zremrangebyrank(f"feed:{follower_id}", 0, -801)  // cap at 800
@@ -288,7 +287,7 @@ for follower_id in get_followers(author_id, active_only=False):
 **Approach 2: Pure fan-out-on-read (pull).**
 At feed load time, query every followed user's recent posts, merge-sort by ML score in the application layer.
 
-```javascript
+```sql
 SELECT p.* FROM posts p
 JOIN follows f ON p.user_id = f.followee_id
 WHERE f.follower_id = ?
@@ -394,7 +393,6 @@ flowchart TB
 
     classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
     class All,Filter,Fast,MTML,Rerank,Final svc
-    class P svc
 
 ```
 
@@ -417,6 +415,7 @@ engagement_score = w_like  × P(like) + w_comment × P(comment)
 Weights are personalized per user via an online Bayesian optimization loop informed by explicit surveys (Facebook's "value model") and implicit signals (time spent, return rate). The model uses ~100 features per post-user pair:
 
 | Category | Features |
+| --- | --- |
 | User-author relationship | Interaction frequency, recency of engagement, search history for that author |
 | Content signals | Post type (text/photo/video/link), media quality score, embedding similarity to user's liked content |
 | Behavioral signals | Viewing history, time-of-day patterns, scroll velocity, dwell time per content type |
