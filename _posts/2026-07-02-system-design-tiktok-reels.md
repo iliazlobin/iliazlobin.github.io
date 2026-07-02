@@ -373,7 +373,6 @@ The GPU worker pool is partitioned by creator engagement tier:
 ## 7. Trade-offs
 
 | Chosen | Rejected | Why |
-
 |---|---|---|
 | Two-tower ranking with online-trained collisionless embeddings | Batch-trained model with 6-hour redeployment | Batch training cannot incorporate same-session engagement. Online-trained embeddings with 60-second sync satisfy the 90-second adaptation target. Collisionless cuckoo hashing eliminates the 15% quality loss from hash collisions at 1.9B user scale. |
 | Two-stage retrieval-plus-ranking (recall then rank) | Single-stage model over full corpus | Scoring 1B candidates with a DNN is impossible at 150ms. Two-stage retrieval narrows candidates before the expensive model runs — the recall stage trades recall for speed, the ranking stage recovers precision. |
