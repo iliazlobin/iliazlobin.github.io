@@ -43,7 +43,7 @@ description: "System design write-ups by Ilia Zlobin — production-grade archit
       <h3><a href="{{ d.url | relative_url }}">{{ name | escape }}</a></h3>
       <p>{{ d.description | default: d.excerpt | strip_html | truncatewords: 46 }}</p>
       {%- if d.tags.size > 0 %}
-      <ul class="tags">{% for tag in d.tags %}<li>{{ tag }}</li>{% endfor %}</ul>
+      <ul class="tags">{% for tag in d.tags %}<li>{{ tag | escape }}</li>{% endfor %}</ul>
       {%- endif %}
       <div class="links"><a class="gh" href="{{ d.url | relative_url }}">Read the design →</a></div>
     </div>
