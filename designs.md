@@ -1,22 +1,25 @@
 ---
 layout: page
-title: Blog
-permalink: /blog/
-description: "Platform & AI engineering notes, build logs, and deep dives by Ilia Zlobin. System design write-ups live under Designs."
+title: Designs
+permalink: /designs/
+description: "System design write-ups by Ilia Zlobin — production-grade architectures with diagrams, data models, deep dives, and trade-offs."
 ---
 
 <link rel="stylesheet" href="{{ '/assets/css/blog.css' | relative_url }}?v={{ site.time | date: '%s' }}">
 
-<p class="blog-intro">Platform &amp; AI engineering notes, build logs, and deep dives. (System design write-ups live under <a href="{{ '/designs/' | relative_url }}">Designs</a>.)</p>
+<p class="blog-intro">System design write-ups — production-grade architectures, section for section: requirements, back-of-the-envelope, data model, high-level design, and the deep dives. Diagrams and code throughout.</p>
 
-{%- if site.posts.size > 0 %}
-{%- assign by_year = site.posts | group_by_exp: "p", "p.date | date: '%Y'" %}
+{%- if site.designs.size > 0 %}
+{%- assign sorted = site.designs | sort: "date" | reverse %}
+{%- assign by_year = sorted | group_by_exp: "p", "p.date | date: '%Y'" %}
+{%- assign flat_tags = site.designs | map: "tags" | join: "|" | split: "|" %}
+{%- assign grouped_tags = flat_tags | group_by_exp: "t", "t" %}
 
 <div class="blog-controls" data-blog-filter>
   <div class="tag-input" data-tag-input>
     <svg class="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path></svg>
     <span class="ti-tokens"></span>
-    <input type="text" class="ti-field" placeholder="Filter by topic…" aria-label="Filter posts by topic" autocomplete="off" spellcheck="false">
+    <input type="text" class="ti-field" placeholder="Filter by topic…" aria-label="Filter designs by topic" autocomplete="off" spellcheck="false">
     <div class="ti-suggest" hidden role="listbox" aria-label="Tag suggestions"></div>
   </div>
   <div class="bc-right">
@@ -24,7 +27,7 @@ description: "Platform & AI engineering notes, build logs, and deep dives by Ili
     <button class="ti-clear" data-tag-clear type="button" hidden>Clear all</button>
   </div>
 </div>
-<script type="application/json" data-blog-tags>[{% for t in site.tags %}{"name": {{ t[0] | jsonify | replace: '</', '<\/' }}, "count": {{ t[1].size }}}{% unless forloop.last %},{% endunless %}{% endfor %}]</script>
+<script type="application/json" data-blog-tags>[{% for t in grouped_tags %}{"name": {{ t.name | jsonify | replace: '</', '<\/' }}, "count": {{ t.items.size }}}{% unless forloop.last %},{% endunless %}{% endfor %}]</script>
 
 <div class="post-feed" data-blog-feed>
   {%- for yg in by_year %}
@@ -33,7 +36,7 @@ description: "Platform & AI engineering notes, build logs, and deep dives by Ili
   {%- assign words = post.content | number_of_words %}
   {%- assign minutes = words | divided_by: 200 | plus: 1 %}
   {%- assign seed = post.title | size | modulo: 6 %}
-  {%- assign primary = post.tags | first | default: "Post" %}
+  {%- assign primary = post.tags | first | default: "System Design" %}
   <div class="tl-item" data-tags="{{ post.tags | join: '|' | escape }}">
   <article class="post-card">
     <div class="pc-body">
@@ -45,18 +48,10 @@ description: "Platform & AI engineering notes, build logs, and deep dives by Ili
       <p>{{ post.excerpt | strip_html | truncatewords: 28 }}</p>
       {%- if post.tags.size > 0 %}
       <div class="pc-tags">
-        {%- for tag in post.tags %}<a class="tag" href="{{ '/blog/' | relative_url }}?tag={{ tag | url_encode }}" data-tag="{{ tag | escape }}">{{ tag }}</a>{% endfor %}
+        {%- for tag in post.tags %}<a class="tag" href="{{ '/designs/' | relative_url }}?tag={{ tag | url_encode }}" data-tag="{{ tag | escape }}">{{ tag }}</a>{% endfor %}
       </div>
       {%- endif %}
     </div>
-    {%- comment %} Card thumbnail = the post's own rendered diagram (post.thumbnail), set by
-        scripts/render-post-diagram.py. NEVER fall back to post.image — that is the site-wide
-        og-default.png social card (set via _config.yml defaults) and would show the same banner
-        on every post. No thumbnail → the gradient title-card below. {%- endcomment %}
-    {%- comment %} Cache-bust the thumbnail URL with the build timestamp (same ?v= scheme as CSS/JS
-        in the layouts). The pipeline OVERWRITES a post's thumbnail SVG in place when the diagram is
-        (re)rendered; without a versioned URL, browsers + Cloudflare keep serving the stale bytes
-        (max-age=14400) and the card shows an old placeholder even though the real diagram deployed. {%- endcomment %}
     {%- assign cover_img = post.thumbnail %}
     {%- if cover_img %}
     {%- assign cover_v = site.time | date: '%s' %}
@@ -73,7 +68,7 @@ description: "Platform & AI engineering notes, build logs, and deep dives by Ili
   {%- endfor %}
 </div>
 
-<p class="no-results" hidden>No posts match that filter. <button class="link-btn" data-filter-clear type="button">Clear filter</button></p>
+<p class="no-results" hidden>No designs match that filter. <button class="link-btn" data-filter-clear type="button">Clear filter</button></p>
 {%- else %}
-<p>No posts here yet — engineering notes and build logs landing soon. Meanwhile, the <a href="{{ '/designs/' | relative_url }}">Designs</a> section has the full system-design write-ups.</p>
+<p>No designs yet — first write-ups landing soon.</p>
 {%- endif %}

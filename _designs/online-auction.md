@@ -5,6 +5,8 @@ date: 2026-07-01
 tags: [System Design]
 description: "An online auction platform lets sellers list items with a starting price and end time, and buyers compete by placing ascending bids. The winner is the highest bidder at close."
 thumbnail: /images/posts/2026-07-01-online-auction.svg
+redirect_from:
+  - /2026/07/01/online-auction.html
 ---
 
 An online auction platform lets sellers list items with a starting price and end time, and buyers compete by placing ascending bids. The winner is the highest bidder at close.

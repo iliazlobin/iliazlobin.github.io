@@ -5,6 +5,8 @@ date: 2026-06-29
 tags: [System Design]
 description: "A job scheduler accepts one-shot and scheduled job submissions, executes them at the specified time, retries on failure, and surfaces execution history. Users submit, cancel, and monitor jobs through an API with no infrastructure management."
 thumbnail: /images/posts/2026-06-29-system-design-job-scheduler.svg
+redirect_from:
+  - /2026/06/29/system-design-job-scheduler.html
 ---
 
 A job scheduler accepts one-shot and scheduled job submissions, executes them at the specified time, retries on failure, and surfaces execution history. Users submit, cancel, and monitor jobs through an API with no infrastructure management.

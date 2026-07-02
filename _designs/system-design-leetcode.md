@@ -5,6 +5,8 @@ date: 2026-07-02
 tags: [System Design]
 description: "LeetCode serves ~300,000 registered users who practice coding on ~4,000 problems across 20+ languages. The platform also hosts weekly coding competitions drawing 100,000 concurrent contestants — a 30× traffic spike over baseline that lands in the first 60 seconds."
 thumbnail: /images/posts/2026-07-02-system-design-leetcode.svg
+redirect_from:
+  - /2026/07/02/system-design-leetcode.html
 ---
 
 LeetCode serves ~300,000 registered users who practice coding on ~4,000 problems across 20+ languages. The platform also hosts weekly coding competitions drawing 100,000 concurrent contestants — a 30× traffic spike over baseline that lands in the first 60 seconds.
