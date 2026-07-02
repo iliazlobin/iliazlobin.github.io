@@ -356,12 +356,12 @@ Sort all pending requests by rating. Walk the sorted list and pair players at po
 
 Store pending requests in a Redis sorted set keyed by `{variant}:{time_control}`, scored by rating. When a new request arrives, `ZREVRANGEBYSCORE` finds the nearest opponent within ±200 rating points. A Lua script atomically removes the matched pair from the set (compare-and-swap style). For the long-poll pattern, the request stays pending in the set.
 
-```python
-# Lua script: atomically claim a match or return nil
-# KEYS[1] = sorted set key
-# ARGV[1] = my_request_id
-# ARGV[2] = my_rating
-# ARGV[3] = range (e.g., 200)
+```lua
+-- Lua script: atomically claim a match or return nil
+-- KEYS[1] = sorted set key
+-- ARGV[1] = my_request_id
+-- ARGV[2] = my_rating
+-- ARGV[3] = range (e.g., 200)
 local opponents = redis.call('ZREVRANGEBYSCORE', KEYS[1],
     ARGV[2] + ARGV[3], ARGV[2] - ARGV[3], 'LIMIT', 0, 1)
 if #opponents > 0 then
