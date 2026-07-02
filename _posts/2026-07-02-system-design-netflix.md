@@ -65,7 +65,7 @@ graph LR
 ## 3. Back of the envelope
 - **CDN bandwidth:** 65M peak concurrent streams × 5 Mbps average bitrate = 325 Tbps egress → ~15% of global internet downstream traffic; third-party CDN egress fees alone exceed $1B/year at this volume.
 - **Encoding compute:** 500 hours/min ingested × 20 compute-hours per hour of content × 1,200 output files per title → ~12M compute-core-hours per day of encoding work; the single largest batch-compute workload in the system.
-- **Metadata read QPS:** 325M subscribers × 5 daily sessions × 50 API calls per session ÷ 86,400 seconds ≈ 940K read QPS at peak → the homepage-serving path handles 20× more reads than writes; read throughput is the binding constraint.
+- **Metadata read QPS:** 325M subscribers × 5 daily sessions × 50 API calls per session ÷ 86,400 seconds ≈ 940K average read QPS → the homepage-serving path handles 20× more reads than writes; read throughput is the binding constraint.
 
 ## 4. Entities
 
@@ -233,7 +233,7 @@ FR4: Resume playback
 **Components:** Playback Service, Cassandra (WatchHistory).
 **Flow:**
 1. During playback, the client sends `POST /playback/heartbeat` every 30 seconds with `session_id` and `last_position`.
-1. The Playback Service upserts `WatchHistory` in Cassandra: `UPDATE watch_history SET last_position = ?, updated_at = now() WHERE profile_id = ? AND video_id = ?`. The upsert is lightweight (one row, two columns changed) and runs at ~65M heartbeats per minute peak — Cassandra absorbs this with its append-only write path.
+1. The Playback Service upserts `WatchHistory` in Cassandra: `UPDATE watch_history SET last_position = ?, updated_at = now() WHERE profile_id = ? AND video_id = ?`. The upsert is lightweight (one row, two columns changed) and runs at ~130M heartbeats per minute peak — Cassandra absorbs this with its append-only write path.
 1. When the client loads `GET /profiles/{id}/continue-watching`, the Playback Service queries `SELECT * FROM watch_history WHERE profile_id = ? AND completed = false ORDER BY updated_at DESC LIMIT 20`. The partition key (`profile_id`) makes this a single-partition read.
 
 **Design consideration:** Heartbeats are fire-and-forget — the Playback Service does not acknowledge them. A lost heartbeat means the resume position drifts backward by at most 30 seconds on the next session, which is acceptable. The heartbeat interval trades positional accuracy for write volume: 30 seconds at 65M concurrent streams = ~2.2M writes/s, which is within Cassandra's comfortable range with appropriate partitioning.
