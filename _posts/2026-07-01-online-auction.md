@@ -70,6 +70,8 @@ auction {
   category:       string
   starting_price: decimal(12,2)
   reserve_price:  decimal(12,2)
+  min_increment:  decimal(12,2)
+  start_ts:       timestamp
   end_ts:         timestamp
   state:          enum             ← UPCOMING / ACTIVE / CLOSING / CLOSED / SOLD / UNSOLD
   highest_bid:    decimal(12,2)
@@ -151,8 +153,7 @@ graph TB
     BP -->|accepted bid| PG
     BP -->|bids.accepted| FO
     FO -->|SPUBLISH| VK
-    VK -.->|SSUBSCRIBE| WS
-    WS -->|push frame| LB
+    WS -.->|SSUBSCRIBE| VK
     API --> PG
     API --> IX
     SCW --> SCH
@@ -190,7 +191,7 @@ graph TB
 1. The **Bid Processor** consumer (one per partition) receives the bid in FIFO order. It runs the Valkey Lua CAS script (see DD1) which atomically: checks `state == ACTIVE`, checks `now < end_ts`, checks `amount >= current_price + min_increment`, updates `highest_bid` and `highest_bidder`, extends `end_ts` if within the anti-snipe window.
 1. On ACCEPTED: inserts bid row into PostgreSQL with `sequence_num` (from Valkey `HINCRBY`), publishes to `bids.accepted` Kafka topic for fan-out.
 1. On REJECTED: inserts bid row with `status = REJECTED` and `rejection_reason`, pushes rejection to the bidder's WebSocket.
-1. Deduplication: before the CAS, the processor runs `SET bid_result:{bid_id} NX EX {ttl_until_end+48h}`. If the key already exists, the bid was already processed — return cached result without re-executing the CAS.
+1. Deduplication: the CAS script atomically sets `SET bid_result:{bid_id} NX EX {ttl_until_end+48h}` inside the Lua script. On the first pass, no dedup key exists yet, so the CAS executes normally. On retry (processor crash after CAS but before Kafka offset commit), the dedup key already exists, so the processor returns the cached result without re-executing the CAS.
 **Design consideration:** The API-to-Kafka publish adds ~5-10ms latency but guarantees bid ordering per auction without a lock manager. The Kafka partition-by-auction-id pattern serializes all bids for one auction through a single consumer thread — the CAS is still necessary (the consumer could restart mid-processing), but the hot-path contention is reduced to the Valkey key, not a database row lock.
 ---
 #### FR3: View auction
@@ -276,7 +277,7 @@ A Lua script executed atomically on Valkey's single-threaded event loop checks p
 
 local h = redis.call
 local state = h('HGET', KEYS[1], 'state')
-if state ~= 'active' then return {err='AUCTION_NOT_ACTIVE'} end
+if state ~= 'ACTIVE' then return {err='AUCTION_NOT_ACTIVE'} end
 
 local end_ts = tonumber(h('HGET', KEYS[1], 'end_ts'))
 local now = tonumber(ARGV[3])
@@ -356,17 +357,17 @@ Use Valkey 7+ sharded Pub/Sub: `SPUBLISH` routes the message to the shard that o
 ```
 ```python
 # Per gateway pod, every 30s:
-for channel in active_subscriptions:
-    if local_connection_count[channel] == 0:
-        SUNSUBSCRIBE(channel)
-        DEL ws:{pod_id}:sub:{channel}
+for auction_id in active_subscriptions:
+    if local_connection_count[auction_id] == 0:
+        SUNSUBSCRIBE(auction_id)
+        DEL ws:{pod_id}:sub:{auction_id}
 
 # On connection close:
 decrement(local_connection_count[auction_id])
 # TTL on ws:{pod_id}:sub:{auction_id} = 60s handles pod crash
 ```
 - **Pro:** Work is O(N_gateways) per bid where N_gateways is bounded (tens to hundreds), not O(W) where W = millions. Sharded Pub/Sub eliminates cluster-wide cross-talk — a message for auction X only hits the shard that owns hash(X). Delta batching (one message per 100ms per auction) caps the message rate at 10 msg/sec per auction regardless of bid velocity.
-- **Con:** 100ms batching introduces a 100ms worst-case staleness ceiling — still within the 200ms p99 target. Requires Valkey 7+ (production-stable since 2023). Gateway pods must track subscriptions and clean up stale ones on disconnects.
+- **Con:** 100ms batching introduces a 100ms worst-case staleness ceiling — still within the 200ms p99 target. Requires Valkey 7+ (production-stable since 2024). Gateway pods must track subscriptions and clean up stale ones on disconnects.
 **Decision:** Approach 3 — sharded Valkey Pub/Sub with delta batching.
 **Rationale:** Sharded Pub/Sub maps the one-to-many relationship (one bid -> many watchers) onto the infrastructure efficiently. The 100ms batch window is the sweet spot: shorter loses batching benefits, longer crosses 200ms. Gateway pods need only in-memory tracking of active subscriptions — a Redis hash `ws:{pod_id}:sub:{channel}` with 60s TTL, refreshed per client heartbeat. Stale subscription cleanup is a 30s reaper loop, not a critical-path operation.
 **Edge cases:**
@@ -396,7 +397,7 @@ Each of N workers polls its shard every second: `ZRANGEBYSCORE scheduler:shard:{
 **Rationale:** The problem reduces to a sorted insert + range query by timestamp — Redis sorted sets are the canonical data structure for this. The shard count N = 64 gives ~156K auctions per shard at 10M total; a `ZRANGEBYSCORE` with LIMIT 1000 takes <1ms. The +/-15s jitter applied at auction creation is invisible to users (they choose a time, the system adds a random offset within a 30s window) and spreads the scheduler load across 30 seconds instead of one. The 5s lease gap on worker crash is acceptable: auctions whose close fires 5s late are within the soft-close extension window anyway.
 **Edge cases:**
 - **Scheduler worker crash:** Lease expires after 5s. Another worker takes over. Auctions due during the gap fire late. The `CLOSING` state (drain window) absorbs this: if a bid arrived during the gap, the CAS script would have accepted it (since `state == ACTIVE` until the close actually fires), and the close now processes it correctly.
-- **Soft-close extension moves end_ts beyond current poll:** The CAS script atomically updates the Redis hash's `end_ts`. The scheduler worker, on picking the auction, re-reads `end_ts` from Valkey before firing close. If `end_ts > now`, the close is skipped — the new `end_ts` was already `ZADD`'d by the bid processor, so the scheduler will pick it up on a future poll.
+- **Soft-close extension moves end_ts beyond current poll (no separate scheduling call — consistent with FR5):** The CAS script atomically updates the Redis hash's `end_ts`. The scheduler worker re-reads `end_ts` from the hash before firing close. If `end_ts > now`, the close is skipped — the ZSET score may lag the hash state, but the next scheduler poll picks it up correctly.
 - **Multiple workers racing on close:** The lease (`SET NX PX 5000`) ensures only one worker processes a given shard. If a worker's lease expires mid-close, the replacement worker picks up the same auction again. The `CLOSING -> CLOSED` transition is idempotent (the close RPC checks current state and skips if already CLOSED).
 **Settlement — effectively-once guarantee:**
 ```sql
