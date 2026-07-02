@@ -32,11 +32,20 @@ linkedin_username: iliazlobin
 theme: minima
 plugins:
   - jekyll-feed
+  - jekyll-redirect-from
 header_pages:
   - resume.md
   - portfolio.md
+  - designs.md
   - blog.md
   - index.md
+
+# System-design write-ups live in their own /designs section (separate from the Blog, which is
+# for platform/AI engineering notes and deep dives). Each design is a page at /designs/<slug>/.
+collections:
+  designs:
+    output: true
+    permalink: /designs/:name/
 
 # --- Author & social (used by jekyll-seo-tag for meta + JSON-LD) ---
 author: Ilia Zlobin

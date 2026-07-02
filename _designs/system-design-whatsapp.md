@@ -5,6 +5,8 @@ date: 2026-06-30
 tags: [System Design]
 description: "A global messaging platform serving 3B+ users who exchange over 100B messages and 10 PB of media daily."
 thumbnail: /images/posts/2026-06-30-system-design-whatsapp.svg
+redirect_from:
+  - /2026/06/30/system-design-whatsapp.html
 ---
 
 A global messaging platform serving 3B+ users who exchange over 100B messages and 10 PB of media daily.

@@ -5,6 +5,8 @@ date: 2026-07-01
 tags: [System Design]
 description: "Online chess is a real-time two-player game where every half-second of latency feels like an eternity."
 thumbnail: /images/posts/2026-07-01-system-design-online-chess.svg
+redirect_from:
+  - /2026/07/01/system-design-online-chess.html
 ---
 
 Online chess is a real-time two-player game where every half-second of latency feels like an eternity.
