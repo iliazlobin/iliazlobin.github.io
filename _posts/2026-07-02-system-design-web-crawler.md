@@ -491,13 +491,12 @@ def adjust_rate(host, response):
 **Rationale:** the k× multiplier is simple, stateless beyond `last_fetch_duration`, and provides the strong politeness guarantee: the crawler never consumes more than a fixed fraction of any server's resources. It has been the baseline of production crawlers since the 1999 Mercator paper. The error-signal overrides add ~3 fields of per-host state but close the gap where a fast-failing server would otherwise get fast retries. The combined approach requires no manual tuning per host and adapts automatically as server capacity changes.
 **Edge cases:**
 - **Redirects (301/302):** the fetch duration for a redirect is short (the server responds quickly with the redirect). The k× multiplier would assign a short delay, but the redirect target is a different host. The politeness clock applies to the original host, not the target — redirects don't consume the target server's capacity until the redirect is followed.
-- **Robots.txt ****`Crawl-delay`**** directive:** when a host's robots.txt specifies an explicit `Crawl-delay: N`, that value overrides the k× multiplier. N is the minimum delay; the k× multiplier only applies if it would produce a longer delay. This preserves compliance with explicit site-owner preferences.
+- **Robots.txt **`Crawl-delay`** directive:** when a host's robots.txt specifies an explicit `Crawl-delay: N`, that value overrides the k× multiplier. N is the minimum delay; the k× multiplier only applies if it would produce a longer delay. This preserves compliance with explicit site-owner preferences.
 - **DNS failures:** a DNS resolution failure is not a server error — the host isn't being overloaded, it's unreachable. The URL is re-enqueued with a fixed 60 s backoff. The politeness clock for the host is not updated (no fetch occurred), so other URLs from the same host can proceed when DNS recovers.
 
 ## 7. Trade-offs
 
 | Decision | Rejected alternative | Why |
-
 |---|---|---|
 | Dual-queue frontier (front for priority, back for politeness) | Single Kafka topic with per-host consumer-group assignment | Kafka's consumer-group rebalancing does not respect priority — all partitions are equal. The dual-queue front layer provides biased priority selection that Kafka alone cannot express. |
 | Bloom filter + exact DB for URL dedup | In-memory hash set | 600 GB vs 12.5 GB. The 0.8% false-positive rate is acceptable because skipped URLs are rediscovered through alternate link paths. |
