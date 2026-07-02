@@ -38,30 +38,36 @@ The gateway routes user-facing requests (watchlist management, charts, search) t
 ## 2. Requirements
 
 **Functional**
+
 - **FR1: Watchlist management** — Users add and remove products from a personal watchlist.
 - **FR2: Scheduled price monitoring** — System periodically checks product prices on a configurable schedule.
 - **FR3: Price history charts** — Users view price charts with configurable time ranges (1m, 3m, 1y, 2y).
 - **FR4: Price-drop alerts** — Users create threshold alerts and receive notifications when triggered.
 - **FR5: Product search and discovery** — Users search products or discover them via URL pasting from a retailer site.
+
 **Non-functional**
+
 - **NFR1: Scale to 100M products** — 100M tracked products across 10 retailers of 10M each; availability over consistency.
 - **NFR2: Chart <500 ms p95** — Chart queries return in under 500 ms p95 for any time range.
 - **NFR3: Alert delivery latency** — Within 1 hour for free-tier, under 5 minutes for paid subscribers.
 - **NFR4: Crawl politeness** — Never exceed 1 request per second per (domain, source IP).
-**Out of scope:** User authentication (delegated to identity provider), retailer API integration contracts, mobile app.
+
+*Out of scope: User authentication (delegated to identity provider), retailer API integration contracts, mobile app.*
 
 ---
 
 ## 3. Back of the envelope
+
 - **Daily crawl volume:** 1M hot x24 + 80M warm x1 + 19M cold x1/7 ≈ 107M checks/day → 1,240 req/s average; the crawl pipeline, not the write path, is the bottleneck.
 - **Price-change writes:** 13% change rate → ~14M writes/day → 165 writes/s sustained → trivial for a single TimescaleDB node.
 - **Storage for 2 years:** 50 bytes/row x 107M checks/day x 730 days ≈ 3.6 TB raw → TimescaleDB compression at 90-95% brings this to ~180 GB; fits on a single SSD volume.
 - **Proxy costs:** 107M req/day at 1 req/s per (domain, IP) requires ~1,240 IPs → ~$5,000/month in datacenter proxy bandwidth; the dominant operational cost.
+
 ---
 
 ## 4. Entities
 
-```sql
+```
 products {
     id:            bigint  PK
     asin:          string  ← not globally unique — composite with marketplace
@@ -96,6 +102,7 @@ price_history {
 ```
 
 ### API
+
 - `POST /v1/watches` — Add product to watchlist
 - `DELETE /v1/watches/:id` — Remove watch
 - `GET /v1/watches` — List user's watches with current prices
@@ -104,6 +111,7 @@ price_history {
 - `DELETE /v1/alerts/:id` — Delete alert
 - `PATCH /v1/alerts/:id` — Update alert threshold
 - `GET /v1/products/search?q=term` — Search products by name, brand, category
+
 ---
 
 ## 5. High-Level Design
@@ -146,11 +154,13 @@ flowchart TD
 **Components:** App server, PostgreSQL, URL normalization module, Redis dedup cache.
 
 **Flow:**
+
 1. User submits an Amazon URL via the web app or browser extension.
 1. URL normalizer extracts ASIN using regex `(?:/dp/|/gp/product/|/ASIN/)([A-Z0-9]{10})`; marketplace is inferred from the URL's TLD.
 1. App server upserts into products: `INSERT INTO products (asin, marketplace, title) VALUES ($1, $2, $3) ON CONFLICT (asin, marketplace) DO UPDATE SET title = COALESCE(products.title, EXCLUDED.title)`.
 1. Watch record is inserted: `INSERT INTO watches (user_id, product_id, target_price) VALUES ($1, $2, $3)`.
 1. Product's `subscriber_count` is incremented and crawl_tier promoted to 1 (hot).
+
 **Design consideration:** ASIN alone is not globally unique — `amazon.com/dp/B08N5WRWNW` and `amazon.co.uk/dp/B08N5WRWNW` are different products with different prices. The composite key `(asin, marketplace)` prevents collision. URL normalization handles six distinct Amazon URL formats: `/dp/`, `/gp/product/`, `/ASIN/`, short links, affiliate-wrapped URLs, and mobile product-page variants.
 
 **Edge cases:** Duplicate watch submission for the same (user, product) returns the existing watch id. Removing the last watch demotes crawl priority but does not delete the product or its price history.
@@ -160,11 +170,13 @@ flowchart TD
 **Components:** Scheduler (single instance with leader election via PostgreSQL advisory lock), Kafka crawl queues (256 partitions keyed by `hash(hostname)`), Kafka consumer group (worker pool), rotating proxy layer, dual-extractor parser ([Schema.org](http://schema.org/) JSON-LD + CSS fallback), change detector.
 
 **Flow:**
+
 1. Scheduler ticks every 60 seconds and queries products due for re-check:
 1. Products are grouped by retailer hostname and enqueued to Kafka partitions keyed by `hash(hostname)`.
 1. Workers fetch jobs, route through the proxy layer, extract price via [Schema.org](http://schema.org/) JSON-LD (falling back to CSS selectors).
 1. Change detector computes `MD5(price || availability || hash(metadata))` and compares to stored hash. If unchanged, only `last_checked_at` is batched-updated:
 1. If changed, a new row is written to price_history and the alert evaluator is invoked.
+
 **Design consideration:** Store-only-changes reduces TimescaleDB write volume from 107M to ~14M rows per day (87% reduction). The three-tier schedule (hot 1h, warm 24h, cold 7d) reduces total checks 16x versus uniform hourly polling.
 
 **Edge cases:** Fetch failure uses exponential backoff: 5s to 30s to 5m to 1h, max 4 retries, then quarantine. A 404/410 immediately dead-letters the product. Sustained retailer outages suspend crawl jobs for that host to preserve proxy budget.
@@ -174,10 +186,12 @@ flowchart TD
 **Components:** TimescaleDB hypertable with continuous aggregates, Redis cache layer, server-side downsampling.
 
 **Flow:**
+
 1. Frontend requests `GET /v1/products/:asin/history?range=1y`.
 1. API checks Redis key `chart:{asin}:{marketplace}:1y` (TTL 1 hour). On cache miss:
 1. Server downsamples to at most the viewport pixel width (800 points per range).
 1. Response cached in Redis and returned as JSON array of `{timestamp, price}` objects.
+
 **Design consideration:** Continuous aggregates are materialized views, not logical views — reads are <5 ms per query. Columnar compression in TimescaleDB achieves 90-95% on numerical price data. Layered downsampling across the three tiers requires at most ~9,500 data points for a full 2-year chart.
 
 **Edge cases:** Data gaps beyond 7 days are rendered as break lines; gaps under 7 days are linearly interpolated. A product with no price history returns an empty array with 200 status. Querying beyond available data returns everything without error.
@@ -187,11 +201,13 @@ flowchart TD
 **Components:** Change event emitter, alert evaluator (inverted index scan on watches), Kafka alert topic (64 partitions keyed by `user_id`), notification dispatcher (SES for email, FCM for push), Redis rate-limiter.
 
 **Flow:**
+
 1. Price change event `{product_id, new_price, old_price, fetched_at}` emitted after price_history write.
 1. Alert evaluator queries the covering index:
 1. For each matching watch, `should_notify()` is evaluated — true only when `new_price < target_price AND (last_notified_price IS NULL OR new_price < last_notified_price)`.
 1. Triggered alert published to Kafka with idempotency key `(watch_id, crossing_ts)` at second-bucket resolution.
 1. Notification dispatcher reads alerts per partition, sends via the user's preferred channel, updates `last_notified_price`.
+
 **Design consideration:** A five-layer dedup cascade eliminates notification spam at every stage: (1) content hash eliminates 87% of evaluations before they start, (2) `last_notified_price` stops oscillation re-triggers, (3) Kafka idempotency key with 60s LRU dedup window handles producer/consumer retries, (4) Redis rate-limit caps at 24 notifications per watch per day, (5) digest mode merges bursts into summary notifications when alert rate exceeds 10x the rolling average.
 
 **Edge cases:** Flash sales produce 50M events in 5 minutes — free-tier alerts are shed when consumer lag exceeds 5 minutes. A price oscillation $49 to $51 to $49 triggers only one notification. Failed deliveries retry 3x over 24 hours, then flag for manual review.
@@ -201,10 +217,12 @@ flowchart TD
 **Components:** Elasticsearch cluster, URL lookup endpoint, browser extension content script.
 
 **Flow:**
+
 1. User types a search query on the web app; API proxies to Elasticsearch:
 1. Results returned sorted by subscriber count and recent price drop magnitude.
 1. Alternatively, user pastes a retailer URL — ASIN is extracted and the product page with chart and alert UI is returned.
 1. Browser extension content script injects on retailer product pages, queries the backend, and overlays the price chart.
+
 **Design consideration:** For single-retailer tracking, product search can proxy directly to the retailer's own search API — authoritative results with zero indexing cost, and this is the real CamelCamelCamel approach. For multi-retailer systems, Elasticsearch populated from scrape data is necessary with cross-retailer product matching via GTIN/EAN/UPC.
 
 **Edge cases:** Empty results include spelling suggestions from Elasticsearch suggest API. The browser extension degrades gracefully when the backend is unreachable. Malicious ASIN submissions are rate-limited by source IP and quarantined if unverifiable within 24 hours.
@@ -248,7 +266,6 @@ LIMIT 100000;
 | Warm | 1-100 subscribers or changes >1x/week | 80M (80%) | 24 hours | 80M |
 | Cold | 0 subscribers, stable price | 19M (19%) | 7 days | 2.7M |
 
-
 Promotion is immediate: watch creation fires a `crawl_tier = 1` update on the product row. Demotion runs offline every 6 hours: zero watches + zero price changes for 7 consecutive days triggers one-tier demotion.
 
 **Challenges:** Queue management across tiers — products promoted to hot need immediate scheduling, not waiting for the next tick. Products demoted from hot to warm whose price changes during the demotion window are stale for up to 24 hours.
@@ -288,7 +305,6 @@ Continuous aggregate materialized views auto-refresh — hourly view refreshes e
 | Warm | 90-365d (hourly) | HDD | ~$10/TB/mo |
 | Cold | 1-2y (daily) | S3 Parquet | ~$2/TB/mo |
 | Archive | 2y+ (weekly) | Glacier Deep | ~$1/TB/mo |
-
 
 **Decision:** TimescaleDB.
 
@@ -391,7 +407,6 @@ If all entries have `next_allowed_at > now()`, the worker calls `heap[0][0] - no
 | 403 blocked | Rotate to new proxy, never retry same proxy for this host |
 | 404/410 | Dead letter queue, mark product for manual review |
 
-
 **Dual-extractor confirmation:** Every fetch runs [Schema.org](http://schema.org/) JSON-LD and per-retailer CSS parsers in parallel. A price change is recorded only if both parsers agree, or if one is null and the other is within 50-200% of the last known price — prevents "$0" price disasters from parser errors.
 
 ---
@@ -411,10 +426,10 @@ If all entries have `next_allowed_at > now()`, the worker calls `heap[0][0] - no
 | Email + FCM push | Email only | Free tier is email-only to control cost. Push via Firebase Cloud Messaging provides sub-minute delivery for paid subscribers and re-engages users via browser notifications. |
 | S3 cold storage for 1yr+ data | Keep all in TimescaleDB | S3 Glacier Deep Archive at ~$1/TB/month vs TimescaleDB at ~$50/TB/month. Restore latency of 1-12 hours is acceptable for rare view-all-time-history queries. |
 
-
 ---
 
 ## 8. References
+
 1. Software Engineering Daily #837 — [CamelCamelCamel (Daniel Green, 2019)](https://softwareengineeringdaily.com/wp-content/uploads/2019/05/SED837-CamelCamelCamel.pdf). Full transcript: Ruby on Rails + PHP + MySQL/Percona stack, SQS queues per country, PA-API, priority system, affiliate business model.
 1. [Mercator: A Scalable, Extensible Web Crawler (Heydon & Najork, 1999)](https://dl.acm.org/doi/10.1023/A%3A1019213109274). ACM paper defining the two-tier URL frontier design (front priority queues + back politeness queues) used as the foundation for distributed crawl systems.
 1. [TimescaleDB whitepaper — Benchmarking InfluxDB vs TimescaleDB](https://assets.timescale.com/whitepapers/Timescale_WhitePaper_Benchmarking_Influx.pdf). Official benchmark data on compression ratios (90-95%), memory usage, insert performance at varying cardinality levels.
