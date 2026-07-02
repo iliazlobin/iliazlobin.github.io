@@ -4,7 +4,6 @@ title: "System Design: Payment System"
 date: 2026-07-02
 tags: [System Design, Payments, Fintech]
 description: "A payment system processes millions of transactions per day with strict exactly-once semantics, handling $1B+ in daily volume across multiple payment methods while maintaining 99.99% availability."
-thumbnail: /images/posts/2026-07-02-system-design-payment-system.svg
 ---
 A payment system moves money from a customer's funding source to a merchant's account through payment service providers (PSPs) like Stripe and Adyen. The system authorizes funds, captures them, and records every movement in a double-entry ledger so the books balance to the cent.
 
@@ -55,12 +54,12 @@ graph LR
 
 - NFR4: No payment lost or stuck during provider outages
 
-*Out of scope: *subscription billing with proration, multi-currency conversion, dispute/chargeback handling, PCI-DSS compliance at the card-number storage level (card data is tokenized at the client and only PSP tokens touch our servers).*
+**Out of scope:** subscription billing with proration, multi-currency conversion, dispute/chargeback handling, PCI-DSS compliance at the card-number storage level (card data is tokenized at the client and only PSP tokens touch our servers).
 
 ## 3. Back of the envelope
 - **Payment write rate:** 1M payments/day ÷ 86,400 seconds → ~12 payments/sec average; 10× peak → ~120 writes/sec peak load.
 - **Idempotency storage:** 1M idempotency keys/day × 320 bytes/key × 30-day TTL → ~9.6 GB of Redis storage.
-- **Ledger storage:** 2 ledger entries/payment × 1M/day × 365 days × 200 bytes → ~146 MB/year of ledger storage.
+- **Ledger storage:** 2 ledger entries/payment × 1M/day × 365 days × 200 bytes → ~146 GB/year of ledger storage.
 
 ## 4. Entities
 
@@ -83,8 +82,7 @@ LedgerEntry {
   side:           enum           -- debit, credit
   amount:         integer        -- always positive; side determines sign
   balance_after:  integer        -- running balance post-entry; enables point-in-time audit
-  description:
-thumbnail: /images/posts/2026-07-02-system-design-payment-system.svg    string         -- "authorization hold", "capture settlement", "refund"
+  description:   string         -- "authorization hold", "capture settlement", "refund"
   created_at:     timestamp
 }
 
