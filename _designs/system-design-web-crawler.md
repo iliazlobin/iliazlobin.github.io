@@ -7,7 +7,6 @@ description: "A web crawler that ingests ~10 billion web pages and extracts thei
 thumbnail: /images/posts/2026-07-02-system-design-web-crawler.svg
 redirect_from:
   - /2026/07/02/system-design-web-crawler.html
-mvp_repo: https://github.com/iliazlobin/sd-web-crawler-backend-mvp
 ---
 
 A web crawler that ingests ~10 billion web pages and extracts their text content to build an LLM training dataset. The crawl must complete in under 5 days, fetching pages from hundreds of millions of distinct hosts while respecting per-host rate limits and robots.txt.
