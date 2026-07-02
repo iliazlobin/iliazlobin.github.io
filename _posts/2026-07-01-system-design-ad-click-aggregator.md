@@ -30,13 +30,23 @@ graph LR
 ## 2. Requirements
 
 **Functional**
-- FR1: Track ad clicks via redirect; log event with ad ID, timestamp, user, geo, device.- FR2: Aggregate clicks per ad per minute as unique counts with configurable time windows.- FR3: Query click metrics filtered by campaign, geo, device type, and arbitrary time range.- FR4: Return Top-N ads by click volume over a sliding window (last hour, last 24h).- FR5: Detect and exclude fraudulent clicks (bots, click farms, rapid repeats) before billing.- FR6: Track per-campaign budget consumption with pacing alerts.
+- FR1: Track ad clicks via redirect; log event with ad ID, timestamp, user, geo, device.
+- FR2: Aggregate clicks per ad per minute as unique counts with configurable time windows.
+- FR3: Query click metrics filtered by campaign, geo, device type, and arbitrary time range.
+- FR4: Return Top-N ads by click volume over a sliding window (last hour, last 24h).
+- FR5: Detect and exclude fraudulent clicks (bots, click farms, rapid repeats) before billing.
+- FR6: Track per-campaign budget consumption with pacing alerts.
 **Non-functional**
-- NFR1: Sub-minute data freshness — click appears in aggregates within 60 seconds of arrival.- NFR2: 99.9% financial accuracy after batch reconciliation runs (daily).- NFR3: Sustain 200K clicks/sec peak, P99 ingest API latency under 100ms.- NFR4: Exactly-once billing: no click double-counted, no click silently dropped from financial records.
+- NFR1: Sub-minute data freshness — click appears in aggregates within 60 seconds of arrival.
+- NFR2: 99.9% financial accuracy after batch reconciliation runs (daily).
+- NFR3: Sustain 200K clicks/sec peak, P99 ingest API latency under 100ms.
+- NFR4: Exactly-once billing: no click double-counted, no click silently dropped from financial records.
 **Out of scope:** Real-time bidding (RTB), ad serving and ranking, creative asset management, conversion attribution beyond click tracking, advertiser self-service campaign creation UI.
 
 ## 3. Back of the envelope
-- **Click write throughput:** 200K events/sec × 1 KB/event = 200 MB/s ingress → requires ≥3 Kafka brokers at 100 MB/s each.- **Raw storage per day:** 10B clicks × 1 KB = 10 TB/day raw → ~3.6 PB/year uncompressed, drives the need for columnar compression and tiered retention.- **Aggregated query volume:** ~10M active ads × 1,440 minute buckets/day ≈ 14B aggregate rows/day. Peak query load ~10K QPS from advertiser dashboards → OLAP engine must serve pre-aggregated data, not scan raw events.
+- **Click write throughput:** 200K events/sec × 1 KB/event = 200 MB/s ingress → requires ≥3 Kafka brokers at 100 MB/s each.
+- **Raw storage per day:** 10B clicks × 1 KB = 10 TB/day raw → ~3.6 PB/year uncompressed, drives the need for columnar compression and tiered retention.
+- **Aggregated query volume:** ~10M active ads × 1,440 minute buckets/day ≈ 14B aggregate rows/day. Peak query load ~10K QPS from advertiser dashboards → OLAP engine must serve pre-aggregated data, not scan raw events.
 
 ## 4. Entities
 
@@ -77,7 +87,11 @@ campaign_budget {
 ```
 
 ## API
-- `POST /click` — record a click event; redirects browser to landing page URL. Request body: `click_id`, `ad_id`, `impression_id`, `timestamp`, `user_id`, `geo`. Returns `302 Found` with `Location` header.- `GET /metrics?campaign_id={id}&start={ts}&end={ts}&geo={cc}&device={type}&granularity={1m|1h|1d}` — aggregated click counts with dimension filters. Returns array of `{minute, clicks}`.- `GET /top-ads?window={1h|24h}&limit={n}&geo={cc}` — Top-N ads by click count in the given window. Returns array of `{ad_id, campaign_id, clicks}`.- `GET /campaigns/{id}/budget` — current budget consumption: `{daily_limit, spent, remaining, pacing_pct}`.- `GET /campaigns/{id}/fraud-summary` — fraud breakdown: `{total_clicks, clean, bot, suspicious, excluded}`.
+- `POST /click` — record a click event; redirects browser to landing page URL. Request body: `click_id`, `ad_id`, `impression_id`, `timestamp`, `user_id`, `geo`. Returns `302 Found` with `Location` header.
+- `GET /metrics?campaign_id={id}&start={ts}&end={ts}&geo={cc}&device={type}&granularity={1m|1h|1d}` — aggregated click counts with dimension filters. Returns array of `{minute, clicks}`.
+- `GET /top-ads?window={1h|24h}&limit={n}&geo={cc}` — Top-N ads by click count in the given window. Returns array of `{ad_id, campaign_id, clicks}`.
+- `GET /campaigns/{id}/budget` — current budget consumption: `{daily_limit, spent, remaining, pacing_pct}`.
+- `GET /campaigns/{id}/fraud-summary` — fraud breakdown: `{total_clicks, clean, bot, suspicious, excluded}`.
 
 ## 5. High-Level Design
 
@@ -139,7 +153,10 @@ graph TB
 **Components:** `Client Browser → Load Balancer → Click API → Kafka`
 
 **Flow:**
-1. Browser sends `POST /click` with `{click_id, ad_id, timestamp, ...}` to the Click API.1. API validates HMAC signature on `click_id` (prevents spoofed events) and rejects malformed payloads with `400`.1. API produces the event to `raw-clicks` Kafka topic, keyed by `ad_id`. Messages use `acks=all` and `enable.idempotence=true`.1. API returns `302 Found` with landing page URL in `Location` header — browser follows redirect immediately; click tracking completes in background.
+1. Browser sends `POST /click` with `{click_id, ad_id, timestamp, ...}` to the Click API.
+1. API validates HMAC signature on `click_id` (prevents spoofed events) and rejects malformed payloads with `400`.
+1. API produces the event to `raw-clicks` Kafka topic, keyed by `ad_id`. Messages use `acks=all` and `enable.idempotence=true`.
+1. API returns `302 Found` with landing page URL in `Location` header — browser follows redirect immediately; click tracking completes in background.
 **Design consideration:** Server-side redirect adds one network hop (~50ms intra-region) but guarantees every click is tracked. Client-side redirect (browser POSTs tracking pixel in parallel) is faster but ~2-5% of clicks are lost to ad blockers and connection drops on mobile. For billing-grade accuracy, server-side redirect is the safe default. The API layer is stateless — any instance can handle any request — so horizontal scaling behind a round-robin load balancer is straightforward.
 
 #### FR2: Aggregate clicks per ad per minute
@@ -147,7 +164,11 @@ graph TB
 **Components:** `Kafka → Flink Dedup Job → Flink Aggregation Job → Redis + OLAP`
 
 **Flow:**
-1. Flink Dedup Job consumes `raw-clicks`, keyed by `ad_id`. For each event, it checks a local RocksDB-backed Bloom filter (keyed on `click_id`, TTL 5 minutes).1. If `click_id` is already in the filter, the event is a duplicate — drop it. Otherwise, insert into filter and forward to the aggregation downstream.1. Flink Aggregation Job applies a 60-second tumbling window on event time. Each window emits per-`ad_id` counts.1. Window results are written to Redis (key: `ad:{id}:minute:{ts}`, value: count, TTL 120s) for sub-millisecond dashboard reads, and to the OLAP store for persistent querying.1. Watermark advances at `max_event_time - 30s`. Events arriving after their window closes are routed to a side-output for late-event reconciliation, not dropped.
+1. Flink Dedup Job consumes `raw-clicks`, keyed by `ad_id`. For each event, it checks a local RocksDB-backed Bloom filter (keyed on `click_id`, TTL 5 minutes).
+1. If `click_id` is already in the filter, the event is a duplicate — drop it. Otherwise, insert into filter and forward to the aggregation downstream.
+1. Flink Aggregation Job applies a 60-second tumbling window on event time. Each window emits per-`ad_id` counts.
+1. Window results are written to Redis (key: `ad:{id}:minute:{ts}`, value: count, TTL 120s) for sub-millisecond dashboard reads, and to the OLAP store for persistent querying.
+1. Watermark advances at `max_event_time - 30s`. Events arriving after their window closes are routed to a side-output for late-event reconciliation, not dropped.
 **Design consideration:** RocksDB state in Flink grows with the product of unique `click_id`s in the dedup window × partition count. At 200K events/sec, a 5-minute dedup window contains ~60M unique IDs. With Bloom filter at 1% false-positive rate (~10 bits per entry), that's ~75 MB per Flink task manager — easily fits in memory.
 
 #### FR3: Query metrics with multi-dimensional filtering
@@ -155,7 +176,10 @@ graph TB
 **Components:** `OLAP (Druid/ClickHouse) → Query API`
 
 **Flow:**
-1. Advertiser dashboard calls `GET /metrics?campaign_id=42&start=...&end=...&geo=US&device=mobile`.1. Query API rewrites the request into a range scan on the `click_aggregates` table, filtering on the partition key `(ad_id)` and the dimension columns `(geo, device_type)`.1. OLAP engine returns pre-aggregated rows. For time ranges spanning multiple granularities (e.g., 3 hours), the engine picks the coarsest available pre-aggregation — hourly rollups rather than scanning 180 minute buckets.1. If the time range includes the current incomplete minute, the Query API merges OLAP results (for completed minutes) with Redis real-time counters (for the current minute) before returning.
+1. Advertiser dashboard calls `GET /metrics?campaign_id=42&start=...&end=...&geo=US&device=mobile`.
+1. Query API rewrites the request into a range scan on the `click_aggregates` table, filtering on the partition key `(ad_id)` and the dimension columns `(geo, device_type)`.
+1. OLAP engine returns pre-aggregated rows. For time ranges spanning multiple granularities (e.g., 3 hours), the engine picks the coarsest available pre-aggregation — hourly rollups rather than scanning 180 minute buckets.
+1. If the time range includes the current incomplete minute, the Query API merges OLAP results (for completed minutes) with Redis real-time counters (for the current minute) before returning.
 **Design consideration:** Pre-aggregation at write time (Flink computes minute buckets before landing in OLAP) trades query flexibility for read speed. Advertisers seldom need arbitrary dimension combinations — the subset of `{geo, device, ad_id}` covers 95%+ of real queries. Maintaining pre-aggregated tables for all 2^3 = 8 dimension combinations costs ~8× storage but eliminates scan-time GROUP BY entirely, keeping P99 query latency under 50ms even at 10K QPS.
 
 #### FR4: Top-N popular ads
@@ -163,7 +187,10 @@ graph TB
 **Components:** `Flink Top-N Job → Redis Sorted Set`
 
 **Flow:**
-1. A separate Flink job consumes the aggregated minute counts and maintains a sliding-window Top-100 per geo region.1. Internally, it uses Flink's `KeyedProcessFunction` with a min-heap of size N per key. Each new count updates the heap; the heap is emitted every 10 seconds.1. Results are written to a Redis Sorted Set: `ZADD top-ads:US:hour <clicks> <ad_id>`. The set is trimmed to N entries after each write.1. `GET /top-ads` reads directly from Redis — no OLAP query needed. The Sorted Set's `ZREVRANGE` returns the Top-N in O(log N + N).
+1. A separate Flink job consumes the aggregated minute counts and maintains a sliding-window Top-100 per geo region.
+1. Internally, it uses Flink's `KeyedProcessFunction` with a min-heap of size N per key. Each new count updates the heap; the heap is emitted every 10 seconds.
+1. Results are written to a Redis Sorted Set: `ZADD top-ads:US:hour <clicks> <ad_id>`. The set is trimmed to N entries after each write.
+1. `GET /top-ads` reads directly from Redis — no OLAP query needed. The Sorted Set's `ZREVRANGE` returns the Top-N in O(log N + N).
 **Design consideration:** A dedicated Top-N Flink job is cleaner than querying the OLAP store at read time, which would require a windowed `ORDER BY clicks DESC LIMIT 100` scan across all ads — expensive at 10M+ active ads. The in-process heap approach keeps the hot path purely in Flink state and Redis, with sub-10ms read latency.
 
 #### FR5: Fraud detection
@@ -171,7 +198,11 @@ graph TB
 **Components:** `Kafka → Fraud Flink Job → Rules Engine → ML Model → Kafka (verdicts)`
 
 **Flow:**
-1. A parallel Flink job consumes `raw-clicks` — it does not block the main aggregation pipeline. Both jobs read from the same topic independently.1. Phase 1 (rules, <10ms): check IP blocklist, user-agent bot patterns, geo-impossible velocity (same user clicking from two continents in 5 seconds), click-to-impression time under 100ms (accidental double-tap proxy).1. Phase 2 (ML scoring, <100ms): extract feature vector from in-memory feature store (publisher CTR history, IP velocity, device fingerprint entropy) and score with a pre-loaded XGBoost model.1. Verdicts (`clean`, `bot`, `suspicious`) are written to `fraud-verdicts` Kafka topic, keyed by `click_id`.1. The Aggregation Job asynchronously joins fraud verdicts. Clean clicks are counted normally; bot clicks are dropped; suspicious clicks are flagged but not dropped (human review later). Budget pacing always uses clean-only counts.
+1. A parallel Flink job consumes `raw-clicks` — it does not block the main aggregation pipeline. Both jobs read from the same topic independently.
+1. Phase 1 (rules, <10ms): check IP blocklist, user-agent bot patterns, geo-impossible velocity (same user clicking from two continents in 5 seconds), click-to-impression time under 100ms (accidental double-tap proxy).
+1. Phase 2 (ML scoring, <100ms): extract feature vector from in-memory feature store (publisher CTR history, IP velocity, device fingerprint entropy) and score with a pre-loaded XGBoost model.
+1. Verdicts (`clean`, `bot`, `suspicious`) are written to `fraud-verdicts` Kafka topic, keyed by `click_id`.
+1. The Aggregation Job asynchronously joins fraud verdicts. Clean clicks are counted normally; bot clicks are dropped; suspicious clicks are flagged but not dropped (human review later). Budget pacing always uses clean-only counts.
 **Design consideration:** Fraud runs in parallel because the fraud pipeline's latency budget (~100ms for ML scoring) must not gate the <1-minute freshness target for dashboard metrics. Verdicts arrive asynchronously — the dashboard may briefly show clicks that a few seconds later are classified as bot and retroactively excluded. This is acceptable because dashboards are operational, not financial. Billing always runs against batch-reconciled, fraud-excluded counts.
 
 #### FR6: Budget pacing
@@ -179,7 +210,10 @@ graph TB
 **Components:** `Flink Aggregation Job → Campaign Budget State (RocksDB) → Budget API`
 
 **Flow:**
-1. The Aggregation Job maintains per-campaign `spent_micros` in Flink keyed state (RocksDB).1. Each minute's clean click count is multiplied by the campaign's CPC bid to compute incremental spend. Spend is applied to the running counter.1. When `spent_micros` exceeds 80% of `daily_limit`, the job emits a pacing alert to a Kafka topic consumed by the ad serving system (out of scope for this design, but the signal is available).1. `GET /campaigns/{id}/budget` reads from a materialized view in the OLAP store, refreshed from Flink state every 10 seconds via a changelog stream.
+1. The Aggregation Job maintains per-campaign `spent_micros` in Flink keyed state (RocksDB).
+1. Each minute's clean click count is multiplied by the campaign's CPC bid to compute incremental spend. Spend is applied to the running counter.
+1. When `spent_micros` exceeds 80% of `daily_limit`, the job emits a pacing alert to a Kafka topic consumed by the ad serving system (out of scope for this design, but the signal is available).
+1. `GET /campaigns/{id}/budget` reads from a materialized view in the OLAP store, refreshed from Flink state every 10 seconds via a changelog stream.
 **Design consideration:** Budget state lives in Flink RocksDB rather than an external database because it needs transactional consistency with the click aggregation itself — a checkpoint that includes both the click count and the budget deduction is trivially atomic within a single Flink operator. Integer micros (e.g., $0.01 CPC = 10,000 micros) avoid the float accumulation errors that plagued early ad platforms running on MySQL `DECIMAL(10,4)` over billions of rows.
 
 ## 6. Deep dives
@@ -235,7 +269,8 @@ Flink TwoPhaseCommitSink:
 **Rationale:** Kafka transactions + Flink checkpoints with 120-second intervals give us a 30-40% overhead (state snapshot I/O) — higher than the at-least-once path but well within capacity at 200K events/sec. MillWheel's production experience proved that exactly-once stream processing at this scale is achievable: billing pipelines run on exactly-once semantics and have done so since 2013. The key insight is that 120 seconds is acceptable because window results are emitted to Redis immediately (for dashboard freshness) while the transactional commit guards the durable OLAP write — the dashboard sees numbers quickly through the non-transactional Redis path, and the OLAP path is a few seconds behind but guaranteed correct.
 
 **Edge cases:**
-- **Checkpoint timeout on state growth:** If dedup state grows beyond RocksDB's write buffer (e.g., a flash-mob attack generating millions of unique `click_id`s), checkpoint snapshots time out. Mitigation: RocksDB write buffer limit at 256 MB per task manager, with spill-to-disk; Bloom filter false-positive rate relaxed from 1% to 2% under memory pressure, reducing bit-per-entry from 10 to 7.- **Kafka transaction ID fencing:** If a Flink task manager is declared dead (heartbeat timeout) but is still running (split-brain), its producer transaction must be fenced. Kafka's `transactional.id` with epoch fencing ensures the zombie producer's `commit` is rejected — no duplicate writes leak through.
+- **Checkpoint timeout on state growth:** If dedup state grows beyond RocksDB's write buffer (e.g., a flash-mob attack generating millions of unique `click_id`s), checkpoint snapshots time out. Mitigation: RocksDB write buffer limit at 256 MB per task manager, with spill-to-disk; Bloom filter false-positive rate relaxed from 1% to 2% under memory pressure, reducing bit-per-entry from 10 to 7.
+- **Kafka transaction ID fencing:** If a Flink task manager is declared dead (heartbeat timeout) but is still running (split-brain), its producer transaction must be fenced. Kafka's `transactional.id` with epoch fencing ensures the zombie producer's `commit` is rejected — no duplicate writes leak through.
 
 ### DD2: Hot shard mitigation
 
@@ -277,7 +312,9 @@ If partitioning is by `click_id` (random by nature), events naturally spread eve
 **Rationale:** The two-stage pattern is battle-tested. MillWheel's paper explicitly identifies the single-hot-key problem and recommends two-phase aggregation. Production systems at this scale use the same pattern. The in-stream hot-ad detector (count-min sketch) adds ~1% CPU overhead and avoids the control-plane latency of Approach 2. The overhead for non-hot ads is zero because they never enter the salted path.
 
 **Edge cases:**
-- **Threshold oscillation:** An ad hovering around 1,000 events/sec toggles between salted and unsalted modes, causing frequent re-keying. Mitigation: hysteresis — salt is enabled at 1,200 events/sec and disabled at 800 events/sec, with a minimum salt duration of 60 seconds.- **Salt bucket collision:** Two hot ads hashed to the same salt bucket land in the same partition. The count-min sketch's per-key tracking catches this and can increase the salt range (N) adaptively.- **State migration on mode switch:** When an ad transitions from unsalted to salted, existing Flink state for the unsalted key must be merged into the salted state. The operator emits a final unsalted partial and starts fresh with salted keys — the merge is deferred to stage 2.
+- **Threshold oscillation:** An ad hovering around 1,000 events/sec toggles between salted and unsalted modes, causing frequent re-keying. Mitigation: hysteresis — salt is enabled at 1,200 events/sec and disabled at 800 events/sec, with a minimum salt duration of 60 seconds.
+- **Salt bucket collision:** Two hot ads hashed to the same salt bucket land in the same partition. The count-min sketch's per-key tracking catches this and can increase the salt range (N) adaptively.
+- **State migration on mode switch:** When an ad transitions from unsalted to salted, existing Flink state for the unsalted key must be merged into the salted state. The operator emits a final unsalted partial and starts fresh with salted keys — the merge is deferred to stage 2.
 
 ### DD3: Fraud detection pipeline
 
@@ -324,7 +361,8 @@ Phase 1 rules (IP blocklist, user-agent patterns, velocity checks) execute inlin
 **Rationale:** The multi-phase fraud architecture uses exactly this split: fast rules at ingest, ML scoring async, batch re-scoring for finality. The critical design principle is that fraud never blocks the main pipeline. Every production ad system that learned this the hard way — through outages where fraud detection went down and took click tracking with it — now runs fraud in parallel. The 70/30 split (inline rules catch 70%, async ML catches the rest) means the dashboard is accurate for most traffic immediately and self-corrects within seconds for the remaining 30%.
 
 **Edge cases:**
-- **Redis blocklist cache staleness:** The Click API's local LRU cache holds blocklist entries for 10 seconds. A new bot IP discovered by the async fraud job won't be blocked for up to 10 seconds. During an active botnet attack, this window matters. Mitigation: the local cache uses a write-through notification pattern — the fraud job publishes new blocklist entries to a Redis pub/sub channel; each Click API instance subscribes and updates its local cache within 100ms.- **ML model update during peak traffic:** Deploying a new XGBoost model to 32 Flink task managers takes ~30 seconds (model deserialization is I/O-bound). During deployment, some task managers score with the old model, some with the new — verdicts are inconsistent. Mitigation: the fraud job uses Flink's broadcast state, which atomically distributes the model across all task managers. The switch happens on a checkpoint boundary — all task managers switch to the new model at the same barrier.
+- **Redis blocklist cache staleness:** The Click API's local LRU cache holds blocklist entries for 10 seconds. A new bot IP discovered by the async fraud job won't be blocked for up to 10 seconds. During an active botnet attack, this window matters. Mitigation: the local cache uses a write-through notification pattern — the fraud job publishes new blocklist entries to a Redis pub/sub channel; each Click API instance subscribes and updates its local cache within 100ms.
+- **ML model update during peak traffic:** Deploying a new XGBoost model to 32 Flink task managers takes ~30 seconds (model deserialization is I/O-bound). During deployment, some task managers score with the old model, some with the new — verdicts are inconsistent. Mitigation: the fraud job uses Flink's broadcast state, which atomically distributes the model across all task managers. The switch happens on a checkpoint boundary — all task managers switch to the new model at the same barrier.
 
 ### DD4: Late-arriving events and watermarks
 
@@ -370,32 +408,34 @@ Late-event pipeline:   watermark 60min → corrects aggregates → dashboard sel
 **Rationale:** The 30-second watermark + 60-second grace period captures ~95% of events (real-world click latency distributions are heavily right-skewed with a mode at <1 second). The remaining 5% — primarily mobile batch uploads and slow publisher pixels — are handled by the daily Spark reconciliation, which recomputes exact counts from the raw event archive. This gives us sub-minute freshness for the common case and authoritative corrections within 24 hours. Production ad pipelines at this scale use a similar model with a 60-minute absolute cutoff (events older than 60 minutes are dropped for billing, retained for analytics).
 
 **Edge cases:**
-- **Watermark stall during catch-up:** If a Flink task manager restarts and replays from a checkpoint, it processes a backlog of events whose timestamps are in the past. The watermark is clamped to the earliest unprocessed event — effectively 0 — so no windows fire until catch-up completes. During catch-up (typically 10-15 seconds), the dashboard freezes. Mitigation: the Redis real-time counters are written before the transactional commit, so they remain available even during checkpoint recovery — the dashboard reads Redis, not OLAP, for the current minute.- **Clock skew between client and server:** A user's device clock is set 5 minutes ahead. Events arrive with timestamps from the future, pushing the watermark forward artificially and closing windows prematurely. Mitigation: the Click API normalizes timestamps — if `event.timestamp > server_time + 60s`, the timestamp is clamped to `server_time`. The original timestamp is preserved in the raw event for audit.- **Zero-event partitions and idle watermarks:** A Kafka partition with no events produces no watermark advancement. If the Flink job's watermark is the minimum across all partitions, a single idle partition stalls the entire job. Mitigation: Flink's `withIdleness(Duration.ofSeconds(30))` marks a partition as idle after 30 seconds of inactivity, excluding it from the watermark calculation.
+- **Watermark stall during catch-up:** If a Flink task manager restarts and replays from a checkpoint, it processes a backlog of events whose timestamps are in the past. The watermark is clamped to the earliest unprocessed event — effectively 0 — so no windows fire until catch-up completes. During catch-up (typically 10-15 seconds), the dashboard freezes. Mitigation: the Redis real-time counters are written before the transactional commit, so they remain available even during checkpoint recovery — the dashboard reads Redis, not OLAP, for the current minute.
+- **Clock skew between client and server:** A user's device clock is set 5 minutes ahead. Events arrive with timestamps from the future, pushing the watermark forward artificially and closing windows prematurely. Mitigation: the Click API normalizes timestamps — if `event.timestamp > server_time + 60s`, the timestamp is clamped to `server_time`. The original timestamp is preserved in the raw event for audit.
+- **Zero-event partitions and idle watermarks:** A Kafka partition with no events produces no watermark advancement. If the Flink job's watermark is the minimum across all partitions, a single idle partition stalls the entire job. Mitigation: Flink's `withIdleness(Duration.ofSeconds(30))` marks a partition as idle after 30 seconds of inactivity, excluding it from the watermark calculation.
 
 ## 7. Trade-offs
 
 | Decision | What we chose | What we rejected | Why |
 |---|---|---|---|
-| --- | --- | --- | --- |
 | Architecture pattern | Kappa (streaming-only) with batch reconciliation | Lambda (parallel batch + stream codepaths) | Single codepath for daily operations; batch reconciliation is a nightly safety net, not a live path. A streaming-only architecture eliminates one of the two pipelines and the team that maintained it. |
-|---|---|---|---|
 | Stream processor | Apache Flink | Kafka Streams, Spark Streaming | Flink's event-time watermarks, checkpoint-based exactly-once, and broadcast state for ML model distribution are purpose-built for this workload. Kafka Streams lacks broadcast state; Spark Streaming's micro-batch model adds 500ms+ latency per batch. |
-|---|---|---|---|
 | OLAP engine | Apache Druid with Kafka indexing service | ClickHouse, Apache Pinot | Druid's native Kafka indexing service provides exactly-once ingestion without a separate connector; its segment-based architecture handles time-range queries with sub-50ms P99 at 10K QPS. ClickHouse's `ReplacingMergeTree` is close but requires manual dedup; Pinot's upsert compaction latency (~10s) conflicts with the <60s freshness target. |
-|---|---|---|---|
 | Exactly-once approach | Kafka transactions + Flink checkpoints | At-least-once + daily reconciliation | Daily reconciliation alone means dashboard numbers change by 2-5% overnight — unacceptable for advertiser trust. Transactional exactly-once is 30-40% more overhead but gives correct numbers in real time. |
-|---|---|---|---|
 | Hot shard fix | Salted key with in-stream hot-ad detection | Dynamic re-partitioning via control plane | In-stream detection is self-contained and reacts in milliseconds; a control plane adds a new failure mode and reaction latency. |
-|---|---|---|---|
 | Fraud architecture | Inline rules (ingest) + async ML (Flink) | Synchronous fraud service at ingest | Fraud must never block click ingestion. Inline rules catch 70% of fraud with <1ms overhead; async ML handles the rest without gating the pipeline. |
-|---|---|---|---|
 | Watermark policy | Fixed 30s watermark + 60s grace period | Adaptive per-source watermark | Per-source watermarks create a 10K-entry state space and couple pipeline internals to query semantics. Simplicity wins: 95% of events arrive within 30 seconds. |
-|---|---|---|---|
 | Budget precision | Integer micros in Flink RocksDB | Float in external PostgreSQL | Integer math avoids float drift over billions of transactions. Flink state keeps budget updates transactional with click counting. |
-|---|---|---|---|
 
 
 ## 8. References
 
 **Primary sources**
-1. [MillWheel: Fault-Tolerant Stream Processing at Internet Scale](https://research.google/pubs/millwheel-fault-tolerant-stream-processing-at-internet-scale/) — Akidau et al., VLDB 20131. [Photon: Fault-tolerant and Scalable Joining of Continuous Data Streams](https://research.google/pubs/photon-fault-tolerant-and-scalable-joining-of-continuous-data-streams/) — Ananthanarayanan et al., SIGMOD 20131. [Real-Time Exactly-Once Ad Event Processing](https://www.uber.com/en/blog/real-time-exactly-once-ad-event-processing/) — Uber Engineering Blog, 20211. [TSAR: Robust, Scalable, Real-Time Event Time Series Aggregation at Twitter](https://cs.uwaterloo.ca/~jimmylin/publications/Yang_etal_SIGMOD2018.pdf) — Yang et al., SIGMOD 20181. [Modernizing Twitter's Ad Engagement Analytics Platform](https://cloud.google.com/blog/products/data-analytics/modernizing-twitters-ad-engagement-analytics-platform) — Google Cloud Blog1. [High-Risk, High-Scale: Guaranteeing Ad Budget Precision at 1 Million Events/Second](https://blog.flipkart.tech/high-risk-high-scale-guaranteeing-ad-budget-precision-at-1-million-events-second-cc23977796d7) — Flipkart Tech Blog, 20261. [Powering Pinterest Ads Analytics with Apache Druid](https://medium.com/pinterest-engineering/powering-pinterest-ads-analytics-with-apache-druid-51aa6ffb97c1) — Pinterest Engineering Blog1. [Behind the Scenes: Building a Robust Ads Event Processing Pipeline](https://netflixtechblog.com/behind-the-scenes-building-a-robust-ads-event-processing-pipeline-e4e86caf9249) — Netflix Tech Blog, 20251. [From Keywords to AI: Engineering the Google Ads Machine](https://www.gregrc.com/2025/from-keywords-to-ai-engineering-google-ads) — Greg Charles, 20251. [Apache Kafka Exactly-Once Semantics](https://docs.confluent.io/platform/current/streams/concepts.html#exactly-once-semantics) — Confluent Documentation
+1. [MillWheel: Fault-Tolerant Stream Processing at Internet Scale](https://research.google/pubs/millwheel-fault-tolerant-stream-processing-at-internet-scale/) — Akidau et al., VLDB 2013
+1. [Photon: Fault-tolerant and Scalable Joining of Continuous Data Streams](https://research.google/pubs/photon-fault-tolerant-and-scalable-joining-of-continuous-data-streams/) — Ananthanarayanan et al., SIGMOD 2013
+1. [Real-Time Exactly-Once Ad Event Processing](https://www.uber.com/en/blog/real-time-exactly-once-ad-event-processing/) — Uber Engineering Blog, 2021
+1. [TSAR: Robust, Scalable, Real-Time Event Time Series Aggregation at Twitter](https://cs.uwaterloo.ca/~jimmylin/publications/Yang_etal_SIGMOD2018.pdf) — Yang et al., SIGMOD 2018
+1. [Modernizing Twitter's Ad Engagement Analytics Platform](https://cloud.google.com/blog/products/data-analytics/modernizing-twitters-ad-engagement-analytics-platform) — Google Cloud Blog
+1. [High-Risk, High-Scale: Guaranteeing Ad Budget Precision at 1 Million Events/Second](https://blog.flipkart.tech/high-risk-high-scale-guaranteeing-ad-budget-precision-at-1-million-events-second-cc23977796d7) — Flipkart Tech Blog, 2026
+1. [Powering Pinterest Ads Analytics with Apache Druid](https://medium.com/pinterest-engineering/powering-pinterest-ads-analytics-with-apache-druid-51aa6ffb97c1) — Pinterest Engineering Blog
+1. [Behind the Scenes: Building a Robust Ads Event Processing Pipeline](https://netflixtechblog.com/behind-the-scenes-building-a-robust-ads-event-processing-pipeline-e4e86caf9249) — Netflix Tech Blog, 2025
+1. [From Keywords to AI: Engineering the Google Ads Machine](https://www.gregrc.com/2025/from-keywords-to-ai-engineering-google-ads) — Greg Charles, 2025
+1. [Apache Kafka Exactly-Once Semantics](https://docs.confluent.io/platform/current/streams/concepts.html#exactly-once-semantics) — Confluent Documentation
