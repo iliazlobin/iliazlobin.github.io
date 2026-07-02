@@ -259,7 +259,7 @@ FR3: Submit solution and receive verdict
 **Flow:**
 1. Client `POST /submissions` with `{problem_id, language, source_code, contest_id?}`.
 1. Submission Service validates: problem exists, language supported, rate limit (1 per 5s outside contest).
-1. Inserts `submission` row (verdict=`queued`) and produces Kafka message in **same DB transaction** (transactional outbox pattern).
+1. Inserts the `submission` row (verdict=`queued`) **and an outbox row in the same DB transaction** (transactional outbox pattern); a separate relay publishes to Kafka asynchronously.
 1. Returns `202 {submission_id, status: "queued"}` — client opens `WS /submissions/{submission_id}/updates`.
 1. Judge Worker reads from Kafka partition keyed by `user_id` (maintains per-user ordering).
 1. Worker acquires warm Firecracker snapshot for target language (~25ms restore).
@@ -269,7 +269,7 @@ FR3: Submit solution and receive verdict
 1. Worker writes final verdict to PostgreSQL and publishes to Redis `submission:{id}:result` channel.
 1. WebSocket Gateway subscribed to Redis channel pushes verdict to connected client.
 1. Worker resets VM via diff snapshot (~5ms); VM returns to warm pool.
-Submission service uses the **transactional outbox pattern** — `INSERT submission` and `PRODUCE kafka` in one PostgreSQL transaction. If either fails, both roll back. A background outbox poller catches edge cases where the Kafka produce succeeded but the commit ack was lost, guaranteeing at-least-once delivery. Judge Workers are idempotent: if they see a `submission_id` that already has a non-`queued` verdict, they skip execution.
+Submission service uses the **transactional outbox pattern** — `INSERT submission` and `INSERT outbox_event` commit in one PostgreSQL transaction, so the event is captured atomically with the write (Kafka is **not** part of the DB transaction — it can't be rolled back). A background outbox relay then reads unpublished outbox rows and produces them to Kafka with **at-least-once** semantics, marking each row published; if a produce ack is lost, the next poll re-publishes (consumers dedupe by `submission_id`). Judge Workers are idempotent: if they see a `submission_id` that already has a non-`queued` verdict, they skip execution.
 
 ```python
 # Submission Service — transactional outbox
@@ -350,7 +350,8 @@ local score = solved * 1000000000 - total_penalty
 redis.call('ZADD', KEYS[1], score, ARGV[1])
 
 local rank = redis.call('ZREVRANK', KEYS[1], ARGV[1])
-redis.call('PUBLISH', 'contest:' .. KEYS[1] .. ':updates',
+local channel = KEYS[1]:gsub(':leaderboard$', ':updates')  -- contest:{id}:updates
+redis.call('PUBLISH', channel,
     cjson.encode({user_id=ARGV[1], rank=rank+1, solved=solved, penalty=total_penalty}))
 return rank + 1
 
