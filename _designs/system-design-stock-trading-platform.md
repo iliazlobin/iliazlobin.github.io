@@ -5,6 +5,8 @@ date: 2026-07-02
 tags: [System Design, Trading, Finance, Real-time]
 description: "Stock trading platforms connect 23M+ retail investors to US equity markets, routing 15M orders a day through market makers and exchanges. Unlike an exchange — which maintains its own order book and matches buyers against sellers — a brokerage is a custody-and-routing layer."
 thumbnail: /images/posts/2026-07-02-system-design-stock-trading-platform.svg
+redirect_from:
+  - /2026/07/02/system-design-stock-trading-platform.html
 ---
 
 Stock trading platforms connect 23M+ retail investors to US equity markets, routing 15M orders a day through market makers and exchanges. Unlike an exchange — which maintains its own order book and matches buyers against sellers — a brokerage is a custody-and-routing layer.
