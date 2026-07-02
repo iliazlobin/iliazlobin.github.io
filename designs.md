@@ -45,7 +45,7 @@ description: "System design write-ups by Ilia Zlobin — production-grade archit
       {%- if d.tags.size > 0 %}
       <ul class="tags">{% for tag in d.tags %}<li>{{ tag | escape }}</li>{% endfor %}</ul>
       {%- endif %}
-      <div class="links"><a class="gh" href="{{ d.url | relative_url }}">Read the design →</a></div>
+      <div class="links"><a class="gh" href="{{ d.url | relative_url }}">Read the design →</a>{% if d.mvp_repo %}<a class="gh" href="{{ d.mvp_repo }}" target="_blank" rel="noopener">GitHub MVP ↗</a>{% endif %}</div>
     </div>
   </article>
   {%- endfor %}

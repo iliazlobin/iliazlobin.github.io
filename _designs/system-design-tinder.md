@@ -7,6 +7,7 @@ description: "Tinder is a mobile dating app where users create profiles, set dis
 thumbnail: /images/posts/2026-06-30-system-design-tinder.svg
 redirect_from:
   - /2026/06/30/system-design-tinder.html
+mvp_repo: https://github.com/iliazlobin/sd-tinder-backend-mvp
 ---
 
 Tinder is a mobile dating app where users create profiles, set discovery preferences, and swipe through a stack of nearby profiles — right to like, left to pass. When two users mutually like each other, a match is formed and they can message.

@@ -7,6 +7,7 @@ description: "YouTube ingests over 70 billion view events per day across more th
 thumbnail: /images/posts/2026-06-30-system-design-youtube.svg
 redirect_from:
   - /2026/06/30/system-design-youtube.html
+mvp_repo: https://github.com/iliazlobin/sd-youtube-backend-mvp
 ---
 
 YouTube ingests over 70 billion view events per day across more than 4 billion distinct videos, serving over 500 million daily active users who watch over a billion hours of content.

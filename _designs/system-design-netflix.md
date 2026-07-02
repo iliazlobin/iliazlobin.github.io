@@ -7,6 +7,7 @@ description: "Netflix streams on-demand video to 325M+ paid subscribers across 1
 thumbnail: /images/posts/2026-07-02-system-design-netflix.svg
 redirect_from:
   - /2026/07/02/system-design-netflix.html
+mvp_repo: https://github.com/iliazlobin/sd-netflix-backend-mvp
 ---
 
 Netflix streams on-demand video to 325M+ paid subscribers across 190 countries, ingests 500+ hours of new content per minute, and serves ~15% of global internet downstream traffic.

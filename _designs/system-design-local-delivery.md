@@ -7,6 +7,7 @@ description: "Local Delivery connects customers, restaurants, and couriers in a 
 thumbnail: /images/posts/2026-06-29-system-design-local-delivery.svg
 redirect_from:
   - /2026/06/29/system-design-local-delivery.html
+mvp_repo: https://github.com/iliazlobin/sd-local-delivery-backend-mvp
 ---
 
 Local Delivery connects customers, restaurants, and couriers in a three-sided marketplace — a customer opens the app, searches for restaurants near their address, builds a cart from a live menu, and checks out.
