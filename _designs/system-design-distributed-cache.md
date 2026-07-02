@@ -4,7 +4,7 @@ title: "System Design: Distributed Cache"
 date: 2026-07-02
 tags: [System Design]
 description: "A single-node cache (one Redis instance, one Memcached process) hits a hard wall: the server's RAM ceiling."
-thumbnail: /images/posts/2026-07-02-system-design-distributed-cache.svg
+thumbnail: /images/posts/system-design-distributed-cache.svg
 redirect_from:
   - /2026/07/02/system-design-distributed-cache.html
 mvp_repo: https://github.com/iliazlobin/sd-distributed-cache-backend-mvp
@@ -32,8 +32,12 @@ flowchart LR
     App --> Proxy --> ShardA
     Proxy --> ShardB
     Proxy --> ShardC
-    classDef box fill:#e8edf2,stroke:#445,color:#222
-    class App,Proxy,ShardA,ShardB,ShardC box
+    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
+    class App edge
+    class Proxy svc
+    class ShardA,ShardB,ShardC store
 ```
 
 ## 2. Requirements
@@ -121,10 +125,12 @@ flowchart TB
     L1 <-->|gossip heartbeat| L2
     L2 <-->|gossip heartbeat| L3
     L3 <-->|gossip heartbeat| L1
-    classDef light fill:#e8edf2,stroke:#556,color:#222
-    classDef dark fill:#d0d7e0,stroke:#445,color:#111
-    class Client,CM light
-    class L1,L2,L3,R1,R2,R3 dark
+    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
+    class Client edge
+    class CM svc
+    class L1,L2,L3,R1,R2,R3 store
 ```
 
 #### FR1: Store a key-value pair with optional TTL
