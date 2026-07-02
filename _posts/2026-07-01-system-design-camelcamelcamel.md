@@ -62,6 +62,7 @@ The gateway routes user-facing requests (watchlist management, charts, search) t
 - **Price-change writes:** 13% change rate → ~14M writes/day → 165 writes/s sustained → trivial for a single TimescaleDB node.
 - **Storage for 2 years:** 50 bytes/row x 107M checks/day x 730 days ≈ 3.6 TB raw → TimescaleDB compression at 90-95% brings this to ~180 GB; fits on a single SSD volume.
 - **Proxy costs:** 107M req/day at 1 req/s per (domain, IP) requires ~1,240 IPs → ~$5,000/month in datacenter proxy bandwidth; the dominant operational cost.
+
 ---
 
 ## 4. Entities
