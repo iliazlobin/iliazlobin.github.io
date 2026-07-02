@@ -487,7 +487,8 @@ Stage 2 — Analyze: Distributed Stockfish workers (fishnet) analyze every posit
 
 Stage 3 — Score: Feed analysis results into two TensorFlow models:
 
-- `basicGame.h5`: game metadata only (move times, rating difference, outcome, opening compliance) — fast to evaluate, catches obvious temporal anomalies.- `analysedGame.h5`: full Stockfish analysis (centipawn loss per move, move-matching rate, blunder frequency, consistency of play across positions of varying complexity) — catches subtle engine use.
+- `basicGame.h5`: game metadata only (move times, rating difference, outcome, opening compliance) — fast to evaluate, catches obvious temporal anomalies.
+- `analysedGame.h5`: full Stockfish analysis (centipawn loss per move, move-matching rate, blunder frequency, consistency of play across positions of varying complexity) — catches subtle engine use.
 
 Stage 4 — Aggregate: A CNN model (Kaladin) runs on player-level "insights" across all recent games to detect patterns invisible in single games (sudden rating improvement, unusual consistency, suspicious account age vs. skill).
 

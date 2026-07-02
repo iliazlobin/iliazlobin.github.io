@@ -86,7 +86,7 @@ flowchart LR
 - **Daily submission storage:** 50M submissions/day × 2 KB (source + verdict + metadata) = 100 GB/day → 90-day hot partition requires 9 TB; older data moves to cold S3 storage. Weekly partitioning by `submitted_at` keeps index scans tight.
 - **Leaderboard memory:** 100K entries × (8B user_id + 8B score + 48B overhead) ≈ 6.4 MB per contest → a single Redis ZSET handles any contest size in under 10 MB; no sharding needed.
 
-- ---
+---
 
 ## 4. Entities
 
