@@ -446,7 +446,6 @@ The rsync algorithm uses a weak rolling hash to find matching regions, then a st
 ## 7. Trade-offs
 
 | Decision | Rejected alternative | Why |
-
 |---|---|---|
 | Fixed-size block dedup (4 MiB) | Content-defined chunking (8-64 KiB) | CDC produces 500× more chunks, exploding metadata cost per byte stored. Fixed blocks capture the bulk of cross-file dedup with manageable metadata overhead. |
 | Append-only per-namespace journal | General-purpose relational schema with UPDATEs | Append-only gives free versioning, simple cursor-based sync, and avoids write amplification from UPDATEs. The journal is the sync protocol's source of truth. |
