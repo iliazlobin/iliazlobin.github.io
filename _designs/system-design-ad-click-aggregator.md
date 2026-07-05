@@ -5,6 +5,7 @@ date: 2026-07-01
 tags: [System Design]
 description: "An ad platform processes clicks from millions of users across thousands of publisher sites."
 thumbnail: /images/posts/2026-07-01-system-design-ad-click-aggregator.svg
+mvp_repo: https://github.com/iliazlobin/sd-ad-click-aggregator-backend-mvp
 redirect_from:
   - /2026/07/01/system-design-ad-click-aggregator.html
 ---
