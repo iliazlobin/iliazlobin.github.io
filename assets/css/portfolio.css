@@ -83,7 +83,7 @@
 
 /* ---- Responsive ---- */
 @media (max-width: 900px) {
-  .portfolio-layout { grid-template-columns: 1fr; gap: 1.2rem; }
+  .portfolio-layout { grid-template-columns: minmax(0, 1fr); gap: 1.2rem; }
   /* rail becomes a horizontal scroll strip above the feed */
   .portfolio-rail { position: static; }
   .rail-title { margin-left: 0; }
