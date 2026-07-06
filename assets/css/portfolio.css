@@ -14,6 +14,7 @@
 
 /* ---- Left timeline rail ---- */
 .portfolio-rail { position: sticky; top: 1.5rem; align-self: start; }
+.rail-group + .rail-group { margin-top: 1.5rem; }
 .rail-title {
   font-size: .74rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
   color: var(--ink-faint); margin: 0 0 .8rem .9rem;
@@ -37,6 +38,14 @@
 
 /* ---- Feed ---- */
 .portfolio-feed { display: flex; flex-direction: column; gap: 1.5rem; }
+
+/* Category section heading inside the feed (e.g. "System Design", "ML System Design").
+   Margins are tuned against the flex `gap`; the first heading sits flush with the top. */
+.portfolio-feed .feed-section {
+  margin: 1.4rem 0 -.2rem; font-size: 1.35rem; scroll-margin-top: 1.5rem;
+  padding-bottom: .55rem; border-bottom: 1px solid var(--line);
+}
+.portfolio-feed .feed-section:first-child { margin-top: 0; }
 
 .portfolio-item {
   position: relative; display: grid; grid-template-columns: 300px minmax(0, 1fr);

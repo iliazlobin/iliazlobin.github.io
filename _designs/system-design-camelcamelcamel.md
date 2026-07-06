@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: CamelCamelCamel"
+category: system-design
 date: 2026-07-01
 tags: [System Design]
 description: "Design a price tracking service that lets users monitor product prices across online retailers, view historical price charts, and receive alerts when prices drop to a target threshold."

@@ -15,23 +15,47 @@ description: "System design write-ups by Ilia Zlobin — production-grade archit
 
 <p class="portfolio-intro">System design write-ups — production-grade architectures, section for section: requirements, back-of-the-envelope estimates, data model, high-level design, and the deep dives. Diagrams and code throughout.</p>
 
+{%- comment %}
+  Designs are grouped into ordered categories. A design's `category:` front-matter
+  field selects its group; the arrays below define the group order, headings, and the
+  title prefix stripped for display. Empty groups are skipped, so a new category's
+  section appears automatically once its first design lands.
+{%- endcomment %}
+{%- assign cat_slugs    = "system-design,ml-system-design" | split: "," %}
+{%- assign cat_labels   = "System Design,ML System Design" | split: "," %}
+{%- assign cat_prefixes = "System Design: ,ML System Design: " | split: "," %}
 {%- assign designs = site.designs | sort: "date" | reverse %}
 {%- if designs.size > 0 %}
 <div class="portfolio-layout">
 
 <aside class="portfolio-rail">
-  <div class="rail-title">Designs</div>
-  <nav>
-    {%- for d in designs %}
-    {%- assign name = d.title | remove_first: "System Design: " %}
-    <a href="#{{ d.title | slugify }}" data-spy><span class="nm">{{ name | escape }}</span></a>
-    {%- endfor %}
-  </nav>
+  {%- for slug in cat_slugs %}
+  {%- assign group = designs | where: "category", slug %}
+  {%- if group.size > 0 %}
+  {%- assign label = cat_labels[forloop.index0] %}
+  {%- assign prefix = cat_prefixes[forloop.index0] %}
+  <div class="rail-group">
+    <div class="rail-title">{{ label }}</div>
+    <nav>
+      {%- for d in group %}
+      {%- assign name = d.title | remove_first: prefix %}
+      <a href="#{{ d.title | slugify }}" data-spy><span class="nm">{{ name | escape }}</span></a>
+      {%- endfor %}
+    </nav>
+  </div>
+  {%- endif %}
+  {%- endfor %}
 </aside>
 
 <div class="portfolio-feed">
-  {%- for d in designs %}
-  {%- assign name = d.title | remove_first: "System Design: " %}
+  {%- for slug in cat_slugs %}
+  {%- assign group = designs | where: "category", slug %}
+  {%- if group.size > 0 %}
+  {%- assign label = cat_labels[forloop.index0] %}
+  {%- assign prefix = cat_prefixes[forloop.index0] %}
+  <h2 class="feed-section" id="cat-{{ slug }}">{{ label }}</h2>
+  {%- for d in group %}
+  {%- assign name = d.title | remove_first: prefix %}
   {%- assign seed = d.title | size | modulo: 6 %}
   <article id="{{ d.title | slugify }}" class="portfolio-item">
     {%- if d.thumbnail %}
@@ -48,6 +72,8 @@ description: "System design write-ups by Ilia Zlobin — production-grade archit
       <div class="links"><a class="gh" href="{{ d.url | relative_url }}">Read the design →</a>{% if d.mvp_repo %}<a class="gh" href="{{ d.mvp_repo }}" target="_blank" rel="noopener">GitHub MVP ↗</a>{% endif %}</div>
     </div>
   </article>
+  {%- endfor %}
+  {%- endif %}
   {%- endfor %}
 </div>
 </div>

@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: News Feed"
+category: system-design
 date: 2026-07-02
 tags: [System Design, Social Media, Feed]
 description: "A social media news feed must distribute every post to every follower, rank millions of candidate posts per user by predicted engagement, and serve the result in under 500ms — across 2B+ monthly active users."

@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: Uber"
+category: system-design
 date: 2026-06-30
 tags: [System Design]
 description: "Uber connects 170M+ monthly active riders with 5M+ drivers across 10,000+ cities in 70+ countries, processing 15M+ daily trips."

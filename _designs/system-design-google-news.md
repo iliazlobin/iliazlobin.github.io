@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: Google News"
+category: system-design
 date: 2026-06-29
 tags: [System Design]
 description: "Google News aggregates articles from 50,000+ publishers worldwide, groups coverage of the same event into story clusters, and serves a ranked, personalized feed to over 150 million monthly users across 70+ regional editions in 30+ languages."

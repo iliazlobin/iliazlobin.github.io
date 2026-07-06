@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: Post Search"
+category: system-design
 date: 2026-07-02
 tags: [System Design]
 description: "Post Search lets users find social media posts by keyword, phrase, or semantic meaning across billions of posts, returning ranked results in under 200ms. The system ingests millions of new posts per minute, indexes them in near real-time, and serves search traffic from a global user base."

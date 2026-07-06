@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: YouTube"
+category: system-design
 date: 2026-06-30
 tags: [System Design]
 description: "YouTube ingests over 70 billion view events per day across more than 4 billion distinct videos, serving over 500 million daily active users who watch over a billion hours of content."

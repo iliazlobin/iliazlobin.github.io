@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: WhatsApp"
+category: system-design
 date: 2026-06-30
 tags: [System Design]
 description: "A global messaging platform serving 3B+ users who exchange over 100B messages and 10 PB of media daily."

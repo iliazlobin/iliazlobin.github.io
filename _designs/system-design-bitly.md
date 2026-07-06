@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: Bitly"
+category: system-design
 date: 2026-06-29
 tags: [System Design]
 description: "Bitly turns long URLs into short ones and tracks every click. It looks simple — take a URL, generate a 7-character code, store the mapping, redirect on lookup. But the real challenge is analytics: every redirect must record an event without slowing the redirect."

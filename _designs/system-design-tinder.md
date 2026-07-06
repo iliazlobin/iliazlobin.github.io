@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: Tinder"
+category: system-design
 date: 2026-06-30
 tags: [System Design]
 description: "Tinder is a mobile dating app where users create profiles, set discovery preferences, and swipe through a stack of nearby profiles — right to like, left to pass. When two users mutually like each other, a match is formed and they can message."

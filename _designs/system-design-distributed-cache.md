@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: Distributed Cache"
+category: system-design
 date: 2026-07-02
 tags: [System Design]
 description: "A single-node cache (one Redis instance, one Memcached process) hits a hard wall: the server's RAM ceiling."

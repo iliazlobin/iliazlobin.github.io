@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: Local Delivery"
+category: system-design
 date: 2026-06-29
 tags: [System Design]
 description: "Local Delivery connects customers, restaurants, and couriers in a three-sided marketplace — a customer opens the app, searches for restaurants near their address, builds a cart from a live menu, and checks out."

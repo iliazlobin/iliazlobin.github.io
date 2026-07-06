@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: Ad Click Aggregator"
+category: system-design
 date: 2026-07-01
 tags: [System Design]
 description: "An ad platform processes clicks from millions of users across thousands of publisher sites."

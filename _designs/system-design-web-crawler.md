@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: Web Crawler"
+category: system-design
 date: 2026-07-02
 tags: [System Design]
 description: "A web crawler that ingests ~10 billion web pages and extracts their text content to build an LLM training dataset. The crawl must complete in under 5 days, fetching pages from hundreds of millions of distinct hosts while respecting per-host rate limits and robots.txt."

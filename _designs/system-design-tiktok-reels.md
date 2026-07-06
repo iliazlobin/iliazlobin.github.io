@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: TikTok/Reels"
+category: system-design
 date: 2026-07-02
 tags: [System Design]
 description: "TikTok serves 71 billion video views daily to 1.9 billion monthly users, with 34 million new uploads flowing through a GPU transcoding pipeline every 24 hours."

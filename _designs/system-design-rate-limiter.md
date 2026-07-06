@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: Rate Limiter"
+category: system-design
 date: 2026-07-01
 tags: [System Design]
 description: "A rate limiter controls how many requests a client can make within a time window. It sits in the request path for every API call, enforcing configurable limits — per user, per IP, or per API key — and rejecting excess traffic with HTTP 429."

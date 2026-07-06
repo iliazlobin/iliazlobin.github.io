@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: Strava"
+category: system-design
 date: 2026-07-02
 tags: [System Design]
 description: "Strava lets athletes record, share, and compete over GPS-tracked activities at a scale where 10 million runs and rides arrive every day."

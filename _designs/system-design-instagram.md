@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: Instagram"
+category: system-design
 date: 2026-07-02
 tags: [System Design]
 description: "Instagram is a photo and video sharing platform where users post media, follow others, and scroll through a personalized feed."
