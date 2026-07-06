@@ -133,12 +133,17 @@
           var link = map[e.target.id];
           if (link) {
             link.classList.add("active");
-            // keep the active item visible in a horizontal (mobile) rail
-            if (link.scrollIntoView) {
-              var nav = link.parentNode;
-              if (nav && nav.scrollWidth > nav.clientWidth) {
-                link.scrollIntoView({ block: "nearest", inline: "center" });
-              }
+            // keep the active item visible in a horizontal (mobile) rail.
+            // Scroll the nav strip HORIZONTALLY only via scrollLeft — never
+            // scrollIntoView, which also scrolls the page vertically and yanks
+            // the viewport back up to the rail as you read down the feed.
+            var nav = link.parentNode;
+            if (nav && nav.scrollWidth > nav.clientWidth) {
+              var navRect = nav.getBoundingClientRect();
+              var linkRect = link.getBoundingClientRect();
+              var delta = (linkRect.left + linkRect.width / 2) -
+                          (navRect.left + navRect.width / 2);
+              nav.scrollLeft += delta;
             }
           }
         }
