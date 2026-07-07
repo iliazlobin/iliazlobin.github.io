@@ -1,10 +1,13 @@
 ---
 layout: post
+category: system-design
 title: "System Design: DoorDash / Uber Eats"
 date: 2026-07-06
 tags: [System Design, DoorDash, Uber Eats, Food Delivery, Logistics]
 description: "DoorDash and Uber Eats operate a three-sided marketplace: customers order food from restaurants and a driver picks it up and delivers it. Each side runs on i..."
 thumbnail: /images/posts/2026-07-06-system-design-doordash-uber-eats.svg
+redirect_from:
+  - /2026/07/06/system-design-doordash-uber-eats.html
 ---
 
 DoorDash and Uber Eats operate a three-sided marketplace: customers order food from restaurants and a driver picks it up and delivers it. Each side runs on i...
