@@ -321,7 +321,7 @@ A data-quality pipeline computes the distribution of each feature in the logged 
 
 Train a small student model (3-layer transformer, 6M parameters) to predict the teacher's relevance scores. The teacher scores a large corpus of query-document pairs offline, producing a dataset of (query, document, teacher_score) triples. The student is trained with MSE loss against the teacher scores. This works well — the student recovers ~90% of the teacher's nDCG — but the student can only mimic the teacher's outputs, not its ranking behavior.
 
-**Approach 2: Rank distillation (top-*****k*** **list matching).**
+**Approach 2: Rank distillation (top-*k* list matching).**
 
 Instead of matching scores, train the student to reproduce the teacher's ranking order. For each query, the teacher ranks 500 candidates; the student is trained with ListNet or ListMLE loss to produce the same ordering. This captures the *relative* preferences the teacher learned — that document A should outrank B, not just that both should get similar scores — and typically outperforms score distillation by 2–3 nDCG points.
 
