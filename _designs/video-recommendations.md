@@ -8,6 +8,8 @@ description: "A deep dive into the ML system design for large-scale video recomm
 thumbnail: /images/posts/video-recommendations.svg
 ---
 
+A deep dive into the ML system design for large-scale video recommendations covering the three-stage retrieval→ranking→re-ranking funnel, two-tower retrieval model, DCN-V2 ranking architecture, cold start, training-serving skew, position bias, and drift monitoring.
+
 ## 1. Problem & ML framing
 
 A billion people watch videos every day across a corpus of a billion uploads. After each video finishes, the system serves 5 recommendations — the "Up Next" slate. The business objective is to maximize total watch time: longer sessions mean more ads served, more creator content consumed, and stronger platform retention. Purely optimizing for clicks produces clickbait that users abandon after 10 seconds; optimizing for watch time aligns the system with what keeps people on the platform.
@@ -45,7 +47,7 @@ Re-ranking applies a policy layer: a diversity mechanism trades off score agains
 
 ## 2. Requirements
 
-Functional
+**Functional**
 
 - FR1: Receive 5 personalized video recommendations after completing a watch
 - FR2: Discover newly uploaded videos within hours of publication
@@ -53,14 +55,16 @@ Functional
 - FR4: Get recommendations that reflect recent watch history shifts
 - FR5: Signal satisfaction through watch time, likes, shares, and subscribes
 - FR6: See fewer repeated recommendations from the same creator
-non-functional
+
+**Non-functional**
 
 - NFR1: p99 serving latency under 200ms end-to-end
 - NFR2: 99.9% availability; degraded mode serves global-popular fallback
 - NFR3: New video embeddings available within 1 hour of upload
 - NFR4: Model retrained daily on fresh engagement data
 - NFR5: 1B DAU, 1B video corpus at sustained peak load
-Out of scope: ad placement and sponsored content ranking, search ranking, live stream recommendations, notifications and email digests, creator-side analytics, content moderation and policy enforcement.
+
+*Out of scope: ad placement and sponsored content ranking, search ranking, live stream recommendations, notifications and email digests, creator-side analytics, content moderation and policy enforcement.*
 
 ## 3. Metrics
 
@@ -70,12 +74,14 @@ Offline
 - nDCG@K per video age bucket: Normalized discounted cumulative gain computed separately for videos uploaded in the last hour, last day, last week, and older. A single aggregate nDCG hides that the model ignores fresh content; per-bucket breakdowns expose cold-start regressions.
 - HitRate@K per user activity decile: Fraction of users who watch at least one recommended video from the top-K slate, stratified by how many videos the user watched in the prior week. Heavy users dominate aggregate metrics; this breakdown surfaces whether the model serves light users well.
 - Expected watch time calibration: Compare predicted watch time against actual watch time in quantile buckets. A model that systematically overpredicts for certain video durations or categories drives bad ranking decisions even if ranking metrics look fine.
+
 Online
 
 - Total watch time per session (north star): Aggregate minutes watched across all recommendations in a session. A 3% lift here means users stay 3% longer.
 - Positive engagement rate: Fraction of recommended impressions that result in a like, share, or subscribe. A pure watch-time optimizer can drift toward passive-consumption content; this guardrail catches that.
 - Session completion rate: Fraction of sessions that end with a user-initiated action (search, browse) rather than a passive exit. A declining rate signals the feed went stale.
 - Creator diversity (guardrail): Fraction of sessions where >80% of recommendations come from a single creator. Above a threshold — typically 15% of sessions — the system is over-concentrating.
+
 ## 4. Data
 
 Sources
@@ -84,6 +90,7 @@ Sources
 - Engagement logs (hundreds of millions/day): Likes, shares, subscribes, comments — weaker signal than watch time (sparse, subject to presentation bias) but essential for multi-task training and diversity guardrails.
 - Video metadata (per upload): Title, description, tags, language, duration, upload timestamp, creator_id, thumbnail features. Static after upload; re-indexed when the creator edits metadata.
 - Content embeddings (per video, batch): Visual and audio features extracted via pretrained models — scene embeddings from a ViT variant, audio fingerprint embeddings, text embeddings from the title/description. Computed once at upload, stored alongside metadata.
+
 Label construction
 
 Watch time is continuous but the model consumes it as a binary classification target through weighted logistic regression: a "positive" is a click (any watch > 0 seconds), and each positive example is weighted by observed watch time. The cross-entropy loss on weighted positives produces a calibrated odds ratio that approximates expected watch time — the model learns P(watch) and the weight pulls the decision boundary to favor longer watches.
@@ -110,16 +117,19 @@ User features
 - Search history: Last 20 search queries, embedded via a pretrained query encoder. Captures explicit intent — a user searching "rust tutorial" should see Rust content even if their watch history is Python.
 - Demographic: Language preference, registered country, account age bucket. Weak signals individually; useful for cold-start users and geographic content relevance.
 - Explicit topic affinities: Aggregated across watch history using a hierarchical topic taxonomy. Updated daily in batch, served from the feature store alongside real-time features.
+
 Item features
 
 - Video embedding (content tower output): A 256-dimensional vector produced by the item tower of the retrieval model. Encodes visual, audio, and textual signals into a compact representation used for both ANN retrieval and as a ranking feature.
 - Metadata: Duration bucket, upload age (hours since publication), language, creator_id, content category from the topic taxonomy.
 - Historical aggregates: 7-day and 30-day watch time, CTR, engagement rate, and subscriber conversion rate. These are popularity signals — useful but dangerous if over-weighted (they amplify the rich-get-richer dynamic).
+
 Context features
 
 - Time of day and day of week: Embedded as cyclic features (sin/cos of hour and weekday). A user watches news in the morning and gaming at night — the model needs to know when the request arrives.
 - Device type and network: Mobile vs. desktop, WiFi vs. cellular. Short-form content performs better on mobile/cellular; long-form on desktop/WiFi.
 - Session position: How many videos the user has watched in the current session. Late-session recommendations drift toward familiar content; early-session recommendations include more exploration.
+
 Feature store
 
 Online features are served from a dual-layer store: a hot Redis cluster holds real-time features (current session state, last 50 watched videos) with sub-millisecond reads, and a periodically refreshed embedding cache holds user and item embeddings computed by the latest model checkpoint. Offline features for training are logged at serving time — every request writes the exact feature vector used, plus the model version, to a feature log — ensuring training-serving parity: the training pipeline reads the same features the model saw, not a separately recomputed version with different timing or transformation.
@@ -140,6 +150,7 @@ The ranking model scores the ~1000 candidates from retrieval with a richer featu
 
 - Cross network: Learns explicit feature interactions as x_{l+1} = x_0 ⊙ (W_l x_l + b_l) + x_l, where x_0 is the input feature vector and ⊙ is element-wise multiplication. Each layer adds a bounded-degree polynomial interaction term. Two to three cross layers capture feature crosses like "user watched creator X in category Y on mobile at night" — combinations a pure MLP would need many more parameters to approximate.
 - Deep network: A standard stack of fully connected ReLU layers learning implicit representations that the cross network's polynomial form cannot capture.
+
 The outputs of both networks are concatenated and passed to a Multi-gate Mixture-of-Experts (MMoE) layer. Instead of a single shared bottom, MMoE maintains E expert networks (each a small MLP) and T task-specific gating networks. Each gate produces a softmax over experts: g^t(x) = softmax(W_{gate}^t x). The task tower receives Σ_e g_e^t(x) · expert_e(x) — a weighted combination of expert outputs. Experts that learn overlapping patterns (e.g., the correlation between long watch time and subscribe) share gradients; experts that learn conflicting patterns (e.g., clickbait produces short watches but high CTR) are gated differently per task, avoiding the negative transfer that plagues a shared-bottom architecture.
 
 Tasks and loss:
@@ -153,6 +164,7 @@ The re-ranker takes the top ~100 scored candidates and selects the final 5. It a
 1. MMR (Maximal Marginal Relevance): Greedy selection where each next pick maximizes score(v) − λ · max similarity(v, already_selected). Similarity is computed as cosine similarity between the ranking model's final hidden representations. λ controls the diversity-vs-relevance trade-off; tuned to λ = 0.3 based on online experiments.
 1. Creator dedup: After MMR selection, if any creator occupies 3+ slots, replace the lowest-scoring duplicate with the highest-scoring candidate from a different creator. Hard cap at 2 per creator.
 1. Freshness boost: Videos uploaded in the last 24 hours receive score ← score × (1 + α · max(0, 1 − age_hours/24)) with α = 0.05. A 1-hour-old video gets a 4.8% boost; a 23-hour-old video gets a 0.2% boost. This is small enough that it only breaks ties among similarly scored candidates — a deeply irrelevant fresh video still won't beat a highly relevant older one.
+
 ## 7. Architecture
 
 ```mermaid
@@ -185,6 +197,7 @@ The pipeline runs daily, triggered after the previous day's engagement logs fina
 1. Distributed training: The ranking model trains on 8-16 GPUs with data parallelism. Each GPU processes a shard of the daily data, computes gradients, and synchronizes via all-reduce. The retrieval model trains separately — it only needs (user_id, video_id, watch_time) triples, and its 256-dimensional embeddings fit comfortably on a single GPU for a day's data.
 1. Evaluation: Compute offline metrics (Recall@K, nDCG@K per age bucket) against the held-out test set. Run calibration checks on predicted vs. actual watch time quantiles. If Recall@100 drops >2% from the previous model, block the push and alert.
 1. Model registry: The validated checkpoint is versioned and pushed to the model registry. Item embeddings are precomputed in batch, L2-normalized, and pushed to the ScaNN index. User tower weights are pushed to the online serving infrastructure where they are loaded into memory for real-time user embedding computation.
+
 ```mermaid
 graph LR
     Request["Client Request<br/>user_id + context"]
@@ -217,9 +230,10 @@ Serving is synchronous within the 200ms budget. Each stage consumes a latency al
 1. Ranking (50-80ms): The DCN-V2 model runs on GPU. The 1000 candidates are scored in a single forward pass (batched inference). The multi-task heads output predicted watch time and engagement probabilities; the scoring function combines them into a final rank score.
 1. Re-ranking (1-5ms): CPU-bound MMR greedy selection over the top ~100 scored candidates, plus dedup and freshness adjustments.
 1. Response assembly (1ms): Package the 5 selected video IDs with scores and serve.
+
 Degraded mode: If the ranking model exceeds its latency budget, the system falls back to serving retrieval scores directly — the dot-product scores from the two-tower model, which are already computed during ANN search. This produces lower-quality recommendations but keeps the system online. If retrieval also fails, serve globally popular videos from a precomputed cache refreshed hourly.
 
-## 8. Deep dives
+## 7. Deep dives
 
 ### DD1: Cold start — new users and new videos
 
@@ -248,6 +262,7 @@ Edge cases:
 - A user who watches one video and never returns: Their embedding updates once, then stagnates. The system treats them as a light user with high uncertainty, mixing more exploration into their slate.
 - A creator who uploads in a completely new category: The content encoder may not have seen enough examples to place the video well. The system falls back to creator-level priors — if the creator's existing audience watches the new video, it inherits that audience's embedding neighborhood.
 - Rapidly trending topics (breaking news): Content embeddings trained on stale data lag behind. The system detects velocity spikes (impressions/hour accelerating) and temporarily boosts the freshness factor in re-ranking until the content embedding catches up on the next daily retrain.
+
 ### DD2: Training-serving skew
 
 Problem. Features computed in the training pipeline differ from features computed at serving time because input data arrives at different times, with different freshness, and sometimes through different code paths. A model trained on stale watch histories and static item aggregates will perform worse in production where those features are real-time — and the gap compounds because production feedback loops feed the biased data back into the next day's training.
@@ -270,6 +285,7 @@ Edge cases:
 
 - Feature store cache invalidation lag: If the user's watch history updates between the time the feature vector is fetched and the time the model scores it (rare, but possible under high concurrency), the logged features don't match what the model actually used. Mitigated by logging the feature version watermark alongside the values and discarding training examples where the watermark changed mid-request.
 - Code change in feature transformation: When a feature transformation changes (e.g., a new embedding model for text), the feature log contains old-format features. The training pipeline detects the schema version and falls back to recomputing features from raw events for the transition period until the new-format logs accumulate a full training window.
+
 ### DD3: Position bias and feedback loops
 
 Problem. Users click the first recommended video more often than the fifth, regardless of relevance — position bias. The model observes this correlation, learns that position 1 items are "better," and reinforces the bias in training data. The next model amplifies it further. Simultaneously, popular videos get more impressions because the model recommends them, generating more engagement data that makes them appear even more popular — a popularity feedback loop. Both effects compound and degrade recommendation diversity and long-term user satisfaction.
@@ -294,6 +310,7 @@ Edge cases:
 
 - Position override in non-standard UIs: If the UI changes (e.g., a horizontal scroll instead of a vertical list), the position effect changes. The feature store must log the UI layout version alongside position so the training pipeline can segment by layout.
 - Exploration slot cannibalization: If the exploration slot consistently underperforms, users may learn to ignore it — the slot becomes a dead zone where even good exploratory picks get no engagement. Mitigated by rotating which slot is the exploration slot (positions 1-5, uniformly distributed) so users can't pattern-match against it.
+
 ### DD4: Monitoring, drift, and continual learning
 
 Problem. User behavior shifts — a new content category emerges, a seasonal pattern changes what people watch in the evening, a competitor launches and pulls away a demographic. The model's training data is always a snapshot of the past, and the gap between that snapshot and current reality — data drift — degrades recommendations silently. Unlike a latency regression or a crash, drift has no sharp alert: watch time declines 0.1% per day for two weeks and suddenly engagement is down 3% with no obvious cause.
@@ -307,6 +324,7 @@ Online metrics are tracked in real time, sliced across dimensions that isolate d
 - Watch time per country and device: Localizes the issue to a specific user segment or infrastructure region.
 - Feature distribution drift (KL divergence): For the top 20 features by importance (from the model's feature attribution), compute KL divergence between the current day's serving distribution and the training distribution. A feature with >0.1 divergence triggers investigation — the model is scoring inputs it wasn't trained on.
 - Prediction calibration drift: Compare predicted watch time quantiles against observed watch time in hourly windows. A divergence means the model's confidence is decoupled from reality, even if ranking order hasn't degraded yet.
+
 Approach 2: Daily retraining with a rolling window
 
 The core defense against drift is retraining frequency. A 28-day rolling training window means the model always trains on the most recent month of data. Daily retraining keeps the model within 24 hours of current behavior. A sharp shift (e.g., a major news event changes viewing patterns overnight) is partially captured the next day and fully captured within a week as the rolling window rotates.
