@@ -162,7 +162,7 @@ The production model is a multi-modal transformer inspired by FLAVA and Meta's W
 
 **Loss function**
 
-```plain text
+```text
 L = α · L_BCE_view_weighted + β · L_reports_prediction
 
 ```
@@ -174,7 +174,7 @@ L = α · L_BCE_view_weighted + β · L_reports_prediction
 
 **Why cross-attention over late fusion?**
 
-```plain text
+```text
                     | Late Fusion                                                     | Cross-Attention (chosen)                                                                                                          
 --------------------|-----------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------
 Pro                 | Simple, fast, each encoder can be pre-trained independently     | Captures cross-modal interactions ("benign text + benign image = harmful meme")                                                   
@@ -189,7 +189,7 @@ Production evidence | —                                                       
 
 ### 7.1 Offline Training Pipeline
 
-```plain text
+```text
 Feature Computation → Training → Evaluation → Model Registry
 
 ```
@@ -212,7 +212,7 @@ Trained models stored in a model registry (MLflow or internal equivalent) with m
 
 ### 7.2 Online Serving Pipeline
 
-```plain text
+```text
 Upload → Feature Fetch → 2-Stage Inference → Action Layer
 
 ```
@@ -248,7 +248,7 @@ CSAM override: any CSAM head score above 0.1 triggers immediate removal and lega
 
 #### Serving-scale numbers
 
-```plain text
+```text
 Metric                | Value      | Notes                                
 ----------------------|------------|--------------------------------------
 Steady-state QPS      | ~12K       | 1B posts/day ÷ 86,400 seconds        
@@ -382,7 +382,7 @@ graph TD
 
 **Rationale grounded in production.** Every major platform uses this pattern. Google's Perspective API distilled BERT → CNN per language before moving to Charformer. YouTube uses hash matching → ML classifiers → human review (96.4% auto-flagged, cascaded). Reddit's LLM Guardrails Service achieves F1 0.97 at sub-25ms p99 latency. The key isn't whether to cascade — it's setting the Stage 1 threshold correctly.
 
-```plain text
+```text
 Stage       | Model                   | Params | Hardware | Latency   | Traffic Exit | Daily Cost
 ------------|-------------------------|--------|----------|-----------|--------------|-----------
 Stage 1     | Distilled MLP           | 0.5M   | CPU      | <10ms     | 95%          | ~$50      
