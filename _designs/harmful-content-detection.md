@@ -1,7 +1,7 @@
 ---
 layout: post
 title: "ML System Design: Harmful-Content Detection"
-category: system-design
+category: ml-system-design
 date: 2026-07-07
 tags: [System Design, ML, Content Moderation]
 description: "We're operating a social platform at Meta/Facebook scale — roughly 1 billion posts per day across text, images, and video, with harmful content making up less than 1% of that volume. At that scale even 0.1% means a million harmful posts daily. The product problem is simple: users who encounter vi..."
