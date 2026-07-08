@@ -159,7 +159,7 @@ The production model is a multi-modal transformer inspired by FLAVA and Meta's W
 
 **Loss function**
 
-```plain text
+```text
 L = α · L_BCE_view_weighted + β · L_reports_prediction
 
 ```
@@ -171,7 +171,7 @@ L = α · L_BCE_view_weighted + β · L_reports_prediction
 
 **Why cross-attention over late fusion?**
 
-```plain text
+```text
                     | Late Fusion                                                     | Cross-Attention (chosen)                                                                                                          
 --------------------|-----------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------
 Pro                 | Simple, fast, each encoder can be pre-trained independently     | Captures cross-modal interactions ("benign text + benign image = harmful meme")                                                   
@@ -186,55 +186,55 @@ Production evidence | —                                                       
 
 ### 7.1 Offline Training Pipeline
 
-```plain text
+```text
 Feature Computation → Training → Evaluation → Model Registry
 
 ```
 
-**#### Feature computation**
+#### Feature computation
 
 Daily batch job (Spark on 500-node cluster) reads raw post data, user logs, and report streams. Joins features with point-in-time correctness — a training example at time T only sees features available at or before T. Materializes training DataFrames to the feature store's offline layer (Parquet on S3/HDFS). Handles class imbalance: downsample benign posts to achieve 30/70 harmful/benign ratio in training batches (not 50/50 — too aggressive, loses information from the majority class).
 
-**#### Training**
+#### Training
 
 Distributed training across 64 GPUs (A100-80GB) using FSDP (Fully Sharded Data Parallel). Mixed precision (fp16), gradient accumulation to simulate larger batches. Training time: ~8 hours for a full epoch over 1B posts. The multi-modal transformer (total ~200M parameters) is pre-trained on the self-supervised comment-prediction task first, then fine-tuned on the 50K labeled set with the view-weighted BCE loss.
 
-**#### Evaluation**
+#### Evaluation
 
 Offline evaluation against the held-out test month (time-based split, never random). Primary metrics: PR-AUC, Recall@Precision95, per-category breakdowns. Before promotion, the new model runs in **shadow mode** alongside production — scores computed but actions ignored — for 24 hours to measure false-positive delta and latency impact.
 
-**#### Model Registry**
+#### Model Registry
 
 Trained models stored in a model registry (MLflow or internal equivalent) with metadata: training data range, evaluation metrics, PR-AUC vs. production baseline, per-category recall. Promotion workflow: shadow → A/B test (5% traffic) → full rollout. Rollback: instant, revert to previous model version. Models are versioned and immutable.
 
 ### 7.2 Online Serving Pipeline
 
-```plain text
+```text
 Upload → Feature Fetch → 2-Stage Inference → Action Layer
 
 ```
 
-**#### Upload & feature fetch**
+#### Upload & feature fetch
 
 Post arrives via API gateway. Request routed to the inference service. Feature fetch service calls the online feature store: content features (text/image embeddings computed at upload time by the encoders, cached in Redis), behavioral features (Bayesian-averaged ratios from a real-time aggregator consuming the event stream), creator features (user embedding from KV store + real-time tallies from counters). Feature fetch p99: 5ms.
 
-**#### Stage 1: Distilled filter**
+#### Stage 1: Distilled filter
 
 A lightweight model — a 3-layer MLP (~500K parameters) trained via knowledge distillation from the heavy transformer. Takes content-only features (text embedding + image embedding max-pooled) and outputs a fast harm probability. Inference time: <10ms on CPU. Threshold set conservatively: only posts scoring above 0.1 proceed to Stage 2; everything below is marked benign. At 1B posts/day, ~95% pass through Stage 1 as clear benign. The remaining ~5% (~50M posts/day, ~600 QPS steady-state) hit Stage 2.
 
 Why not skip Stage 1? Running a 200M-parameter transformer on 1B posts/day would cost ~$5M/day in GPU compute at $2/GPU-hour. Stage 1 runs on CPU at negligible cost — it's the economic enabler.
 
-**#### Stage 2: Heavy multi-modal transformer**
+#### Stage 2: Heavy multi-modal transformer
 
 The full model: cross-attention transformer with behavioral features injected through the lightweight update network. Runs on GPU (T4 or A10G, batched for throughput). Inference time: ~50ms p99 with dynamic batching. Output: calibrated harm probability + per-category scores.
 
 Re-evaluation trigger: when a post accumulates significant new behavioral signals (e.g., 10× the reports expected for its view count), it's re-queued for Stage 2. Re-evaluation skips content encoding (cached from initial pass) and only runs the lightweight update network — ~5ms on CPU.
 
-**#### Calibration layer**
+#### Calibration layer
 
 Platt-scaled logistic regression on top of the raw model score, with per-category bins. Updated every 5 minutes from a sliding window of recent human-reviewed decisions (Meta's bandit calibration approach — parameters computed via running sums, no full retrain needed). Ensures the precision guardrail holds as the content distribution shifts.
 
-**#### Action layer**
+#### Action layer
 
 - **Score ≥ 0.95 calibrated:** Auto-delete. Post removed, notification to creator.
 - **0.7 ≤ score < 0.95:** Demote in feeds (shown only to followers, not in recommendations).
@@ -245,7 +245,7 @@ CSAM override: any CSAM head score above 0.1 triggers immediate removal and lega
 
 #### Serving-scale numbers
 
-```plain text
+```text
 Metric                | Value      | Notes                                
 ----------------------|------------|--------------------------------------
 Steady-state QPS      | ~12K       | 1B posts/day ÷ 86,400 seconds        
@@ -379,7 +379,7 @@ graph TD
 
 **Rationale grounded in production.** Every major platform uses this pattern. Google's Perspective API distilled BERT → CNN per language before moving to Charformer. YouTube uses hash matching → ML classifiers → human review (96.4% auto-flagged, cascaded). Reddit's LLM Guardrails Service achieves F1 0.97 at sub-25ms p99 latency. The key isn't whether to cascade — it's setting the Stage 1 threshold correctly.
 
-```plain text
+```text
 Stage       | Model                   | Params | Hardware | Latency   | Traffic Exit | Daily Cost
 ------------|-------------------------|--------|----------|-----------|--------------|-----------
 Stage 1     | Distilled MLP           | 0.5M   | CPU      | <10ms     | 95%          | ~$50      
