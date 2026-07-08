@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "ML System Design: Video Recommendations"
+category: ml-system-design
 date: 2026-07-08
 tags: [System Design, Machine Learning, Recommendations, YouTube]
 description: "A deep dive into the ML system design for large-scale video recommendations covering the three-stage retrieval→ranking→re-ranking funnel, two-tower retrieval model, DCN-V2 ranking architecture, cold start, training-serving skew, position bias, and drift monitoring."
