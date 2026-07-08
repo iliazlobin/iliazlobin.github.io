@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "System Design: Video Conferencing (Zoom)"
+category: system-design
 date: 2026-07-07
 tags: [System Design]
 description: "Video conferencing connects hundreds of participants in a real-time audio/video session where every frame must travel from a speaker's camera to every listener's screen in under 150ms."
