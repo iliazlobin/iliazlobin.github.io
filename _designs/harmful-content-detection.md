@@ -1,6 +1,7 @@
 ---
 layout: post
 title: "ML System Design: Harmful-Content Detection"
+category: ml-system-design
 date: 2026-07-08
 tags: [System Design, Machine Learning, Content Moderation, Trust & Safety]
 description: "A deep dive into the ML system design for large-scale harmful content detection, covering the two-stage inference cascade, multi-modal cross-attention transformer, calibration layer, positive-suppression bias, and drift monitoring."
