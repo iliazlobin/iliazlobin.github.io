@@ -334,7 +334,7 @@ BEGIN;
 COMMIT;
 ```
 
-```plain text
+```text
 Worker loop (runs every 1 second):
   SELECT * FROM outbox WHERE processed_at IS NULL ORDER BY created_at LIMIT 10;
   FOR EACH row:
@@ -418,7 +418,7 @@ FOR EACH ROW
 EXECUTE FUNCTION verify_batch_balance();
 ```
 
-```plain text
+```text
 verify_batch_balance():
   SELECT batch_id,
          SUM(amount) FILTER (WHERE side = 'debit')  AS debits,
@@ -464,7 +464,7 @@ Rationale: The ledger is the system of record for money. A bug that violates the
 
 **Approach 1: Row-by-row matching with tolerance**
 
-```plain text
+```text
 Reconciliation loop (runs hourly):
   report = fetch_settlement_report(psp, date_from, date_to)
   FOR EACH row IN report:
@@ -486,7 +486,7 @@ Reconciliation loop (runs hourly):
 
 **Approach 2: Hash-based batch reconciliation**
 
-```plain text
+```text
 internal_hash = MD5(
   SELECT string_agg(intent_id || ':' || amount::text, ',' ORDER BY created_at)
   FROM ledger_entries WHERE created_at BETWEEN $1 AND $2

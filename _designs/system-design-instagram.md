@@ -353,7 +353,7 @@ Store each edge on the shard owned by the edge ID. Both directions require scatt
 
 **TAO cache hierarchy:**
 
-```plain text
+```text
 Client → TAO Cache (in-process, LRU, 96% hit)
        → TAO Server (in-memory assoc list, sharded)
        → MySQL (persistent, async replication)
