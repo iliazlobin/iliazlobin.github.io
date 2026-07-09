@@ -4,7 +4,7 @@ title: "ML System Design: Video Recommendations"
 category: ml-system-design
 date: 2026-07-08
 tags: [System Design]
-description: "A billion people watch videos every day across a corpus of a billion uploads. After each video finishes, the system serves 5 recommendations — the "Up Next" slate."
+description: "A billion people watch videos every day across a corpus of a billion uploads. After each video finishes, the system serves 5 recommendations — the \"Up Next\" slate."
 thumbnail: /images/posts/video-recommendations.svg
 ---
 
