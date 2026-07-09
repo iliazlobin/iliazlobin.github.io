@@ -1,7 +1,6 @@
 ---
 layout: page
 title: Portfolio
-nav_title: Work
 permalink: /portfolio/
 description: "Selected work by Ilia Zlobin across AI/agentic systems, cloud platform engineering, and applied ML — each with source code, architecture diagrams, and walkthrough videos."
 ---
