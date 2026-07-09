@@ -11,6 +11,7 @@ thumbnail: /images/posts/ml-system-design-fraud-detection.svg
 A payment platform processes millions of transactions daily. Every transaction carries a risk: a stolen card used for a high-value purchase, a merchant fabricating orders to collect on chargebacks, a fraud ring testing compromised cards with micro-transactions before draining accounts.
 
 <!--more-->
+
 ## 1. Problem & ML framing
 
 A payment platform processes millions of transactions daily. Every transaction carries a risk: a stolen card used for a high-value purchase, a merchant fabricating orders to collect on chargebacks, a fraud ring testing compromised cards with micro-transactions before draining accounts. The product must score every transaction in real time — approve legitimate purchases, decline high-confidence fraud, and route borderline cases for manual review — while adapting as fraudsters evolve their techniques. The business objective is to minimize fraud loss in dollars while capping the false-positive rate so legitimate customers are not turned away at checkout.
@@ -27,7 +28,6 @@ graph LR
 
     classDef light fill:#F5F5F5,stroke:#555,color:#1A1A1A
     class T,FE,S,D,A light
-
 ```
 
 ## 2. Requirements
@@ -46,7 +46,7 @@ graph LR
 - NFR3: 99.99% serving availability; degrade to rule-only fallback if the model path fails.
 - NFR4: Feature freshness under 1 minute for velocity aggregates; model retrained daily.
 
-**Out of scope:** payment processing and fund settlement, PCI compliance and tokenization, KYC/identity verification, merchant onboarding and underwriting.
+*Out of scope: payment processing and fund settlement, PCI compliance and tokenization, KYC/identity verification, merchant onboarding and underwriting.*
 
 ## 3. Metrics
 
@@ -194,7 +194,6 @@ graph TB
     classDef decision fill:#E0E0E0,stroke:#888,color:#1A1A1A
     class T,S1,FE2,S2 light
     class AP,DC,RV decision
-
 ```
 
 ## 7. Architecture
@@ -232,7 +231,6 @@ graph TB
     classDef pipeline fill:#E8E8E8,stroke:#999,color:#1A1A1A
     class DL,FE_OFF,TD,GRAPH,GE,TR,EV,MR,FS,REQ,PRE,F1,FON,F2,RT,ACT,FS_ON light
     class Offline,Online pipeline
-
 ```
 
 #### Offline training pipeline
@@ -373,3 +371,15 @@ The model is trained with a feature mask that indicates which features are "warm
 > [!TIP]
 > **Key insight:** Cold start in fraud detection is less about missing features and more about *which* features are missing. The model should know when it is operating blind — and a feature-mask approach gives the model that self-awareness, letting it fall back on graph signals that are always available regardless of the entity's age.
 
+## 9. References
+
+1. [XGBoost: A Scalable Tree Boosting System — Chen & Guestrin (2016)](https://arxiv.org/abs/1603.02754)
+1. [LightGBM: A Highly Efficient Gradient Boosting Decision Tree — Ke et al. (Microsoft, NeurIPS 2017)](https://papers.nips.cc/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html)
+1. [Focal Loss for Dense Object Detection — Lin et al. (Facebook AI, ICCV 2017)](https://arxiv.org/abs/1708.02002)
+1. [Inductive Representation Learning on Large Graphs (GraphSAGE) — Hamilton et al. (Stanford, NeurIPS 2017)](https://arxiv.org/abs/1706.02216)
+1. [Stripe Radar: How Radar Works](https://docs.stripe.com/radar/how-radar-works)
+1. [Stripe Radar: Custom Fraud Models](https://docs.stripe.com/radar/custom-fraud-models)
+1. [Stripe Radar: Optimize Risk Factors](https://docs.stripe.com/radar/optimize-risk-factors)
+1. [Viral Spam Content Detection at LinkedIn — LinkedIn Engineering](https://www.linkedin.com/blog/engineering/trust-and-safety/viral-spam-content-detection-at-linkedin)
+1. [Cost-Sensitive Learning for Fraud Detection — PayPal Engineering Blog](https://medium.com/paypal-engineering/cost-sensitive-learning-for-fraud-detection-45419b5f30cd)
+1. [Ad Click Prediction: A View from the Trenches — McMahan et al. (Google, KDD 2013) — FTRL-Proximal online learning](https://research.google/pubs/pub41159/)
