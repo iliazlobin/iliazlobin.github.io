@@ -1,6 +1,7 @@
 ---
 layout: page
 title: Machine Learning
+nav_title: ML
 permalink: /machine-learning/
 description: "Machine-learning system design write-ups by Ilia Zlobin — end-to-end ML architectures with data and feature pipelines, model and serving deep dives, evaluation, and trade-offs."
 ---

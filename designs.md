@@ -1,6 +1,7 @@
 ---
 layout: page
 title: System Design
+nav_title: Design
 permalink: /designs/
 description: "System design write-ups by Ilia Zlobin — production-grade architectures with diagrams, data models, deep dives, and trade-offs."
 ---

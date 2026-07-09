@@ -19,8 +19,11 @@
   }
   .site-nav .page-link {
     display: inline-block !important;
-    padding: 0 10px !important;
+    padding: 0 !important;
     margin-left: 0 !important;
-    margin-right: 20px !important;
+    margin-right: 16px !important;
+    line-height: 2.1 !important;   /* breathing room between wrapped rows */
+    font-size: 0.95rem !important; /* a touch smaller so more fit per row */
   }
+  .site-nav .page-link:last-child { margin-right: 0 !important; }
 }
