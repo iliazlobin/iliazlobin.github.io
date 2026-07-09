@@ -19,7 +19,7 @@
   }
   .site-nav .page-link {
     display: inline-block !important;
-    padding: 0 !important;
+    padding: 4px 0 !important;
     margin-left: 0 !important;
     margin-right: 16px !important;
     line-height: 2.1 !important;   /* breathing room between wrapped rows */
