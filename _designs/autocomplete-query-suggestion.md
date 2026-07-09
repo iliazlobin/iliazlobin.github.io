@@ -148,13 +148,13 @@ A finite-state transducer (FST) encoded trie, precomputed from the full query co
 
 At serving time: walk the FST with the typed prefix (exact match, O(∣p∣)). In parallel, fetch the 1-edit and 2-edit fuzzy candidates from the precomputed pointers. Merge and deduplicate. Return the top *M* candidates. This stage is pure recall — its job is to ensure the correct completion is in the candidate set.
 
-**Tradeoff (FST vs. Elasticsearch completion suggestor):** FST lookup is sub-millisecond, in-memory, and requires no inter-service RPC; Elasticsearch provides richer fuzzy matching and real-time indexing but adds 5–15 ms of network + query overhead. For 100K QPS with a 50 ms total budget, in-memory FST is non-negotiable on the hot path.
+**Tradeoff (FST vs. Elasticsearch completion suggester):** FST lookup is sub-millisecond, in-memory, and requires no inter-service RPC; Elasticsearch provides richer fuzzy matching and real-time indexing but adds 5–15 ms of network + query overhead. For 100K QPS with a 50 ms total budget, in-memory FST is non-negotiable on the hot path.
 
 ### Stage 2: LTR re-ranker (precision-optimized)
 
 A gradient-boosted decision tree (LightGBM with LambdaRank objective) re-ranks the M candidates from Stage 1 into the final K=5 suggestions. Input: the full feature vector from §5 per (prefix, user, candidate) tuple. The model scores each candidate independently and sorts by predicted selection probability.
 
-**LambdaRank loss:** pairwise, with the gradient scaled by the delta-NDCG of swapping each pair. This directly optimizes the ranking metric (MRR is the top-1 special case of NDCG) rather than treating the problem as pointwise classification, which would over-optimize the easy negatives and under-weight the rank position.
+**LambdaRank loss:** pairwise, with the gradient scaled by the delta-NDCG of swapping each pair. This directly optimizes the ranking metric (NDCG and MRR both reward the same rank-position ordering; LambdaRank's delta-NDCG gradient aligns with improving MRR) rather than treating the problem as pointwise classification, which would over-optimize the easy negatives and under-weight the rank position.
 
 **Tradeoff (GBDT vs. two-tower neural):** A two-tower model (user tower + candidate tower into a shared embedding space, trained with sampled softmax) could serve as the candidate generator and ranker in one stage. It would handle personalization natively and learn richer embeddings. However, for a 50 ms budget, the two-tower requires an ANN index (e.g., ScaNN or FAISS) that adds 2–5 ms of vector search latency on top of the embedding computation; the trie+LTR pipeline completes in under 10 ms total. The trie is also trivially explainable and debuggable (every completion maps to a corpus entry), whereas an ANN index requires nearest-neighbor verification. The GBDT ranking stage is trained as a binary classifier on the logged (prefix, candidate) pairs with the LambdaRank objective:
 
