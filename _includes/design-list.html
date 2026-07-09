@@ -46,5 +46,5 @@
 </div>
 </div>
 {%- else %}
-<p>No designs yet — first write-ups landing soon.</p>
+<p>{{ include.empty_text | default: "No designs yet — first write-ups landing soon." }}</p>
 {%- endif %}
