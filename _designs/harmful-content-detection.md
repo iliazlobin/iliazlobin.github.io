@@ -11,6 +11,7 @@ thumbnail: /images/posts/harmful-content-detection.svg
 We're operating a social platform at Meta/Facebook scale — roughly 1 billion posts per day across text, images, and video, with harmful content making up less than 1% of that volume. At that scale even 0.1% means a million harmful posts daily.
 
 <!--more-->
+
 ## 1. Problem & ML framing
 
 We're operating a social platform at Meta/Facebook scale — roughly 1 billion posts per day across text, images, and video, with harmful content making up less than 1% of that volume. At that scale even 0.1% means a million harmful posts daily. The product problem is simple: users who encounter violent, hateful, or sexually explicit content leave the platform, advertisers flee, and regulators fine you. The business objective is to minimize the number of views of harmful content, subject to a precision guardrail of at least 95% for automated removal — because false positives (legitimate posts wrongly deleted) drive users away just as reliably as the toxic stuff does.
@@ -42,7 +43,6 @@ graph LR
     class Upload,Stage1,Stage2,Calibrate svc;
     class Features store_rhombus;
     class Action action;
-
 ```
 
 ## 2. Requirements
@@ -62,7 +62,7 @@ graph LR
 - NFR3: Precision ≥ 95% for auto-delete actions — calibrated per harm category, enforced by a dedicated calibration layer.
 - NFR4: Model updates within 5 minutes of detected drift; full retraining cycle (shadow → A/B → promote) within 24 hours.
 
-**Out of scope:** comment-level moderation, live-stream moderation, advertiser content policy, appeals management UX, reviewer tooling, regulatory reporting.
+*Out of scope: comment-level moderation, live-stream moderation, advertiser content policy, appeals management UX, reviewer tooling, regulatory reporting.*
 
 ## 3. Metrics
 
@@ -161,7 +161,6 @@ The production model is a multi-modal transformer inspired by FLAVA and Meta's W
 
 ```text
 L = α · L_BCE_view_weighted + β · L_reports_prediction
-
 ```
 
 - **L_BCE_view_weighted:** Binary cross-entropy where each post's contribution is scaled by `min(log(1 + views), c)`. c is a cap (e.g., 20) to prevent viral outliers from dominating the loss. This directly aligns the loss with the business objective — the model pays more attention to posts that more people will see. A harmful post with 1M views contributes ~13.8× more to the loss than one with 10 views.
@@ -177,7 +176,6 @@ L = α · L_BCE_view_weighted + β · L_reports_prediction
 Pro                 | Simple, fast, each encoder can be pre-trained independently     | Captures cross-modal interactions ("benign text + benign image = harmful meme")                                                   
 Con                 | Misses cross-modal harm — each modality classified in isolation | 2-3× inference cost, requires joint training                                                                                      
 Production evidence | —                                                               | Unified representation (WPIE-style) replaced dozens of single-modality classifiers in production, deployed in weeks across markets
-
 ```
 
 **Decision:** Cross-attention. At 1B posts/day, the extra compute cost is absorbed by the two-stage cascade — only 5% of posts reach the heavy model. The cross-modal reasoning is essential because the hardest harmful content (memes, coded language, context-dependent imagery) exploits modality gaps.
@@ -188,7 +186,6 @@ Production evidence | —                                                       
 
 ```text
 Feature Computation → Training → Evaluation → Model Registry
-
 ```
 
 #### Feature computation
@@ -211,7 +208,6 @@ Trained models stored in a model registry (MLflow or internal equivalent) with m
 
 ```text
 Upload → Feature Fetch → 2-Stage Inference → Action Layer
-
 ```
 
 #### Upload & feature fetch
@@ -256,7 +252,6 @@ End-to-end p99        | <200ms     | Including feature fetch + action
 Stage 1 traffic exit  | ~95%       | Only ~5% of posts reach GPU inference
 GPUs required         | ~8 T4/A10G | For Stage 2 serving at steady state  
 Daily GPU cost        | ~$400/day  | At $2/GPU-hour reserved              
-
 ```
 
 ```mermaid
@@ -302,7 +297,6 @@ graph TB
     class RawData,Registry store;
     class Action action;
     class Spark,Train,Eval offline;
-
 ```
 
 ## 8. Deep dives
@@ -358,9 +352,7 @@ graph TD
     class Post,Classify,Survives,Removed node;
     class Training,Retrain bias;
     class Holdout fix;
-
 ```
-
 
 > [!TIP]
 > **The feedback loop is asymmetric.** Precision guardrails prevent the model from becoming *too aggressive* (false positives get appealed and corrected), but nothing automatically corrects *leniency* — false negatives are invisible until user reports come in, which takes hours or days. The system's natural drift is toward under-detection. The holdout is the only production signal telling you "your model missed X harmful posts that would have accumulated Y reports each." Without it, you're flying blind on recall.
@@ -385,7 +377,6 @@ Stage       | Model                   | Params | Hardware | Latency   | Traffic 
 Stage 1     | Distilled MLP           | 0.5M   | CPU      | <10ms     | 95%          | ~$50      
 Stage 2     | Multi-modal transformer | 200M   | GPU (T4) | ~50ms     | 5%           | ~$350     
 **Blended** | —                       | —      | —        | ~12ms avg | —            | **~$400** 
-
 ```
 
 **Edge cases.** When content distribution shifts (e.g., a spam wave creates millions of nearly-identical harmful posts), Stage 1's threshold may need dynamic adjustment. If Stage 1 sees a sudden spike in scores between 0.05 and 0.10, we lower the threshold to 0.05 temporarily and route more traffic to Stage 2 — scaling up GPU capacity preemptively. Conversely, if Stage 2 is overloaded and latency is spiking, we can raise Stage 1's threshold slightly (to 0.15) and accept a small recall hit during the incident, prioritizing availability over perfect accuracy.
@@ -418,3 +409,23 @@ Stage 2     | Multi-modal transformer | 200M   | GPU (T4) | ~50ms     | 5%      
 
 **Edge cases.** Adversarial adaptation cycles faster than 5 minutes — a coordinated attack can flood the platform with variants before the calibration adapts. For these, we have a separate "emergency circuit breaker": if user reports on a specific text pattern spike 100× above baseline in a 5-minute window, that pattern is temporarily added to the Stage 1 hash-match blocklist (tier 1 of the cascade) bypassing the ML pipeline entirely. This is the nuclear option — it causes false positives but stops a viral harm wave while the ML system catches up.
 
+## 9. References
+
+1. [Meta — Few-Shot Learner: Adapting to New Harmful Content](https://ai.meta.com/blog/harmful-content-can-evolve-quickly-our-new-ai-system-adapts-to-tackle-it/)
+1. [Meta — Whole Post Integrity Embeddings (WPIE)](https://ai.meta.com/blog/community-standards-report/)
+1. [Meta — Generalized AI for Content Moderation](https://ai.meta.com/blog/the-shift-to-generalized-ai-to-better-identify-violating-content/)
+1. [Meta — Bandits for Online Calibration of Content Moderation](https://hamsabastani.github.io/metacm.pdf)
+1. [Meta — TIES: Temporal Interaction Embeddings in Social Networks (KDD 2020)](https://doi.org/10.1145/3394486.3403364)
+1. [Meta — Preserving Integrity in Online Social Networks (ACM Survey)](https://cacm.acm.org/research/preserving-integrity-in-online-social-networks/)
+1. [Perspective API — Model Cards & Architecture](https://developers.perspectiveapi.com/s/about-the-api-model-cards)
+1. [Perspective API v2 — UTC Charformer (KDD 2022)](https://doi.org/10.1145/3534678.3539147)
+1. [YouTube — The Four Rs of Responsibility: Remove Harmful Content](https://blog.youtube/inside-youtube/the-four-rs-of-responsibility-remove/)
+1. [YouTube — Community Guidelines Enforcement (Transparency Report)](https://support.google.com/transparencyreport/answer/9198203)
+1. [Twitter/X — Trust & Safety Models (the-algorithm)](https://github.com/twitter/the-algorithm)
+1. [Reddit — REV2 Rule Execution Engine (InfoQ)](https://www.infoq.com/news/2023/10/reddit-rev2/)
+1. [Reddit — Keeping Reddit Real and Safe in the AI Era](https://redditinc.com/news/how-were-keeping-reddit-real-and-safe-in-the-ai-era)
+1. [Discord — Osprey: Open Sourcing Our Rule Engine](https://discord.com/blog/osprey-open-sourcing-our-rule-engine)
+1. [Chip Huyen — Data Distribution Shifts and Monitoring](https://huyenchip.com/2022/02/07/data-distribution-shifts-and-monitoring.html)
+1. [Chip Huyen — Designing Machine Learning Systems (Book)](https://github.com/chiphuyen/dmls-book)
+1. [Feedback Loops in Machine Learning Systems — ACM Classification](https://dl.acm.org/doi/fullHtml/10.1145/3617694.3623227)
+1. [Algorithmic Censoring in Dynamic Learning Systems (arXiv)](https://arxiv.org/abs/2305.09035)
