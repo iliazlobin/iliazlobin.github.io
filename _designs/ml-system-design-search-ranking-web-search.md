@@ -11,6 +11,7 @@ thumbnail: /images/posts/ml-system-design-search-ranking-web-search.svg
 A web-scale search engine receives 40K+ queries per second and must return a ranked list of the most relevant documents from a corpus of over 100 billion pages. Users type a few words and expect the answer in the top three results — if the answer isn't there, they reformulate or leave.
 
 <!--more-->
+
 ## 1. Problem & ML framing
 
 A web-scale search engine receives 40K+ queries per second and must return a ranked list of the most relevant documents from a corpus of over 100 billion pages. Users type a few words and expect the answer in the top three results — if the answer isn't there, they reformulate or leave. The product goal is to minimize the time from query to task completion.
@@ -27,7 +28,6 @@ graph LR
 
     classDef light fill:#F5F5F5,stroke:#555,color:#1A1A1A
     class D,TR,M,S,U light
-
 ```
 
 ## 2. Requirements
@@ -46,7 +46,7 @@ graph LR
 - NFR3: 99.9% serving availability; graceful degradation when sub-systems fail.
 - NFR4: Training ≤ 24 hr on current hardware; retrained weekly and on drift alerts.
 
-**Out of scope:** query spelling correction, query suggestion/autocomplete, image/video search ranking, ad placement and auction logic.
+*Out of scope: query spelling correction, query suggestion/autocomplete, image/video search ranking, ad placement and auction logic.*
 
 ## 3. Metrics
 
@@ -154,7 +154,6 @@ graph LR
 
     classDef light fill:#F5F5F5,stroke:#555,color:#1A1A1A
     class Q,S1,S2,S3,S4 light
-
 ```
 
 #### Stage 1: Candidate generation (100B → 10K)
@@ -224,7 +223,6 @@ graph TB
     classDef pipeline fill:#E8E8E8,stroke:#999,color:#1A1A1A
     class D1,FE1,TD,D2,TR,EV,MR,FS_O,Q,QP,CGEN,FON,RANK,SERP,FS_ON light
     class Offline,Online pipeline
-
 ```
 
 #### Offline training pipeline
@@ -273,7 +271,7 @@ Each training example is weighted by the inverse of its propensity to be observe
 
 Rather than weighting examples, model the click probability as:
 
-*P(click | relevance, position) = α_position × P(exam | position) × P(click | exam, relevance)*
+*P(click \| relevance, position) = α_position × P(exam \| position) × P(click \| exam, relevance)*
 
 where *α_position* is the position-specific examination probability learned from the randomization data. During training, the loss is computed against the inferred relevance rather than the raw click. At inference, position features are zeroed out so the model scores on relevance alone.
 
@@ -361,3 +359,17 @@ For ultra-fresh content, maintain a separate "real-time index" of documents craw
 > [!TIP]
 > **Key insight:** Freshness isn't a single global setting — it's a query-level parameter that itself drifts over time. A freshness model trained in January will be wrong by November as news cycles, seasonal patterns, and user expectations shift. Treating the freshness decay function as a monitored, auto-tuned parameter turns a static heuristic into a living system.
 
+## 9. References
+
+1. [From RankNet to LambdaRank to LambdaMART: An Overview — Burges (Microsoft Research, 2010)](https://www.microsoft.com/en-us/research/publication/from-ranknet-to-lambdarank-to-lambdamart-an-overview/)
+1. [BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding — Devlin et al. (Google, 2019)](https://arxiv.org/abs/1810.04805)
+1. [Passage Re-ranking with BERT — Nogueira & Cho (NYU/Google, 2019)](https://arxiv.org/abs/1901.04085)
+1. [Dense Passage Retrieval for Open-Domain Question Answering — Karpukhin et al. (Facebook AI, 2020)](https://arxiv.org/abs/2004.04906)
+1. [ScaNN: Efficient Vector Similarity Search — Guo et al. (Google, ICML 2020)](https://arxiv.org/abs/2112.05927)
+1. [Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs — Malkov & Yashunin (2018)](https://arxiv.org/abs/1603.09320)
+1. [Position Bias Estimation for Unbiased Learning to Rank in Personal Search — Wang et al. (Google, WSDM 2018)](https://research.google/pubs/pub47017/)
+1. [Unbiased Learning to Rank: Theory and Practice — Ai et al. (2018)](https://arxiv.org/abs/1811.03883)
+1. [Distilling the Knowledge in a Neural Network — Hinton et al. (Google, 2014)](https://arxiv.org/abs/1503.02531)
+1. [Applying Deep Learning to Airbnb Search — Haldar et al. (Airbnb, KDD 2019)](https://arxiv.org/abs/1810.09591)
+1. [Improving Search Relevance at Indeed with Learned Ranking Functions — Indeed Engineering Blog (2020)](https://engineering.indeedblog.com/blog/2020/09/improving-search-relevance/)
+1. [Feast: Feature Store for Machine Learning — Tecton / open-source](https://docs.feast.dev/)
