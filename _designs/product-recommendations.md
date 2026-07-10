@@ -1,7 +1,7 @@
 ---
 layout: post
 title: "ML System Design: Product Recommendations"
-category: ml-system-design
+category: system-design-ml
 date: 2026-07-09
 tags: [System Design]
 description: "An e-commerce platform with 100M+ products and tens of millions of daily active users needs to show each visitor a personalized list of products they are most likely to purchase."
