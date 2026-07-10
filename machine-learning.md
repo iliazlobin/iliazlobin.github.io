@@ -16,4 +16,4 @@ description: "Machine-learning system design write-ups by Ilia Zlobin — end-to
 
 <p class="portfolio-intro">Machine-learning system design write-ups — end-to-end ML architectures, section for section: problem &amp; ML framing, data and features, model, training and serving, evaluation, and the deep dives. Diagrams and code throughout.</p>
 
-{% include design-list.html category="ml-system-design" prefix="ML System Design: " label="Machine Learning" %}
+{% include design-list.html category="system-design-ml" prefix="ML System Design: " label="Machine Learning" %}
