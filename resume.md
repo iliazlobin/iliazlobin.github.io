@@ -10,9 +10,8 @@ description: "Ilia Zlobin — Principal/Staff Software Engineer with 14+ years b
 **Location:** San Francisco, Bay Area, CA  
 **Work Authorization:** Green Card
 
-**Phone:** [+1-551-275-4034](tel:+15512754034)  
 **Email:** [iliazlobin91@gmail.com](mailto:iliazlobin91@gmail.com)  
-**Portfolio:** [iliazlobin.com/portfolio](/portfolio/)  
+**Projects:** [iliazlobin.com/portfolio](/portfolio/)  
 **LinkedIn:** [linkedin.com/in/iliazlobin](https://www.linkedin.com/in/iliazlobin)  
 **GitHub:** [github.com/iliazlobin](https://github.com/iliazlobin)  
 **LeetCode:** [leetcode.com/u/iliazlobin](https://leetcode.com/u/iliazlobin/)  
