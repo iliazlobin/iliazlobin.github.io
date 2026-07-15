@@ -1,14 +1,40 @@
 {%- comment %}
-  Renders one category's designs as the Portfolio-style rail + feed. Dedicated
-  single-category pages (System Design, Machine Learning) call this once; the page's
-  own H1 + intro supply the heading, so no per-category section header is emitted.
+  Renders one category's designs as the Portfolio-style rail + feed, with a tag filter.
+  Dedicated single-category pages (System Design, Machine Learning, Infra, Tech, Research)
+  call this once; the page's own H1 + intro supply the heading.
   Params:
-    include.category — front-matter `category:` slug to filter on
-    include.prefix   — title prefix stripped from each card's display name
-    include.label    — small-caps label shown atop the sidebar rail
+    include.category    — front-matter `category:` slug to filter on
+    include.prefix      — title prefix stripped from each card's display name
+    include.label       — small-caps label shown atop the sidebar rail
+    include.count_noun  — singular noun for the result counter (default "write-up")
+    include.empty_text  — shown when the category has no designs yet
+  The tag filter reuses the blog's setupBlogFilter() (assets/js/site.js) — same
+  data-blog-filter / data-blog-feed / data-blog-tags contract, layout-agnostic.
 {%- endcomment %}
 {%- assign designs = site.designs | where: "category", include.category | sort: "date" | reverse %}
 {%- if designs.size > 0 %}
+
+{%- comment %} Tag universe for THIS category (name + count) — powers the filter box + suggestions. {%- endcomment %}
+{%- assign all_tags = "" | split: "" %}
+{%- for d in designs %}{%- assign all_tags = all_tags | concat: d.tags %}{%- endfor %}
+{%- assign uniq_tags = all_tags | uniq | sort %}
+
+{%- if uniq_tags.size > 0 %}
+<div class="blog-controls" data-blog-filter data-count-noun="{{ include.count_noun | default: 'write-up' }}">
+  <div class="tag-input" data-tag-input>
+    <svg class="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path></svg>
+    <span class="ti-tokens"></span>
+    <input type="text" class="ti-field" placeholder="Filter by tag…" aria-label="Filter {{ include.label }} write-ups by tag" autocomplete="off" spellcheck="false">
+    <div class="ti-suggest" hidden role="listbox" aria-label="Tag suggestions"></div>
+  </div>
+  <div class="bc-right">
+    <span class="result-count" data-result-count></span>
+    <button class="ti-clear" data-tag-clear type="button" hidden>Clear all</button>
+  </div>
+</div>
+<script type="application/json" data-blog-tags>[{%- for t in uniq_tags %}{%- assign m = all_tags | where_exp: "x", "x == t" %}{"name": {{ t | jsonify | replace: '</', '<\/' }}, "count": {{ m.size }}}{%- unless forloop.last %},{% endunless %}{%- endfor %}]</script>
+{%- endif %}
+
 <div class="portfolio-layout">
 
 <aside class="portfolio-rail">
@@ -17,17 +43,17 @@
     <nav>
       {%- for d in designs %}
       {%- assign name = d.title | remove_first: include.prefix %}
-      <a href="#{{ d.title | slugify }}" data-spy><span class="nm">{{ name | escape }}</span></a>
+      <a href="#{{ d.title | slugify }}" data-spy data-tags="{{ d.tags | join: '|' | escape }}"><span class="nm">{{ name | escape }}</span></a>
       {%- endfor %}
     </nav>
   </div>
 </aside>
 
-<div class="portfolio-feed">
+<div class="portfolio-feed" data-blog-feed>
   {%- for d in designs %}
   {%- assign name = d.title | remove_first: include.prefix %}
   {%- assign seed = d.title | size | modulo: 6 %}
-  <article id="{{ d.title | slugify }}" class="portfolio-item">
+  <article id="{{ d.title | slugify }}" class="portfolio-item" data-tags="{{ d.tags | join: '|' | escape }}">
     {%- if d.thumbnail %}
     <a class="thumb" href="{{ d.url | relative_url }}" aria-label="{{ name | escape }} — read the design"><img src="{{ d.thumbnail | relative_url }}?v={{ site.time | date: '%s' }}" alt="{{ name | escape }} architecture diagram" loading="lazy"></a>
     {%- else %}
@@ -37,7 +63,7 @@
       <h3><a href="{{ d.url | relative_url }}">{{ name | escape }}</a></h3>
       <p>{{ d.description | default: d.excerpt | strip_html | truncatewords: 46 }}</p>
       {%- if d.tags.size > 0 %}
-      <ul class="tags">{% for tag in d.tags %}<li>{{ tag | escape }}</li>{% endfor %}</ul>
+      <div class="pc-tags">{%- for tag in d.tags %}<a class="tag" data-tag="{{ tag | escape }}" href="?tag={{ tag | url_encode }}">{{ tag | escape }}</a>{%- endfor %}</div>
       {%- endif %}
       <div class="links"><a class="gh" href="{{ d.url | relative_url }}">Read the design →</a>{% if d.mvp_repo %}<a class="gh" href="{{ d.mvp_repo }}" target="_blank" rel="noopener">GitHub MVP ↗</a>{% endif %}</div>
     </div>
@@ -45,6 +71,8 @@
   {%- endfor %}
 </div>
 </div>
+
+<p class="no-results" hidden>No {{ include.label | downcase }} write-ups match that filter. <button class="link-btn" data-filter-clear type="button">Clear filter</button></p>
 {%- else %}
 <p>{{ include.empty_text | default: "No designs yet — first write-ups landing soon." }}</p>
 {%- endif %}

@@ -12,8 +12,17 @@ layout: default
       </time>
       <span class="reading-time">{{ minutes }} min read</span>
       {%- if page.tags and page.tags.size > 0 %}
+      {%- comment %} A design's tags route to ITS OWN category page (with ?tag= filter), not the blog. {%- endcomment %}
+      {%- case page.category %}
+        {%- when 'tech' %}{%- assign tag_base = '/tech/' %}
+        {%- when 'infra' %}{%- assign tag_base = '/infrastructure/' %}
+        {%- when 'system-design-ml' %}{%- assign tag_base = '/machine-learning/' %}
+        {%- when 'research' %}{%- assign tag_base = '/research/' %}
+        {%- when 'system-design' %}{%- assign tag_base = '/designs/' %}
+        {%- else %}{%- assign tag_base = '/blog/' %}
+      {%- endcase %}
       <span class="post-tags">
-        {%- for tag in page.tags %}<a class="tag" href="{{ '/blog/' | relative_url }}?tag={{ tag | url_encode }}">{{ tag }}</a>{% endfor -%}
+        {%- for tag in page.tags %}<a class="tag" href="{{ tag_base | relative_url }}?tag={{ tag | url_encode }}">{{ tag }}</a>{% endfor -%}
       </span>
       {%- endif %}
     </div>
