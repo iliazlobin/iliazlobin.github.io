@@ -3,7 +3,7 @@ layout: post
 title: "ML System Design: Video Recommendations"
 category: system-design-ml
 date: 2026-07-08
-tags: [System Design]
+tags: [Machine-Learning, Video-Recommendation, Recommendation, Ranking]
 description: "A billion people watch videos every day across a corpus of a billion uploads. After each video finishes, the system serves 5 recommendations — the \"Up Next\" slate."
 thumbnail: /images/posts/video-recommendations.svg
 ---

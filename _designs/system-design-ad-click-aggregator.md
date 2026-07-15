@@ -3,7 +3,7 @@ layout: post
 title: "System Design: Ad Click Aggregator"
 category: system-design
 date: 2026-07-01
-tags: [System Design]
+tags: [Stream-Processing, Ad-Tech, Aggregation, Kafka, Flink, Fraud-Detection]
 description: "An ad platform processes clicks from millions of users across thousands of publisher sites."
 thumbnail: /images/posts/2026-07-01-system-design-ad-click-aggregator.svg
 mvp_repo: https://github.com/iliazlobin/sd-ad-click-aggregator-backend-mvp

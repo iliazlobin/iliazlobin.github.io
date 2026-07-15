@@ -3,7 +3,7 @@ layout: post
 title: "System Design: Dropbox"
 category: system-design
 date: 2026-07-02
-tags: [System Design]
+tags: [Distributed-Systems, Caching, Event-Driven]
 description: "Dropbox is a cloud file storage and sync service serving 700M+ registered users with exabytes of stored content. Users upload files from any device, access them everywhere, share folders with collaborators, and recover previous versions."
 thumbnail: /images/posts/2026-07-02-system-design-dropbox.svg
 redirect_from:

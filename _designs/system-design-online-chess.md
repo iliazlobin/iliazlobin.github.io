@@ -3,7 +3,7 @@ layout: post
 title: "System Design: Online Chess"
 category: system-design
 date: 2026-07-01
-tags: [System Design]
+tags: [Real-Time, WebSocket, Game]
 description: "Online chess is a real-time two-player game where every half-second of latency feels like an eternity."
 thumbnail: /images/posts/2026-07-01-system-design-online-chess.svg
 mvp_repo: https://github.com/iliazlobin/sd-online-chess-backend-mvp

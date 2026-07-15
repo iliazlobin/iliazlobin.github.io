@@ -3,7 +3,7 @@ layout: post
 title: "System Design: Uber"
 category: system-design
 date: 2026-06-30
-tags: [System Design]
+tags: [Ride-Sharing, Real-Time, Geospatial]
 description: "Uber connects 170M+ monthly active riders with 5M+ drivers across 10,000+ cities in 70+ countries, processing 15M+ daily trips."
 thumbnail: /images/posts/2026-06-30-system-design-uber.svg
 redirect_from:

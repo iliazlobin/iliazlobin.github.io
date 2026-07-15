@@ -3,7 +3,7 @@ layout: post
 title: "System Design: Stock Trading Platform"
 category: system-design
 date: 2026-07-02
-tags: [System Design, Trading, Finance, Real-time]
+tags: [Interview-Prep, Distributed-Systems, Fintech, Real-Time]
 description: "Stock trading platforms connect 23M+ retail investors to US equity markets, routing 15M orders a day through market makers and exchanges. Unlike an exchange — which maintains its own order book and matches buyers against sellers — a brokerage is a custody-and-routing layer."
 thumbnail: /images/posts/system-design-stock-trading-platform.svg
 mvp_repo: https://github.com/iliazlobin/sd-stock-trading-platform-backend-mvp

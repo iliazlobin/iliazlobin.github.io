@@ -3,7 +3,7 @@ layout: post
 title: "System Design: Yelp"
 category: system-design
 date: 2026-06-30
-tags: [System Design]
+tags: [Search, Geospatial, Read-Heavy, Real-Time, Advertising, Interview-Prep]
 description: "Yelp is a local business discovery platform connecting ~74M monthly visitors with ~8.4M businesses across categories like restaurants, home services, and retail. Users search by location and keyword, browse ~330M reviews and ~500M photos, and contribute their own ratings and content."
 thumbnail: /images/posts/2026-06-30-yelp.svg
 redirect_from:

@@ -3,7 +3,7 @@ layout: post
 title: "System Design: WhatsApp"
 category: system-design
 date: 2026-06-30
-tags: [System Design]
+tags: [Distributed-Systems, Real-Time, Event-Driven, Write-Heavy]
 description: "A global messaging platform serving 3B+ users who exchange over 100B messages and 10 PB of media daily."
 thumbnail: /images/posts/2026-06-30-system-design-whatsapp.svg
 redirect_from:

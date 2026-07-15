@@ -3,7 +3,7 @@ layout: post
 title: "ML System Design: Bot Detection"
 category: system-design-ml
 date: 2026-07-08
-tags: [machine-learning, bot-detection, classification]
+tags: [Machine-Learning, Bot-Detection, Classification]
 description: "We run a social platform at 500M DAU — roughly 10 billion user actions per day across posts, follows, likes, messages, and friend requests."
 thumbnail: /images/posts/bot-detection.svg
 ---

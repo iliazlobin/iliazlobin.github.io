@@ -3,7 +3,7 @@ layout: post
 title: "System Design: Netflix"
 category: system-design
 date: 2026-07-02
-tags: [System Design]
+tags: [Interview-Prep, Distributed-Systems, Streaming, Video, CDR, Personalization, Recommendation]
 description: "Netflix streams on-demand video to 325M+ paid subscribers across 190 countries, ingests 500+ hours of new content per minute, and serves ~15% of global internet downstream traffic."
 thumbnail: /images/posts/2026-07-02-system-design-netflix.svg
 redirect_from:
