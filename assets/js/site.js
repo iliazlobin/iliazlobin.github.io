@@ -170,8 +170,13 @@
     var suggest = box.querySelector(".ti-suggest");
     var countEl = root.querySelector("[data-result-count]");
     var clearBtn = root.querySelector("[data-tag-clear]");
-    var cards = Array.prototype.slice.call(feed.querySelectorAll(".tl-item"));
+    // Works for BOTH layouts: the blog timeline (.tl-item) and the design/category
+    // pages (.portfolio-item). Design pages have no year dividers (the loop no-ops) and a
+    // sticky rail whose entries must hide alongside their filtered-out cards.
+    var cards = Array.prototype.slice.call(feed.querySelectorAll(".tl-item, .portfolio-item"));
     var dividers = Array.prototype.slice.call(feed.querySelectorAll(".year-divider"));
+    var railLinks = Array.prototype.slice.call(document.querySelectorAll(".portfolio-rail a[data-tags]"));
+    var noun = root.getAttribute("data-count-noun") || "post";
     var noRes = document.querySelector(".no-results");
 
     var allTags = [];
@@ -222,8 +227,9 @@
         }
         d.style.display = has ? "" : "none";
       });
+      railLinks.forEach(function (a) { a.style.display = matches(a) ? "" : "none"; });
       if (noRes) noRes.hidden = visible > 0;
-      if (countEl) countEl.textContent = visible + (visible === 1 ? " post" : " posts");
+      if (countEl) countEl.textContent = visible + " " + noun + (visible === 1 ? "" : "s");
       if (clearBtn) clearBtn.hidden = selected.length === 0;
       var url = new URL(window.location);
       if (selected.length) url.searchParams.set("tag", selected.join(",")); else url.searchParams.delete("tag");
@@ -307,7 +313,7 @@
     });
 
     // in-card tag chips add to the filter instead of navigating away
-    Array.prototype.slice.call(feed.querySelectorAll(".pc-tags .tag")).forEach(function (a) {
+    Array.prototype.slice.call(feed.querySelectorAll(".tag[data-tag]")).forEach(function (a) {
       a.addEventListener("click", function (e) {
         e.preventDefault();
         addTag(a.getAttribute("data-tag"));
@@ -315,7 +321,7 @@
       });
     });
 
-    if (countEl) countEl.textContent = cards.length + (cards.length === 1 ? " post" : " posts");
+    if (countEl) countEl.textContent = cards.length + " " + noun + (cards.length === 1 ? "" : "s");
 
     // initial selection from ?tag=a,b (e.g. arriving from a single post's tag link)
     var initial = new URL(window.location).searchParams.get("tag");

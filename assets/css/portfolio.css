@@ -104,3 +104,66 @@
   .portfolio-item { grid-template-columns: 1fr; }
   .portfolio-item .thumb { aspect-ratio: 16 / 9; border-right: 0; border-bottom: 1px solid var(--line); min-height: 0; }
 }
+
+/* ==========================================================================
+   Tag filter — ported from blog.css so the design/ML/infra/tech/research
+   category pages share the blog's setupBlogFilter() UI (same class contract).
+   ========================================================================== */
+.blog-controls {
+  position: sticky; top: 0; z-index: 30; background: var(--bg);
+  padding: .8rem 0 .8rem; margin-bottom: 1.2rem; border-bottom: 1px solid var(--line);
+  display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; justify-content: space-between;
+}
+.tag-input {
+  position: relative; flex: 1 1 340px; max-width: 560px; display: flex; align-items: center; flex-wrap: wrap; gap: .4rem;
+  background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: .4rem .6rem; cursor: text;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.tag-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.ti-icon { width: 16px; height: 16px; color: var(--ink-faint); flex: 0 0 auto; }
+.ti-tokens { display: contents; }
+.ti-token {
+  display: inline-flex; align-items: center; gap: .3rem; font-size: .8rem; font-weight: 600;
+  background: var(--accent); color: #fff; border-radius: 999px; padding: .18rem .3rem .18rem .6rem; animation: tokenIn .18s ease;
+}
+.ti-token button { background: rgba(255,255,255,.25); color: #fff; border: 0; border-radius: 50%; width: 16px; height: 16px; line-height: 1; cursor: pointer; font-size: .82rem; display: flex; align-items: center; justify-content: center; padding: 0; }
+.ti-token button:hover { background: rgba(255,255,255,.5); }
+@keyframes tokenIn { from { opacity: 0; transform: scale(.8); } to { opacity: 1; transform: none; } }
+.ti-field { flex: 1 1 120px; min-width: 100px; border: 0; outline: 0; background: none; font-family: inherit; font-size: .92rem; color: var(--ink); padding: .2rem; }
+.ti-field::placeholder { color: var(--ink-faint); }
+.ti-suggest {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 40; max-height: 264px; overflow-y: auto;
+  background: #fff; border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-lg); padding: .35rem;
+}
+.ti-opt {
+  display: flex; align-items: center; justify-content: space-between; gap: .5rem; width: 100%;
+  font-family: inherit; font-size: .88rem; text-align: left; color: var(--ink-soft); background: none; border: 0;
+  border-radius: 7px; padding: .45rem .6rem; cursor: pointer;
+}
+.ti-opt:hover, .ti-opt.active { background: var(--accent-soft); color: var(--accent); }
+.ti-opt strong { color: var(--accent); font-weight: 800; }
+.ti-opt .ti-c { font-size: .72rem; font-weight: 700; color: var(--ink-faint); }
+.bc-right { display: flex; align-items: center; gap: .7rem; }
+.result-count { font-size: .82rem; color: var(--ink-faint); font-weight: 600; white-space: nowrap; }
+.ti-clear {
+  font-family: inherit; font-size: .82rem; font-weight: 600; color: var(--ink-soft);
+  background: #fff; border: 1px solid var(--line); border-radius: 999px; padding: .3rem .75rem; cursor: pointer;
+  transition: all .15s ease; white-space: nowrap;
+}
+.ti-clear:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Clickable tag chips on the design cards (replace the old static .tags list) */
+.pc-tags { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .8rem; }
+.pc-tags .tag {
+  font-size: .73rem; font-weight: 600; color: var(--ink-soft); text-decoration: none; cursor: pointer;
+  background: var(--accent-soft); border: 1px solid #dbe4ff; padding: .14rem .55rem; border-radius: 999px;
+  transition: all .12s ease;
+}
+.pc-tags .tag:hover { color: #fff; background: var(--accent); border-color: var(--accent); text-decoration: none; }
+
+/* Fade a filtered-out card out (mirrors blog.css .tl-item.is-filtered) */
+.portfolio-item.is-filtered { opacity: 0; transform: translateY(-8px) scale(.98); pointer-events: none; transition: opacity .22s ease, transform .22s ease; }
+
+.no-results { color: var(--ink-faint); padding: 1.5rem 0; }
+.link-btn { font-family: inherit; background: none; border: 0; color: var(--accent); font-weight: 600; cursor: pointer; padding: 0; }
+.link-btn:hover { text-decoration: underline; }

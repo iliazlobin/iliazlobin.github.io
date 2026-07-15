@@ -3,7 +3,7 @@ layout: post
 title: "Tech: Redis"
 category: tech
 date: 2026-07-15
-tags: [System Design]
+tags: [Deep-Dive, Databases, Caching]
 description: "Redis is an in-memory key-value store where every command runs on a single thread and the entire server is a hash table of keys mapped to data structures. There is no query optimizer, no transaction manager, no buffer pool. A command is a direct function call against the structure in memory."
 thumbnail: /images/posts/tech-redis.svg
 ---
@@ -168,9 +168,9 @@ Redis has four deployment modes with different failure profiles.
 
 ```mermaid
 flowchart LR
-    classDef box fill:#2A2A3A,stroke:#446,color:#D0D0F0
-    classDef choice fill:#2A2A2A,stroke:#555,color:#F0F0F0
-    classDef bad fill:#3A2222,stroke:#644,color:#F0B0B0
+    classDef box fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    classDef choice fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
+    classDef bad fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
 
     START([Start]):::choice --> Q{Scale + HA?}:::choice
     Q -->|Dev only| S[Standalone<br/>one process]:::box

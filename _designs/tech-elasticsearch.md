@@ -3,7 +3,7 @@ layout: post
 title: "Tech: Elasticsearch"
 category: tech
 date: 2026-07-15
-tags: [System Design]
+tags: [Deep-Dive, Search, Databases]
 description: "Elasticsearch is a distributed search and analytics engine built on Apache Lucene. You send JSON documents to a REST API, and within one second they become searchable across any field with ranking, aggregations, and geospatial queries."
 thumbnail: /images/posts/tech-elasticsearch.svg
 ---
@@ -43,7 +43,7 @@ Elasticsearch is a distributed search and analytics engine built on Apache Lucen
 
 **Segment merge.** Small segments accumulate over time and degrade search speed (more files to open). A background tiered merge policy (Lucene 4+) combines segments into larger ones, preferring to merge segments of similar size. Force-merge read-only indices to 1 segment for best search performance; never force-merge actively writing indices.
 
-**Scatter-gather search.** A search query hits the coordinating node, which parses the DSL into a Lucene query, looks up the routing table, and fans out to every shard (primary or replica) in parallel. Each shard runs the query phase (collect matching docIDs, score by BM25), then the fetch phase (retrieve `_source` for the top N hits). The coordinating node merges partial results, applies global scoring, sorts, paginates, and returns the response.
+**The write path.** Indexing a document is a replicated, write-ahead-logged operation. The coordinating node routes the doc to its primary shard by `hash(_id)`; the primary indexes it into an in-memory Lucene buffer and appends the raw operation to the `translog` before forwarding to the replicas. Only once every active replica has fsynced its translog does the primary acknowledge — so an accepted write survives a crash even before it becomes a searchable segment. The sequence below traces one `POST /index/_doc`, including the periodic refresh, flush, and merge that turn buffered writes into durable segments.
 
 ```mermaid
 sequenceDiagram
@@ -71,6 +71,8 @@ sequenceDiagram
     Note over Primary,Disk: Background merge: tiered merge policy
 ```
 
+**Scatter-gather search.** A search query hits the coordinating node, which parses the DSL into a Lucene query, looks up the routing table, and fans out to every shard (primary or replica) in parallel. Each shard runs the query phase (collect matching docIDs, score by BM25), then the fetch phase (retrieve `_source` for the top N hits). The coordinating node merges partial results, applies global scoring, sorts, paginates, and returns the response.
+
 ```mermaid
 flowchart TD
     Client([Client]) -->|Search query| CN[Coordinating Node]
@@ -81,8 +83,12 @@ flowchart TD
     Fetch --> CN
     CN --> Result([Response to client])
 
-    classDef node fill:#1A1A1A,stroke:#444,color:#fff
-    class Client,CN,Shard,Lucene,Score,Fetch,Result node
+    classDef client fill:#fff3bf,stroke:#f08c00,color:#1a1a1a;
+    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
+    classDef engine fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
+    class Client,Result client;
+    class CN svc;
+    class Shard,Lucene,Score,Fetch engine;
 ```
 
 ### What you build with it
