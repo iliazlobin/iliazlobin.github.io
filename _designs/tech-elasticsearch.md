@@ -2,11 +2,15 @@
 layout: post
 title: "Tech: Elasticsearch"
 category: tech
-date: 2026-07-15
-tags: [deep-dive, search, databases]
-description: "Elasticsearch is a distributed search and analytics engine built on Apache Lucene. You send JSON documents to a REST API, and within one second they become searchable across any field with ranking, ag"
+date: 2026-07-14
+tags: [System Design]
+description: "Elasticsearch is a distributed search and analytics engine built on Apache Lucene. You send JSON documents to a REST API, and within one second they become searchable across any field with ranking, aggregations, and geospatial queries."
 thumbnail: /images/posts/tech-elasticsearch.svg
 ---
+
+Elasticsearch is a distributed search and analytics engine built on Apache Lucene. You send JSON documents to a REST API, and within one second they become searchable across any field with ranking, aggregations, and geospatial queries.
+
+<!--more-->
 
 ## Elasticsearch
 
@@ -14,7 +18,8 @@ thumbnail: /images/posts/tech-elasticsearch.svg
 
 Elasticsearch is a distributed search and analytics engine built on Apache Lucene. You send JSON documents to a REST API, and within one second they become searchable across any field with ranking, aggregations, and geospatial queries. The engine hides a distributed inverted-index cluster behind a single endpoint, so a solo developer with curl can go from zero to full-text search in minutes, while a production cluster scales to petabytes across hundreds of nodes.
 
-> 💡 **Key insight:** Elasticsearch's core design bet is that you trade a small write-delay for near-instant searchability. Documents land in an in-memory buffer, a one-second refresh opens a new Lucene segment, and they become visible without waiting for a full disk commit. This is what makes indexing throughput viable for time-series and logging workloads that ingest millions of events per second.
+> [!TIP]
+> **Key insight:** Elasticsearch's core design bet is that you trade a small write-delay for near-instant searchability. Documents land in an in-memory buffer, a one-second refresh opens a new Lucene segment, and they become visible without waiting for a full disk commit. This is what makes indexing throughput viable for time-series and logging workloads that ingest millions of events per second.
 
 ### Core concepts you use
 
@@ -64,9 +69,6 @@ sequenceDiagram
     Note over Lucene,Primary: Refresh every 1s: new segment opened
     Note over Translog,Primary: Flush at 10GB: Lucene commit + new translog
     Note over Primary,Disk: Background merge: tiered merge policy
-    
-    classDef node fill:#1A1A1A,stroke:#444,color:#fff
-    class Client,Coordinating,Primary,Replica,Lucene,Translog,Disk node
 ```
 
 ```mermaid
@@ -85,6 +87,8 @@ flowchart TD
 
 ### What you build with it
 
+#### Full-text search
+
 The original use case. Index product catalogs, documentation, support tickets, or anything you want users to type natural language into and get ranked results back.
 
 ```javascript
@@ -101,6 +105,8 @@ PUT /products
 
 **Gotcha:** Text fields are analyzed by default. If you also need exact-match filters or aggregations on the same field, map it as multi-field with a `.keyword` sub-field. Without it, `"term": {"title": "Exact Match"}` returns no results because the analyzer lowercases and stems your value.
 
+#### Logging and time-series (ELK)
+
 The ELK stack (Elasticsearch, Logstash, Kibana) is the standard open-source observability pipeline. Agents ship structured logs with an `@timestamp` field; ILM (Index Lifecycle Management) auto-rolls time-based indices, moves hot data to warm nodes, and deletes old data.
 
 ```javascript
@@ -112,6 +118,8 @@ PUT /logs-2025.01.01/_doc/001
 ```
 
 **Gotcha:** Time-series indices with no ILM policy fill the disk. Set up `rollover` on `max_primary_shard_size` (50 GB) or `max_age` (30d), plus `delete` phase after retention. Without rollover, a single shard grows until it hits the 2-billion-doc Lucene ceiling or the node runs out of disk.
+
+#### Vector and hybrid search for RAG
 
 Elasticsearch added `dense_vector` support in 7.x and matured it through 8.x with HNSW indexing, approximate nearest-neighbor (ANN) search, and hybrid scoring (combining vector similarity with BM25). This makes it a viable vector store for LLM retrieval-augmented generation.
 
@@ -126,6 +134,8 @@ PUT /embeddings
 
 **Gotcha:** Dense vector dimensions must be declared at index creation and cannot be changed. HNSW indexing builds an in-memory graph that consumes O(dims * num_vectors * 1.1) memory on the data node. For large vector collections (>10M), reserve dedicated nodes and size heap accordingly.
 
+#### Analytics and aggregations
+
 Elasticsearch's aggregation framework runs real-time analytics on indexed data without pre-computed cubes: terms by category, date histograms, percentiles, cardinality estimates, and complex bucket pipelines.
 
 ```javascript
@@ -138,6 +148,8 @@ GET /sales/_search
 
 **Gotcha:** Terms aggregations load all unique values into heap per shard. A high-cardinality field with millions of unique keywords can trigger OOM. Use the `cardinality` aggregation (HyperLogLog-based, ~5% error rate) for count-unique, and pre-bucket high-cardinality ranges as keyword fields during indexing.
 
+#### Geospatial search
+
 Index points (geo_point) or shapes (geo_shape) and query by distance, bounding box, or polygon intersection. Used for location-aware search, fleet tracking, and geofencing.
 
 ```javascript
@@ -149,6 +161,8 @@ GET /restaurants/_search
 ```
 
 **Gotcha:** `geo_point` is for single coordinates and uses efficient BKD trees for bounding-box and distance filters. `geo_shape` handles polygons and complex geometries but uses a slower indexing strategy and should only be used when you need polygon containment tests.
+
+#### Auto-complete and suggest
 
 The `completion` suggester builds a finite-state transducer (FST) in memory at index time, enabling prefix-based type-ahead with near-instant response times. Unlike `match_phrase_prefix` (which scans posting lists per keystroke), the completion suggester uses a pre-built trie.
 
@@ -186,10 +200,11 @@ PUT /products
 - JVM heap cap: 32 GB (compressed OOPs limit); set Xms=Xmx, no more than 50% of RAM
 - Document size soft limit: 100 MB (enforced by `http.max_content_length`)
 - Dynamic mapping will eagerly add fields; a production index MUST have explicit mappings to avoid mapping explosion
+
 ### The landscape / editions
 
 | Edition | License | What you get | Cost signal |
-| --- | --- | --- | --- |
+|---|---|---|---|
 | Elasticsearch core (v8.16+) | AGPLv3 | Full search + aggregations + ES | QL + TLS + RBAC + basic ML |
 | Elasticsearch full (self-managed) | SSPL + ELv2 | Everything + advanced ML + Maps | Free (self-managed; SSPL not OSI-approved) |
 | Elastic Cloud Hosted | SSPL/ELv2 | Managed on AWS/GCP/Azure, 60+ regions, BYOK, FedRAMP High, 99.95% SLA | ~$0.05/GB-RAM-hr (login-gated pricing) |
@@ -202,7 +217,7 @@ The split story: Elastic changed its license from Apache 2.0 to SSPL+ELv2 in 202
 
 ### Where it's heading
 
-Vector search integration is the dominant trajectory. Elasticsearch 8.x matured HNSW indexing and native ANN queries; the next step is hybrid search as a first-class query type (combining BM25 text score with vector cosine similarity in a single ranked result). Elastic is also investing in ES|QL, a piped query language that replaces the aggregation-DSL for analytics use cases, and in Agent Builder for LLM-driven retrieval workflows. The AGPLv3 re-licensing signals Elastic wants to compete for the SaaS audience without the SSPL compliance burden. On the OpenSearch side, the focus is on keeping parity with Elastic's search quality while emphasizing the clean Apache 2.0 path for regulated industries and government clouds.
+Vector search integration is the dominant trajectory. Elasticsearch 8.x matured HNSW indexing and native ANN queries; the next step is hybrid search as a first-class query type (combining BM25 text score with vector cosine similarity in a single ranked result). Elastic is also investing in ES\|QL, a piped query language that replaces the aggregation-DSL for analytics use cases, and in Agent Builder for LLM-driven retrieval workflows. The AGPLv3 re-licensing signals Elastic wants to compete for the SaaS audience without the SSPL compliance burden. On the OpenSearch side, the focus is on keeping parity with Elastic's search quality while emphasizing the clean Apache 2.0 path for regulated industries and government clouds.
 
 ## References
 

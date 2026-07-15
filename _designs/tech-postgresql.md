@@ -3,16 +3,21 @@ layout: post
 title: "Tech: PostgreSQL"
 category: tech
 date: 2026-07-14
-tags: [deep-dive, databases, postgresql]
-description: "PostgreSQL is a single-node relational database that wins on correctness, extensibility, and community trust. It gives you ACID transactions, a rich type system (arrays, JSONB, range types, custom typ"
+tags: [System Design]
+description: "PostgreSQL is a single-node relational database that wins on correctness, extensibility, and community trust."
 thumbnail: /images/posts/tech-postgresql.svg
 ---
+
+PostgreSQL is a single-node relational database that wins on correctness, extensibility, and community trust.
+
+<!--more-->
 
 ## What it is
 
 PostgreSQL is a single-node relational database that wins on correctness, extensibility, and community trust. It gives you ACID transactions, a rich type system (arrays, JSONB, range types, custom types), a planner that can handle 100-join queries, and an extension ecosystem that turns it into a vector database, time-series engine, full-text search engine, or message queue without changing the backend.
 
-> 💡 **The big idea is MVCC.** Every row carries invisible version-markers (xmin, xmax) that let readers see a consistent snapshot of the database without locking writers. This means your web app can read and write the same table at the same time, and your analytics queries never block your API traffic. The tradeoff is that old row versions accumulate as "dead tuples" and need a background janitor (VACUUM) to reclaim space - a system you must learn to manage or it becomes a production incident.
+> [!TIP]
+> **The big idea is MVCC.** Every row carries invisible version-markers (xmin, xmax) that let readers see a consistent snapshot of the database without locking writers. This means your web app can read and write the same table at the same time, and your analytics queries never block your API traffic. The tradeoff is that old row versions accumulate as "dead tuples" and need a background janitor (VACUUM) to reclaim space - a system you must learn to manage or it becomes a production incident.
 
 PostgreSQL started in 1986 at UC Berkeley as POSTGRES, a research project. It went open-source in 1996 and has shipped a stable release every year since. PG 18.4 is current as of May 2026; PG 19 BETA1 landed June 4, 2026.
 
@@ -36,7 +41,7 @@ PostgreSQL started in 1986 at UC Berkeley as POSTGRES, a research project. It we
 
 When a client connects, the postmaster forks a new backend process. That process owns the connection until it disconnects. This is expensive - each idle process consumes ~5-10 MB of RAM - but it means a crash in one connection cannot take down the others. The practical ceiling is ~300 direct connections before you need PgBouncer (transaction pooling).
 
-```plain text
+```text
 Client 1 → postmaster → backend PID 1234  (private memory, ~5-10 MB)
 Client 2 → postmaster → backend PID 1235
 Client 3 → postmaster → backend PID 1236
@@ -101,6 +106,7 @@ Every UPDATE and DELETE leaves a dead tuple behind. Dead tuples waste space, inf
 
 - **VACUUM** (concurrent, lazy): scans pages with dead tuples, makes space reusable, updates the visibility map, freezes old xids. It does NOT shrink the file on disk - space is reclaimed for future inserts within the same table, but the OS file size stays.
 - **VACUUM FULL** (exclusive lock): rewrites the entire table into a compact form and shrinks the file. It locks the table, blocking all reads and writes. Use it for the surgical case where you actually need disk space returned to the OS, or after a mass-delete operation.
+
 Autovacuum runs in the background with 3 workers by default. It triggers when a table accumulates 50 dead tuples plus 20% of its row count (autovacuum_vacuum_threshold = 50, autovacuum_vacuum_scale_factor = 0.2). For busy tables, the 20% threshold means autovacuum may not kick in until the table is 20% bloat - tune this down to 5-10% for write-heavy workloads.
 
 The existential threat is **transaction ID wraparound**. PostgreSQL's transaction counter is 32 bits - about 4 billion xids. When the difference between the current xid and the oldest frozen xid (stored in pg_database.datfrozenxid) approaches 2 billion, PostgreSQL enters emergency anti-wraparound mode. Every backend that touches a database with unfrozen xids will stop whatever it is doing and run VACUUM. If vacuum cannot keep up, the database shuts down to prevent data loss. This is the #1 failure mode for unsupervised PostgreSQL deployments at scale.
@@ -212,7 +218,7 @@ Partitioning does not give you distributed writes across machines. It is a singl
 
 The most common and most surprising failure in production PostgreSQL is a replication slot consuming all available disk space. This happens when a standby goes offline but its slot is not removed. The primary cannot recycle the WAL segments the slot references (because the standby might come back and need them), so WAL accumulates until the disk fills. The default max_slot_wal_keep_size is -1 (unlimited). Set it:
 
-```plain text
+```text
 max_slot_wal_keep_size = 10GB
 ```
 
@@ -234,6 +240,7 @@ Great fit:
 - Mixed workload: JSONB document store + relational joins in the same database
 - Vector search for sub-million-scale embedding retrieval (pgvector with HNSW)
 - Full-text search for single-node scale
+
 Wrong fit:
 
 - Multi-region writes requiring low latency everywhere (PostgreSQL is a single-primary database; for multi-region writes, use CockroachDB, Spanner, YugabyteDB, or DynamoDB Global Tables)
@@ -241,10 +248,11 @@ Wrong fit:
 - Blob storage beyond a few TB (object storage is cheaper and faster for images, videos, large files; use the 1 GB TOAST limit as a sharp ceiling)
 - Real-time streaming with high-throughput change data capture (Debezium on PG works but Kafka with its own log is simpler for pub/sub at scale)
 - Embedding-only workloads at 10M+ vectors that fit in memory (dedicated vector databases like Qdrant, Weaviate, Pinecone are more memory-efficient per vector; PG adds ACID overhead you may not need)
+
 Hard limits to know:
 
 | Limit | Value | What breaks |
-| --- | --- | --- |
+|---|---|---|
 | Relation size | 32 TB (8 KB BLCKSZ) | Per-table; partition for larger |
 | Columns per table | 1,600 | Tuple must fit on one 8 KB page |
 | Field size | 1 GB | Via TOAST; hard per-column boundary |
@@ -258,7 +266,7 @@ Hard limits to know:
 PostgreSQL OSS is free (BSD-style license). What you pay for is operations, not the software.
 
 | Edition | What you get | Representative cost |
-| --- | --- | --- |
+|---|---|---|
 | PostgreSQL OSS (PGDG) | Core engine, all extensions, full control | Free (you manage ops) |
 | AWS RDS for PostgreSQL | Multi-AZ, automated backup, PITR, read replicas | db.r6g.xlarge: $329/mo |
 | AWS Aurora PostgreSQL | 6-way replicated storage, fast clone, Serverless v2 | db.r6g.xlarge: $493/mo |
