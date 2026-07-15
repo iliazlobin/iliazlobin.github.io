@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 420" width="800" height="420">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#16213e"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="420" fill="url(#bg)" rx="8"/>
+  <text x="400" y="180" text-anchor="middle" font-family="system-ui,sans-serif" font-size="64" font-weight="bold" fill="#e94560">§</text>
+  <text x="400" y="260" text-anchor="middle" font-family="system-ui,sans-serif" font-size="32" font-weight="bold" fill="#ffffff">Redis</text>
+  <text x="400" y="300" text-anchor="middle" font-family="system-ui,sans-serif" font-size="18" fill="#8892b0">Tech Deep-Dive</text>
+</svg>
