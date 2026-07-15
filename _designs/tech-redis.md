@@ -3,10 +3,14 @@ layout: post
 title: "Tech: Redis"
 category: tech
 date: 2026-07-14
-tags: [deep-dive, databases, caching]
-description: "Redis is an in-memory key-value store where every command runs on a single thread and the entire server is a hash table of keys mapped to data structures. There is no query optimizer, no transaction m"
+tags: [System Design]
+description: "Redis is an in-memory key-value store where every command runs on a single thread and the entire server is a hash table of keys mapped to data structures. There is no query optimizer, no transaction manager, no buffer pool. A command is a direct function call against the structure in memory."
 thumbnail: /images/posts/tech-redis.svg
 ---
+
+Redis is an in-memory key-value store where every command runs on a single thread and the entire server is a hash table of keys mapped to data structures. There is no query optimizer, no transaction manager, no buffer pool. A command is a direct function call against the structure in memory.
+
+<!--more-->
 
 ## What It Is
 
@@ -21,7 +25,7 @@ Most teams start with Redis as a cache and stay for the data structures: sorted 
 Redis gives you more than key-value pairs. The value type defines what you can do with it, and the complexity model is explicit.
 
 | Data Structure | Key Operations | Complexity | What You Build With It |
-| --- | --- | --- | --- |
+|---|---|---|---|
 | String | GET, SET, INCR | O(1) | Cache entries, counters, session tokens, distributed locks |
 | Hash | HGET, HSET, HGETALL | O(1) / O(N) on HGETALL | User profiles, objects, any struct you would store as JSON |
 | List | LPUSH, BRPOP, LRANGE | O(1) head/tail / O(N) range | Queues, work queues, recent-items lists, chat history |
@@ -197,7 +201,7 @@ Other cluster failures: **rebalance storm** (5 million MIGRATE commands when mov
 Redis trades durability for speed. Every write goes to kernel buffers immediately. The question is when it hits disk.
 
 | Mode | Data Loss Window | Throughput Impact | When to Use |
-| --- | --- | --- | --- |
+|---|---|---|---|
 | None | All data lost on restart | Max throughput | Pure cache, disposable data |
 | RDB (snapshot) | Since last save (default up to 1h) | Fork pause during BGSAVE | Disaster recovery, off-host backup |
 | AOF everysec | Up to 1s | 1-5% overhead | Default production durability |
@@ -217,6 +221,7 @@ Redis trades durability for speed. Every write goes to kernel buffers immediatel
 - Pub/Sub for ephemeral notifications (chat, live alerts, webhook fanout)
 - Lightweight message queuing with consumer groups (Streams, under 10M pending entries)
 - Geospatial proximity search within tight radius bounds
+
 **Wrong fit:**
 
 - Durable storage of critical data (Redis trades durability for speed; use PostgreSQL or MemoryDB with Multi-AZ)
@@ -225,6 +230,7 @@ Redis trades durability for speed. Every write goes to kernel buffers immediatel
 - Multi-node transactions requiring cross-shard atomicity (Cluster mode forbids multi-key operations across slots)
 - Set-and-forget message delivery with replay (use Kafka if you cannot lose messages; Streams lose data on failover)
 - Workloads needing sub-100-microsecond p99 on large sorted sets, streams, or geospatial queries (Redis excels at sub-ms p50, but p99 degrades under load on complex data structures)
+
 **Hard limits:** 512 MB max key/value size, 2^32 - 1 elements per set/list/zset (about 4.3 billion), max 256 databases (default 16 in standalone, only database 0 in Cluster), ~1,000 cluster nodes practical max, 10,000 default max clients (configurable to ~65,535).
 
 ## Landscape and Editions
@@ -232,7 +238,7 @@ Redis trades durability for speed. Every write goes to kernel buffers immediatel
 The most important fact about Redis in 2026: BSD-3-Clause ended at Redis 7.2. Everything after is source-available. Valkey (the Linux Foundation fork of Redis 7.2.4) is BSD-3 and drop-in compatible.
 
 | Line | License | OSI-Compliant |
-| --- | --- | --- |
+|---|---|---|
 | Redis 7.2.x and earlier | BSD-3-Clause | Yes |
 | Redis 7.4.x (Community Edition) | RSALv2 + SSPLv1 (dual) | No |
 | Redis 8.0+ | RSALv2 + SSPLv1 + AGPLv3 (tri) | AGPLv3 is OSI-approved |
