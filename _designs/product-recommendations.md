@@ -3,7 +3,7 @@ layout: post
 title: "ML System Design: Product Recommendations"
 category: system-design-ml
 date: 2026-07-09
-tags: [System Design]
+tags: [Recommendation, Machine-Learning, Personalization, Ranking]
 description: "An e-commerce platform with 100M+ products and tens of millions of daily active users needs to show each visitor a personalized list of products they are most likely to purchase."
 thumbnail: /images/posts/product-recommendations.svg
 ---

@@ -3,7 +3,7 @@ layout: post
 title: "System Design: Payment System"
 category: system-design
 date: 2026-07-02
-tags: [System Design]
+tags: [Interview-Prep, Distributed-Systems, Fintech]
 description: "A payment system moves money from a customer's funding source to a merchant's account through payment service providers (PSPs) like Stripe and Adyen. The system authorizes funds, captures them, and records every movement in a double-entry ledger so the books balance to the cent."
 thumbnail: /images/posts/2026-07-02-system-design-payment-system.svg
 redirect_from:

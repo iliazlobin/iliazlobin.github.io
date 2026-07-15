@@ -3,7 +3,7 @@ layout: post
 title: "ML System Design: Autocomplete / Query Suggestion"
 category: system-design-ml
 date: 2026-07-09
-tags: [System Design]
+tags: [Machine-Learning, Retrieval, Search, NLP]
 description: "A search engine handling 40K+ queries per second presents query suggestions as the user types, character by character. Each keystroke opens a sub-100 ms window: the suggestions must land before the next character arrives, or they are useless."
 thumbnail: /images/posts/autocomplete-query-suggestion.svg
 ---

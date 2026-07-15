@@ -3,7 +3,7 @@ layout: post
 title: "System Design: Metrics Monitoring"
 category: system-design
 date: 2026-07-08
-tags: [System Design]
+tags: [Metrics, Monitoring, Prometheus, Datadog, TSDB]
 description: "A metrics monitoring platform ingests time-series data from hundreds of thousands of services, stores it durably, and answers sub-second dashboard queries while evaluating alert rules against a streaming firehose."
 thumbnail: /images/posts/system-design-metrics-monitoring.svg
 ---

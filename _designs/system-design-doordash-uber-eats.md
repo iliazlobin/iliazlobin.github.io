@@ -3,7 +3,7 @@ layout: post
 title: "System Design: DoorDash / Uber Eats"
 category: system-design
 date: 2026-07-08
-tags: [System Design]
+tags: [Distributed-Systems, Geospatial, Real-Time, Event-Driven, Recommendation, Kafka, Food-Delivery]
 description: "DoorDash and Uber Eats operate a three-sided marketplace: customers order food from restaurants and a driver picks it up and delivers it."
 thumbnail: /images/posts/system-design-doordash-uber-eats.svg
 ---

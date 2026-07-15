@@ -3,7 +3,7 @@ layout: post
 title: "ML System Design: News Feed Ranking"
 category: system-design-ml
 date: 2026-07-09
-tags: [System Design]
+tags: [Machine-Learning, Ranking, Recommendation, Personalization]
 description: "A social platform with hundreds of millions of daily active users needs to rank a firehose of content — posts, videos, articles, shares from followed accounts plus discovery content from the broader network — into a personalized feed that maximizes engagement."
 thumbnail: /images/posts/news-feed-ranking.svg
 ---

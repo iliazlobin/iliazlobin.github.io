@@ -3,7 +3,7 @@ layout: post
 title: "System Design: Top-K"
 category: system-design
 date: 2026-06-30
-tags: [System Design]
+tags: [Real-Time, Write-Heavy, Streaming, Data-Structures]
 description: "A video platform ingests view events at massive scale — 70 billion per day across billions of videos — and must surface the most-viewed videos per time window at sub-50ms read latency."
 thumbnail: /images/posts/2026-06-30-system-design-top-k.svg
 redirect_from:

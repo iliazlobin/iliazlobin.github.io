@@ -5,7 +5,7 @@ category: system-design-ml
 redirect_from:
   - /designs/ml-system-design-search-ranking-web-search/
 date: 2026-07-08
-tags: [System Design]
+tags: [Machine-Learning, Search-Ranking, Ranking, Retrieval, Web-Search]
 description: "A web-scale search engine receives 40K+ queries per second and must return a ranked list of the most relevant documents from a corpus of over 100 billion pages. Users type a few words and expect the answer in the top three results — if the answer isn't there, they reformulate or leave."
 thumbnail: /images/posts/system-design-ml-search-ranking-web-search.svg
 ---

@@ -3,7 +3,7 @@ layout: post
 title: "System Design: YouTube"
 category: system-design
 date: 2026-06-30
-tags: [System Design]
+tags: [Streaming, Leaderboard, Real-Time, Video, Approximate-Algorithms, Distributed-Systems, Kafka, Flink]
 description: "YouTube ingests over 70 billion view events per day across more than 4 billion distinct videos, serving over 500 million daily active users who watch over a billion hours of content."
 thumbnail: /images/posts/2026-06-30-system-design-youtube.svg
 redirect_from:

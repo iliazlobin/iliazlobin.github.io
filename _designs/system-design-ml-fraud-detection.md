@@ -5,7 +5,7 @@ category: system-design-ml
 redirect_from:
   - /designs/ml-system-design-fraud-detection/
 date: 2026-07-08
-tags: [System Design]
+tags: [Machine-Learning, Fraud-Detection, Classification, Real-Time, Anomaly-Detection]
 description: "A payment platform processes millions of transactions daily. Every transaction carries a risk: a stolen card used for a high-value purchase, a merchant fabricating orders to collect on chargebacks, a fraud ring testing compromised cards with micro-transactions before draining accounts."
 thumbnail: /images/posts/system-design-ml-fraud-detection.svg
 ---
