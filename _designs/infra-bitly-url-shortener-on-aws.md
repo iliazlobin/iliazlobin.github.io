@@ -3,7 +3,7 @@ layout: post
 title: "Infra: Bitly URL Shortener on AWS"
 category: infra
 date: 2026-07-16
-tags: [Aws, Compute, Ecs, Postgres, Redis, Kafka, Clickhouse, CDN, Terraform, Prometheus]
+tags: [AWS, Compute, ECS, PostgreSQL, Redis, Kafka, ClickHouse, CDN, Terraform, Prometheus]
 description: "Bitly serves 1M redirect QPS through a cache funnel: CloudFront answers 95% at the edge, an in-process LRU absorbs 70% of what leaks through, and Redis catches most of the rest - only about 750 QPS ever reaches Aurora. Every number on this page follows from that funnel."
 thumbnail: /images/posts/infra-bitly-url-shortener-on-aws.svg
 ---
