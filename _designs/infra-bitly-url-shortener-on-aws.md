@@ -3,62 +3,64 @@ layout: post
 title: "Infra: Bitly URL Shortener on AWS"
 category: infra
 date: 2026-07-16
-tags: [AWS, Compute, ECS, PostgreSQL, Redis, Kafka, ClickHouse, CDN, Terraform, Prometheus]
-description: "Bitly serves 1M redirect QPS through a cache funnel: CloudFront answers 95% at the edge, an in-process LRU absorbs 70% of what leaks through, and Redis catches most of the rest - only about 750 QPS ever reaches Aurora. Every number on this page follows from that funnel."
+tags: [ALB, Alertmanager, Aurora PostgreSQL, Caddy, ClickHouse, CloudFront, CodeDeploy, Cosign, ECR, ECS Fargate, ElastiCache, ElastiCache Valkey, GitHub Actions, Go 1.23, Grafana, IAM, KMS, Let'S Encrypt, Loki, MSK Kafka, NAT Gateway, OpenTelemetry, Origin Shield, Prometheus, Route53, S3, SQS, Secrets Manager, Security Hub, Sigstore, TLS 1.3, Tempo, Terraform, Trivy, VPC, WAF, K6]
+description: "Bitly operates a URL shortener at planetary scale: 1M redirect QPS peak, 10B active links across 4 AWS regions in active-active deployment. The workload is read-dominant at roughly 100:1 reads to writes under steady state, surging to 1000:1 during viral spikes."
 thumbnail: /images/posts/infra-bitly-url-shortener-on-aws.svg
 ---
 
-Bitly serves 1M redirect QPS through a cache funnel: CloudFront answers 95% at the edge, an in-process LRU absorbs 70% of what leaks through, and Redis catches most of the rest - only about 750 QPS ever reaches Aurora. Every number on this page follows from that funnel.
+Bitly operates a URL shortener at planetary scale: 1M redirect QPS peak, 10B active links across 4 AWS regions in active-active deployment. The workload is read-dominant at roughly 100:1 reads to writes under steady state, surging to 1000:1 during viral spikes.
 
 <!--more-->
 
 ## 1. Context
 
-Bitly serves 1M redirect QPS through a cache funnel: CloudFront answers 95% at the edge, an in-process LRU absorbs 70% of what leaks through, and Redis catches most of the rest - only about 750 QPS ever reaches Aurora. Every number on this page follows from that funnel. The workload is read-dominant, roughly 100:1 reads to writes at steady state and 1000:1 during viral spikes, across 10B active links.
+Bitly operates a URL shortener at planetary scale: 1M redirect QPS peak, 10B active links across 4 AWS regions in active-active deployment. The workload is read-dominant at roughly 100:1 reads to writes under steady state, surging to 1000:1 during viral spikes. Every click on a short link races through a global CDN before it ever touches an origin server; a 3-layer cache pyramid (in-process LRU, Redis, database) ensures only 0.075% of all redirect requests reach the system of record. The cache funnel is the central organizing idea of the architecture: each layer absorbs traffic with a roughly two-order-of-magnitude reduction, converting a 1M QPS peak at the edge into fewer than 1,000 actual database queries per second.
 
-Four AWS regions run active-active: every region serves reads, writes land in the nearest region via latency-based DNS, and Aurora Global Database replicates in under 5 seconds. Latency budgets are tight - a redirect may cross an ocean and still has to feel instant (§2 carries the numbers). Losing a link is the one failure we cannot recover from - a short code's destination cannot be re-derived - so the store of record gets 11 nines of durability and every cache layer is allowed to be lossy.
+The environment is multi-region, multi-AZ, with data sovereignty gatekeeping writes to their home regions while reads fan out everywhere. Latency budgets are tight: p99 < 100 ms for a redirect that may cross an ocean, p99 < 200 ms for a shorten call that must survive a Safe Browsing API timeout and still commit to Aurora PostgreSQL. Durability is existential - a lost link is an unrecoverable user promise broken, so the design commits to 11 nines on the system of record even though the cache layer is explicitly ephemeral.
 
-The bill runs about $80K a month and is feasible only because of CloudFront's flat-rate plan: metered egress would cost about $44K a month for the CDN alone (the math is in §7).
+The cost driver is CloudFront egress, not compute or storage. CloudFront flat-rate pricing (Business at $200/month) makes the economics of a 1M QPS redirect service feasible on cloud infrastructure where per-GB egress charges would otherwise consume the entire budget. Under PAYG CloudFront, 2.6T redirects x 200 bytes/response = 520 TB egress = $2.6M/month in request charges alone. The flat-rate model eliminates this and shifts the cost center to the cache tier and database, where the money is spent on throughput that directly improves latency.
+
+> [!TIP]
+> **Cache funnel** - 95% of 1M QPS stays in CloudFront. Of the 50K QPS that reach origin, 70% hits the in-process LRU, 95% of the rest hits Valkey, and only ~750 QPS reaches Aurora. Each layer costs progressively more per query but the volume drops by orders of magnitude at each step.
 
 ## 2. Goals
 
-**Performance**
+**Redirect performance:**
 
-- Peak 1,000,000 redirect QPS at p99 < 100 ms, p50 < 10 ms
-- Peak 10,000 write QPS (shorten, auth, scan) at p99 < 200 ms
+- 1,000,000 redirect QPS peak, p99 < 100 ms, p50 < 10 ms
+- 95%+ CDN cache hit rate; 99.925% cumulative cache pyramid hit rate
 
-**Availability and durability**
+**Write path:**
 
-- 99.99% redirect availability, active-active across 4 regions
-- Region loss: RTO < 60 s via DNS failover, RPO < 5 s via Aurora Global
-- 99.999999999% (11 nines) durability on the system of record
+- 10,000 write QPS peak at p99 < 200 ms (shorten, auth, scan)
+- 7-char Base62 code generation via distributed Redis INCR, 3.52T code space
 
-**Scale**
+**Availability and durability:**
+
+- 99.99% availability (52.56 min/yr downtime budget), active-active cross-region
+- 99.999999999% durability (11 nines) on the system of record
+- RTO < 60s (CloudFront origin failover), RPO < 5s (Aurora Global DB)
+- 4-region active-active: us-east-1, us-west-2, eu-west-1, ap-south-1
+
+**Scale and cost:**
 
 - 10B active links, 100B historical, 24-month analytics retention
+- Cost ceiling: $0.0001 per 10K redirects at 10B link scale
+- Total infrastructure target: under $80,000/month at full scale
 
-**Cost**
-
-- Ceiling $0.0001 per 10K redirects at the 10B-link design point
-- **Out of scope:** link-in-bio/QR codes, A/B test variants, enterprise SSO/RBAC beyond a single owner, on-prem/hybrid deployment, GPU inference workloads
+**Out of scope:** link-in-bio/QR codes, A/B testing variants, enterprise SSO/RBAC beyond single owner, on-prem/hybrid deployment, GPU inference workloads.
 
 ## 3. Architecture
-
-The topology is deliberately short: one CDN, one load balancer per region, two stateless Go services, and three data systems.
-
-> [!TIP]
-> **The funnel is the architecture** - three caches sit in front of the database: CDN, in-process LRU, Redis. 95% of traffic never leaves the edge, the LRU absorbs 70% of what does, Redis catches most of the remainder, and about 0.1% of redirects ever reach Aurora.
 
 ```mermaid
 flowchart LR
     U[User<br/>bit.ly/abc1234] -->|DNS anycast| CF[CloudFront<br/>600+ PoPs<br/>301 cache 90s TTL]
-    CF -->|cache miss| ALB[AWS ALB<br/>TLS 1.3 + WAF]
-    ALB -->|redirect path| ECS[ECS Fargate Graviton<br/>redirect + shorten<br/>Go 1.23 binaries]
-    ECS -->|L1: in-process LRU| LRU[Per-task LRU<br/>1M entries, < 1us]
-    LRU -->|LRU miss| R[(ElastiCache Valkey 7.2<br/>50-shard cluster<br/>hot cache 90s TTL)]
-    R -->|cache miss| A[(Aurora PostgreSQL 16.4<br/>16 shards<br/>Serverless v2)]
-    ECS -->|click event| MSK[MSK Express 3.7<br/>Kafka: link.clicked]
-    MSK -->|batch ingest| CH[ClickHouse 24.8<br/>ECS Fargate<br/>monthly partitions]
+    CF -->|5% cache miss| ALB[ALB + WAF<br/>TLS 1.3 termination]
+    ALB --> ECS[ECS Fargate ARM<br/>Go 1.23 redirect<br/>+ shorten service]
+    ECS -->|L2 miss| VK[(ElastiCache Valkey 7.2<br/>50-shard cluster<br/>90s TTL)]
+    VK -->|L3 miss| AUR[(Aurora PG 16.4<br/>16 shards<br/>Serverless v2)]
+    ECS -->|async click event| MSK[MSK Express 3.7<br/>Kafka: 32 partitions]
+    MSK -->|batch ingest| CH[ClickHouse 24.8<br/>ECS Fargate<br/>monthly MVs]
 
     classDef edge fill:#E8F5E9,stroke:#2E7D32,color:#1A1A1A
     classDef compute fill:#E3F2FD,stroke:#1565C0,color:#1A1A1A
@@ -68,561 +70,429 @@ flowchart LR
 
     class CF edge
     class ALB edge
-    class ECS,LRU compute
-    class R cache
-    class A,CH store
+    class ECS compute
+    class VK cache
+    class AUR,CH store
     class MSK bus
 ```
 
 ### Life of a redirect
 
-One request, edge to database - each component appears as the request meets it.
+A user clicks `bit.ly/abc1234`. DNS resolves to the nearest CloudFront edge location (600+ PoPs globally). CloudFront checks its edge cache for the path. On a hit (95% of traffic), it returns a 301 redirect with `Cache-Control: public, max-age=90` and `Location: <long_url>` - latency 5-15 ms, no origin involved. On a cache miss, CloudFront's Origin Shield (us-east-1) coalesces concurrent cross-PoP misses into a single upstream request, preventing a thundering herd on cache invalidation events.
 
-1. A click on [bit.ly/abc1234](http://bit.ly/abc1234) resolves through Route53 latency-based DNS to the nearest of CloudFront's 600+ PoPs.
-1. CloudFront checks its edge cache and, on a hit, answers with the stored 301 in 5-15 ms. 95% of all traffic stops here.
-1. On a miss, the request travels to the ALB origin; Origin Shield in us-east-1 coalesces concurrent misses for the same code, so the origin sees one fill instead of hundreds.
-1. The ALB terminates TLS 1.3, runs the WAF rules, and forwards to a redirect task.
-1. The task tries its in-process LRU first. A hit - most origin requests - returns the 301 in under 1 ms with no network call.
-1. On an LRU miss it asks ElastiCache. A hit returns in under 5 ms and back-fills the LRU.
-1. On a Redis miss it hashes the code to one of 16 Aurora shards and runs `SELECT long_url, status FROM links WHERE short_code = 'abc1234' AND domain = 'bit.ly'`, then populates both caches on the way back. About 0.1% of redirects get this far, and even these resolve in under 20 ms at the shard.
-1. After responding, the task emits a `link.clicked` event to Kafka - fire-and-forget, never on the latency path. Worst case - a full cache miss - still lands under the 100 ms p99 budget.
+The origin request lands at the ALB in us-east-1, which terminates TLS 1.3 and forwards to an ECS Fargate task running the Go 1.23 redirect service. Each task carries an in-process LRU (hashicorp/golang-lru v2, 1M entries, 90s TTL). The LRU absorbs 70% of origin traffic at sub-microsecond latency before any network call. On LRU miss, the service queries the ElastiCache Valkey 7.2 cluster (50 shards, cluster mode, TLS 1.3 with `auth_token`). Valkey returns the URL mapping in under 5 ms for 95% of the remaining traffic. Only a Valkey miss - roughly 750 QPS globally, or 0.075% of all redirects - reaches Aurora PostgreSQL. The database does a primary key lookup (`SELECT long_url FROM links WHERE short_code = ?`) and returns in under 20 ms. Each layer that resolves the query populates the layers above it on the response path, so the next request for the same short code hits higher in the pyramid.
+
+A click event is produced asynchronously to MSK (Kafka topic `link.clicked`, 32 partitions, keyed by `hash(short_code) % 32`) before the 301 is returned. The redirect response is not gated on Kafka acknowledgment.
 
 ### Components
 
-What the path did not show: shard counts, instance families, exact versions, and the supporting cast.
+The architecture centers on three compute service classes on ECS Fargate, all running ARM/Graviton instances and Go 1.23 binaries compiled to ~8 MB static executables.
 
-**CloudFront** - 600+ PoPs on the flat-rate Business plan serve the 301 straight from edge cache. WAF (managed core rules plus a 100 req/min per-IP rate limit) and Shield Standard ride on the distribution, with ACM issuing the certificates.
+**Redirect service** (50 tasks/region, 1 vCPU, 2 GB): the hot read path. Stateless, in-process LRU per task. Handles cache-miss traffic from CloudFront and the L2/L3 cache cascade.
 
-**ALB** - one per region, terminating TLS 1.3 and routing by path: `/api/shorten*` to the shorten target group, `/{code}` to redirect. Billing is per ALB-hour plus LCU with no per-request charge. Health checks hit /healthz every 5 s (2-of-2 threshold), and access logs land in S3 every 5 minutes for analytics reconciliation.
+**Shorten service** (10 tasks/region, 2 vCPU, 4 GB): the write path. Validates input, generates short codes via Redis INCR, writes to Aurora, enqueues Safe Browsing scan via SQS, and produces `link.created` to MSK. Returns 200 before the Safe Browsing check completes.
 
-**Redirect service** - 50 Fargate tasks per region (1 vCPU / 2 GB, ARM Graviton) running a Go 1.23 binary. Each task carries a 1M-entry in-process LRU (hashicorp/golang-lru v2.0.2, ~200 MB of heap) that answers most origin lookups without a network hop; across the 200-task fleet that is ~200M cached entries at zero infrastructure cost.
+**Background workers** (5 tasks/region, 2 vCPU, 4 GB, Fargate Spot): consume the Safe Browsing SQS queue, batch up to 500 URLs per API call to Google Safe Browsing API v4, and update link safety status in Aurora. Threat hash cache in Valkey (24h TTL) reduces API calls by ~90%.
 
-**Shorten service** - 10 Fargate tasks per region (2 vCPU / 4 GB). It accepts authenticated POSTs (JWT via Amazon Cognito), writes to Aurora, and enqueues a Safe Browsing scan to SQS before returning - the scan never blocks the response.
+**Caddy TLS proxy** (3 nodes/region, 1 vCPU, 2 GB): terminates TLS for custom domains (~50K domains) using Let's Encrypt ACME DNS-01 challenges with on-demand certificate issuance. SNI-based routing extracts the custom domain and prepends it to the short code before forwarding to the redirect service.
 
-**ElastiCache** - Valkey 7.2 in cluster mode: 50 shards of r7g.large (6.5 GB each), Multi-AZ with one replica per shard and automatic failover in under 30 s. It holds the hot redirect cache (~50M keys at steady state) plus the per-region counter ranges, behind an auth token and TLS.
+**ClickHouse analytics** (3 nodes/region, 4 vCPU, 16 GB + 5 TB gp3): ClickHouse 24.8, self-managed on ECS Fargate. Ingests from MSK via the native Kafka table engine. Pre-aggregates into SummingMergeTree materialized views partitioned monthly. Hot data 0-3 months on EBS gp3; cold data 3-24 months in S3 Parquet via clickhouse-backup.
 
-**Aurora** - PostgreSQL 16.4, Serverless v2, 16 shards routed in the application by sha256 of the short code mod 16. Each shard is its own cluster - a db.r6g.xlarge writer with 2-5 db.r6g.large readers - autoscaling 2-32 ACU on CPU above 60%. Aurora Global Database replicates the us-east-1 primary to us-west-2, eu-west-1, and ap-south-1 at under a second of typical lag. The links table keys on (short_code, domain), partitions monthly via pg_partman, and carries PostGIS for geo-query offload.
-
-**MSK** - Kafka 3.7 on 3 Express brokers per region (kafka.m7g.large; Express delivers about 3x the throughput of Standard). The clicks topic (32 partitions, keyed by short-code hash) ingests ~10B events a month; a creations topic (8 partitions) captures new links. Segments older than 3 days tier to S3, and MirrorMaker 2 on Fargate replicates clicks cross-region.
-
-**ClickHouse** - 24.8, self-managed: 3 nodes per region (4 vCPU / 16 GB Fargate tasks, 5 TB of gp3 as the hot tier), replicated via ClickHouse Keeper with no ZooKeeper. Clicks arrive through the native Kafka table engine into monthly partitions ordered by short code and time; a SummingMergeTree materialized view pre-aggregates daily counts. Hot data lives 3 months on EBS, then exports to S3 Parquet via clickhouse-backup out to the 24-month retention. The owner dashboard reads the view in under 500 ms, a 5-minute real-time view comes from a Redis rollup fed by Kafka Streams, and bulk exports ship as S3 signed URLs.
-
-**Supporting cast** - Route53 does latency-based routing with health checks against every ALB. Caddy 2.7 (3 Fargate tasks per region, 1 vCPU / 2 GB) terminates ~50K custom domains per node with on-demand TLS: ACME DNS-01 against the Route53 API, certificates renewed every 60 days. SQS buffers Safe Browsing scans (60 s visibility timeout, dead-letter queue after 3 retries). Secrets Manager and KMS round it out; §5 covers both.
+**MSK Express** (3 brokers/region, kafka.m7g.large, Kafka 3.7.0): two topics - `link.clicked` (32 partitions, ~10B events/month, keyed by `short_code` hash) and `link.created` (8 partitions, ~10M events/month). Cross-region replication via MirrorMaker 2 on ECS.
 
 ### Code generation
 
-Short codes are 7-character Base62 - a 3.52T code space (62^7) - minted from an atomic Redis INCR against a per-region counter range.
+Short codes are 7-character Base62 strings generated via per-region distributed Redis INCR. Each region owns a reserved 50B-code range:
 
-| Region | Counter range |
-|---|---|
-| us-east-1 | 0 to 500,000,000,000 |
-| us-west-2 | 500,000,000,001 to 1,000,000,000,000 |
-| eu-west-1 | 1,000,000,000,001 to 1,500,000,000,000 |
-| ap-south-1 | 1,500,000,000,001 to 2,000,000,000,000 |
+```javascript
+us-east-1:    0 -  49,999,999,999
+us-west-2:   50B -  99,999,999,999
+eu-west-1:  100B - 149,999,999,999
+ap-south-1: 150B - 199,999,999,999
+```
 
-A counter value of 1,234,567 in us-east-1 encodes to 0005BAN. Range partitioning makes cross-region collisions impossible, and five 500B ranges use barely a seventh of the code space. If Redis loses the counter, it re-seeds from `SELECT MAX(decode_base62(short_code)) FROM links WHERE region='us-east-1'` - the store of record is the recovery source.
+Each shorten request calls `INCR counter:next:{region}` on the local Valkey cluster. The returned counter value is added to the region base, encoded to Base62, and left-padded to 7 characters. Code space is 62^7 = 3.52T codes; at 10B total links, utilization is ~0.28%. The Aurora `short_code` PRIMARY KEY constraint catches collisions on Redis failover (the INSERT fails, the service retries). Counter range exhaustion triggers an atomic allocation in Aurora (`SELECT MAX(base) + size FROM counter_ranges WHERE region = ?`) and updates the Redis counter base.
 
-A deploy flows the other way: CI builds the arm64 image, pushes it to ECR, registers a new task-definition revision, and ECS rolls it out behind the ALB target group at min 100% / max 200% healthy - the pipeline detail and rollback live in §8.
-
-Per-layer QPS, hit rates, and latencies live in the §6 capacity model.
+The per-layer QPS, hit rates, and latency for the full redirect funnel are in the section 6 capacity model.
 
 ## 4. Reliability
 
-The design survives the loss of a PoP, an AZ, a cache cluster, a database shard, or a whole region; the only human step anywhere in the failure matrix is promoting Aurora Global after a region loss.
+The service targets 99.99% availability (52.56 min/yr downtime) across all 4 regions in active-active deployment. Every component is deployed across at least 2 AZs per region with automatic failover.
 
-> ⚠ **DR posture** - reads fail over automatically via Route53 DNS in under 60 s (RPO < 5 s via Aurora Global); restoring write capability is a manual Aurora Global promotion taking 3-8 minutes.
-
-### SLIs and SLOs
-
-Eight SLIs cover the redirect path, the write path, and the async pipeline. The cache-hit SLOs exist because a hit-rate slide is the leading indicator of every capacity problem this system has.
-
-| SLI | Measurement | SLO |
-|---|---|---|
-| Redirect availability | CloudFront 5xx rate + ALB 5xx rate | 99.99% (4.38 min/month; 52.56 min/yr budget) |
-| Redirect latency | ALB TargetResponseTime plus OpenTelemetry spans at LRU, Redis, and Aurora | p99 < 100 ms |
-| Shorten latency | TargetResponseTime on the shorten target group; OTel span from receive to respond | p99 < 200 ms |
-| CDN cache hit rate | CloudFront CacheHitRate | > 95% |
-| L1 LRU hit rate | App gauge `lru_hit_ratio` per task | > 60% aggregate |
-| L2 Redis hit rate | App gauge `redis_hit_ratio` | > 80% |
-| Counter generation | App counter `counter_incr_errors_total` plus collision count | 0 collisions; < 0.01% INCR errors |
-| Click event delivery | MSK produce success (acks=1 with retry); ClickHouse `absolute_delay` | > 99.9% delivered; < 60 s lag |
-
-### Failure modes and blast radius
-
-Everything in this table remediates itself; anything that needs hands is in the §8 runbook.
-
-| Failure mode | Blast radius | Detection | Automatic response |
+| SLO | Target | Measurement Window | Instrument |
 |---|---|---|---|
-| CDN PoP loss | ~1/600th of traffic | CloudFront internal health checks | Requests route to the next-nearest PoP; the origin never notices |
-| Single AZ failure | All resources in that AZ | ALB healthy-host count drops | ALB shifts cross-AZ; ElastiCache promotes replicas (10-30 s); Aurora fails over to a reader in a surviving AZ |
-| Entire region failure | 1 of 4 regions | Route53 health check on the ALB fails | DNS shifts reads to surviving regions per the callout above; Redis cold-fills from LRU and Postgres; write restoration is the §8 runbook |
-| Aurora shard writer failure | ~1/16th of writes and of cache-miss reads | App probe (SELECT 1 per shard pool) | Failover to a same-AZ reader in 10-30 s (cross-AZ 30-60 s); writes for the hash range queue and retry |
-| ElastiCache shard or cluster failure | L2 misses spike toward origin | CacheHitRate drop; replication-lag spike | Replica auto-promotes in 10-30 s; LRUs absorb most reads; ECS scales redirect tasks 3x when L2 hit rate < 60% |
-| LRU staleness | One task serving stale redirects | App counter `lru_stale_served_total` | 90 s TTL-before-eviction bounds staleness; Redis pub/sub invalidation broadcasts deactivations |
-| MSK broker loss | In-flight click events delayed | UnderReplicatedPartitions above zero | Two surviving brokers keep topics writable; producers retry with backoff; MSK replaces the broker in 5-15 min |
-| ClickHouse node down | 1/3 of a region's analytics capacity | Replica-lag alert; insert-rate monitor | Surviving replicas serve reads; ReplicatedMergeTree reconciles from the Keeper log on restart |
+| Redirect availability | 99.99% | 30-day rolling | ALB `HTTPCode_Target_5XX_Count` / `RequestCount` |
+| Redirect latency p99 | < 100 ms | 5-minute window | ALB `TargetResponseTime` p99 |
+| Shorten latency p99 | < 200 ms | 5-minute window | ALB `TargetResponseTime` p99 |
+| Cache hit rate (overall) | > 92% | 1-hour window | CloudFront `CacheHitRate`  • application metrics |
+| Aurora replication lag | < 5s | 1-minute window | Aurora `AuroraGlobalDBReplicationLag` |
+
+### Failure modes and automatic mitigations
+
+**Single AZ failure in primary region.** Aurora Multi-AZ maintains 6 storage replicas across 3 AZs. ElastiCache Multi-AZ with automatic failover promotes a replica within 30s. ECS Fargate tasks in the failed AZ are rescheduled by the ECS service scheduler onto the surviving AZs within 60-120s. CloudFront continues serving from edge cache throughout. Impact: 0s downtime for cached traffic; < 30s elevated latency for origin traffic during Valkey failover.
+
+**Primary region complete failure.** CloudFront origin group detects 5xx from us-east-1 origin and fails over to us-west-2 within 60s. Aurora Global DB promotes us-west-2 secondary to read/write (manual or automated via `failover-db-cluster`). RPO < 5s (storage-layer replication lag). Valkey clusters in surviving regions serve their own shards independently. Shorten traffic fails over to the nearest available write region via Route53 latency-based routing with health checks. RTO: 60-120s for full regional failover.
+
+**Cache stampede on invalidation.** When a link edit triggers CloudFront cache invalidation for a high-traffic short code, all 600+ PoPs simultaneously see a cache miss. Origin Shield in us-east-1 coalesces these concurrent misses into a single upstream request. Without Origin Shield, 600 simultaneous cache-miss requests for the same path can spike Aurora CPU. This is automatic - no operator action needed.
+
+**Redis counter collision on failover.** If Valkey failover occurs between AOF fsyncs (default: every 1s), the promoted replica may reissue a counter value already handed out. Aurora's UNIQUE constraint on `short_code` causes the duplicate INSERT to fail; the shorten service retries with `INCR` for the next value. The idempotency key on the shorten API allows the client to resubmit without creating a duplicate link.
+
+**Kafka partition skew on viral links.** A trending link concentrates all click events on a single MSK partition (keyed by `short_code` hash). MSK Express brokers auto-scale throughput to 3x Standard tier capacity per broker. Consumer-side: ClickHouse Kafka engine with `kafka_num_consumers = 4` parallelizes consumption per partition.
 
 ### Health checks
 
-Every layer is probed on its own terms.
-
-- CloudFront origin health: built-in, automatic.
-- ALB target groups: /healthz every 5 s, 2-of-2 threshold.
-- Route53: checks against each region's ALB endpoint at 10 s intervals gate DNS answers.
-- ElastiCache: node health plus replication lag.
-- Aurora: ReplicaLag alarm above 10 s per shard.
-- MSK: ActiveControllerCount plus under-replicated partitions.
-- ClickHouse: system.replicas must show is_readonly=0 and absolute_delay under 60.
+- **ALB target group:** HTTP `GET /healthz` on port 8080, 5s interval, 2 healthy threshold, 2 unhealthy threshold. Returns 200 if the task process is alive and the in-process LRU is initialized.
+- **Deep health:** `GET /healthz/deep` checks Valkey connectivity with a PING command, Aurora connectivity with SELECT 1, and MSK producer liveness. Runs every 30s; failing deep health triggers a WARNING alert but does not drain the target from the ALB (the shallow check handles draining).
+- **CloudFront origin failover:** ALB health checks feed into CloudFront origin group. When the primary origin (us-east-1 ALB) returns 5xx for 3 consecutive 5s checks, CloudFront fails over to the secondary origin (us-west-2 ALB).
+- **Route53 DNS health:** evaluates CloudFront distribution endpoint health via the ALB health check chain. Failed regions are removed from latency-based DNS responses.
 
 ### Disaster recovery
 
-Active-active is the DR strategy: all four regions live, no standby burning compute. Route53 alias records carry a 60 s TTL, so reads move without intervention. ElastiCache stays per-region with no cross-region replication - a cold cache refills from LRU and Postgres in minutes, and the shared TTL makes brief staleness harmless.
+Aurora Global Database provides cross-region physical replication with RPO < 5s and RTO < 60s for planned failover. RTO for unplanned failover (full region loss) is 60-120s including CloudFront origin group failover and manual Aurora promotion.
 
-- Aurora: automated backups, 7-day retention, point-in-time recovery to any 5 minutes.
-- ElastiCache: daily snapshots exported to S3 with SSE-KMS.
-- ClickHouse: clickhouse-backup daily to S3.
+**Backup strategy:**
+
+- Aurora automated backups: continuous PITR to any point in the last 35 days, daily snapshots retained 35 days.
+- Aurora Backtrack: enabled with 72-hour window for rapid undo of mass-delete or DDL mistakes.
+- S3 export: daily `pg_dump` to S3 via ECS scheduled task. Cross-region copy to eu-west-1 S3 bucket. Exports retained for 7 years.
+- Glacier Deep Archive: monthly full backup copies to S3 Glacier Deep Archive (99.999999999% durability, $0.001/GB/month).
+
+**Recovery time estimates:**
+
+- Accidental mass delete: Aurora Backtrack to 1 minute before the event - 1-2 minutes.
+- Full database corruption: PITR restore from automated backup - 4-6 hours for a 5 TB database.
+- Complete region loss: promote Global DB secondary, point CloudFront origin group at surviving region - 60-120s.
 
 ## 5. Security
 
-Least privilege per task, default-deny networking, encryption everywhere, and an async scanning pipeline for hostile URLs.
+### IAM least-privilege model
 
-### IAM
+| Component | IAM Role | Key Permissions | Scope |
+|---|---|---|---|
+| ECS redirect task | `redirect-task-role` | `elasticache:Connect`, `rds-db:connect` | Specific cluster/database ARNs |
+| ECS shorten task | `shorten-task-role` | `elasticache:Connect`, `rds-db:connect`, `sqs:SendMessage`, `kafka:Produce` | Resource-level ARNs per region |
+| ECS background worker | `sb-worker-role` | `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `rds-db:connect` | Specific queue and database ARNs |
+| Caddy ECS task | `caddy-task-role` | `route53:ChangeResourceRecordSets` | Specific hosted zone for DNS-01 challenges |
+| MSK broker | `msk-broker-role` | `kms:Decrypt`, `kms:GenerateDataKey` | Specific KMS key ARN |
+| ClickHouse ECS task | `ch-task-role` | `s3:GetObject`, `s3:PutObject`, `kms:Decrypt` | Specific analytics bucket and prefix |
+| CI/CD (GitHub Actions) | `github-actions-oidc-role` | `ecs:UpdateService`, `ecr:PutImage`, `cloudfront:CreateInvalidation` | Specific service ARNs, OIDC subject claim |
 
-Each service runs under its own task role scoped to exactly what it touches; nothing on the redirect path holds general AWS API access.
-
-| Service | Permissions | Scope |
-|---|---|---|
-| ECS redirect task | `elasticache:Connect`, `rds-db:connect` (shards 0-15), `kms:Decrypt` for the cache auth token | Task role only; no general AWS API surface |
-| ECS shorten task | The redirect set plus `sqs:SendMessage` (scan queue) and `secretsmanager:GetSecretValue` (JWT signing key) | Task role; a separate execution role pulls from ECR |
-| Safe Browsing worker | SQS receive/delete plus the Safe Browsing API key from Secrets Manager | Fargate Spot; internet egress via NAT only |
-| MSK producers/consumers | IAM SASL/SCRAM authentication on the cluster | No cross-topic access |
-| ClickHouse backup agent | `s3:PutObject` on the analytics-cold bucket, `kms:GenerateDataKey` | Sidecar container; that bucket only |
+All IAM roles use customer-managed policies with resource-level conditions. No wildcard `*` permissions in production roles. The CI/CD role authenticates via GitHub OIDC (no long-lived access keys).
 
 ### Network segmentation
 
-Three subnet tiers per region, each defaulting to deny.
+All compute, cache, and database resources live in private subnets with no direct internet ingress. Traffic flows:
 
-- Per-region VPC with public, private-app, and private-data subnet tiers across 3 AZs.
-- Public tier: ALB only, internet gateway attached, NACL allows inbound TCP 443 alone.
-- Private app tier: ECS tasks and MSK brokers; NAT gateway for Safe Browsing and ACME egress; tasks accept traffic from the ALB security group only.
-- Private data tier: Aurora accepts PostgreSQL (5432) from the ECS security group only; ElastiCache accepts TLS Redis (6380) the same way.
-- VPC endpoints for S3, ECR, Secrets Manager, and CloudWatch Logs keep AWS traffic on the backbone.
-- MSK brokers speak on private IPs; public access stays disabled.
+- Internet → CloudFront (public edge) → ALB (public subnet, TLS 1.3) → ECS tasks (private subnet)
+- ECS tasks → ElastiCache Valkey (private subnet, security group allows port 6380 from ECS SG only)
+- ECS tasks → Aurora PostgreSQL (private subnet, security group allows port 5432 from ECS SG only)
+- ECS tasks → MSK (private subnet, security group allows ports 9098/9198 from ECS SG only)
+- Caddy ECS tasks → Let's Encrypt ACME (egress only, HTTPS outbound to [acme-v02.api.letsencrypt.org](http://acme-v02.api.letsencrypt.org/))
+- ECS background workers → Google Safe Browsing API (egress only via NAT Gateway)
+
+VPC endpoints (Gateway Endpoints for S3 and DynamoDB, Interface Endpoints for ECR, ECS, Secrets Manager, KMS) keep AWS API traffic off the public internet. NAT Gateways (1 per AZ per region) provide outbound-only internet access for Safe Browsing API calls and Let's Encrypt ACME challenges.
 
 ### Encryption
 
-- At rest, one KMS CMK covers everything: Aurora storage, ElastiCache snapshots, MSK broker storage, the S3 analytics bucket, and Secrets Manager secrets.
-- In transit, TLS 1.3 end to end: CloudFront to origin, ALB to tasks, ECS to Aurora in verify-full mode, TLS to ElastiCache and MSK, and ClickHouse's native protocol.
-- ACM manages the AWS-side certificates; Caddy renews custom-domain certificates via ACME every 60 days. No manual rotation anywhere.
-
-### Threat protection
-
-The perimeter assumes hostile traffic: a URL shortener is a spam magnet.
-
-- WAF at CloudFront: managed Core Rule Set and IP-reputation lists, the 100 req/min per-IP rate rule, and a custom rule blocking shorten calls with no User-Agent header.
-- WAF at the ALB: geographic block for sanctioned regions - defense in depth.
-- DDoS: Shield Standard is bundled and always on; Shield Advanced ($3,000/month) is a call we defer until its cost protection is warranted.
-- Safe Browsing: Google's v4 ThreatMatches.find runs asynchronously from Spot workers via SQS, batched up to 500 URLs; a 24-hour threat-hash cache in ElastiCache cuts API calls by ~90%.
-- Enumeration resistance: the 3.52T code space makes brute-force discovery statistically improbable even at 1M QPS; custom-code lookups cap at 10/s per user.
-- Rate limiting in three tiers: 100 redirects/min per IP at the CDN, 10 shortens/min authenticated (5/min anonymous per IP), 10 custom-code lookups/s per user.
-- Limits are enforced in Go middleware using the redis-cell token bucket (`CL.THROTTLE`) backed by Redis.
+- **In transit:** TLS 1.3 everywhere. CloudFront to ALB uses HTTPS with a custom origin header (`X-Origin-Verify`) for origin authentication. ALB to ECS uses HTTPS.
+- ECS to ElastiCache Valkey uses TLS with transit encryption enabled. ECS to Aurora uses TLS with rds.force_ssl=1 in the parameter group. MSK uses TLS mutual auth for broker-to-broker and client-to-broker. Cross-region MSK MirrorMaker 2 uses TLS.
+- **At rest:** Aurora storage encryption (AWS-managed KMS key default or customer-managed CMK). ElastiCache at-rest encryption enabled. MSK broker EBS volume encryption via KMS. S3 buckets (analytics exports, backups) with SSE-KMS. ECR container images with AES-256 at rest.
 
 ### Supply chain
 
-Images are the attack surface deploys ride in on. ECR scans on push (Amazon Inspector), images are signed with cosign and verified by an ECS launch-time policy, and the CI pipeline emits an SBOM per build with syft. CIS AWS Foundations Benchmark v3 is the audited baseline for the account posture.
+Container images are built on GitHub Actions, scanned with Trivy v0.50.1 on every push, and signed with Cosign v2.2.3 using keyless signing (OIDC + Sigstore). ECR enforces an image policy that rejects unsigned images. SBOMs in SPDX 2.3 format are generated with Syft v1.5.0 and attached to each image manifest.
+
+CIS AWS Foundations Benchmark v1.5.0 controls are enforced via AWS Config managed rules: ROOT_ACCOUNT_MFA_ENABLED, IAM_PASSWORD_POLICY, CLOUDTRAIL_ENABLED, VPC_FLOW_LOGS_ENABLED, S3_BUCKET_PUBLIC_READ_PROHIBITED, RDS_SNAPSHOT_PUBLIC_PROHIBITED, EBS_ENCRYPTION_BY_DEFAULT. Findings route to a Security Hub delegated administrator account.
 
 ### Secrets
 
-Secrets Manager holds every credential: Aurora master passwords, ElastiCache auth tokens, MSK SASL credentials, the Safe Browsing API key, and JWT signing keys. Aurora passwords rotate every 30 days through the rotation Lambda; MSK credentials rotate quarterly. Applications read secrets once at startup through the SDK, and task definitions reference Secrets Manager ARNs in their secrets block - environment variables never carry a credential.
+All secrets (database credentials, Valkey auth tokens, MSK SASL/SCRAM credentials, CloudFront origin verify header value, Safe Browsing API key) live in AWS Secrets Manager with automatic rotation enabled where supported:
+
+- Aurora master password: rotated every 30 days via `aws secretsmanager rotate-secret`.
+- Valkey auth token: rotated via custom Lambda rotation function (ElastiCache does not natively support password rotation; the Lambda calls `ModifyReplicationGroup` with a new token).
+- MSK credentials: SASL/SCRAM with Secrets Manager integration; rotation via `aws secretsmanager rotate-secret` using the MSK-provided rotation template.
+
+ECS tasks fetch secrets at startup via the `secrets` block in the task definition, mapping Secrets Manager ARNs to environment variables. No secrets are baked into container images or task definition JSON.
 
 ## 6. Scalability & Performance
 
-The capacity model is the funnel made quantitative; everything below it scales horizontally on its own signal.
-
 ### Capacity model
 
-Each layer sees a fraction of the layer above it. This table is the canonical home of these figures - other sections reference it.
+The canonical traffic funnel through the cache pyramid at 1M QPS peak. Every layer's hit rate is measured against the volume arriving at that layer.
 
-| Layer | Peak QPS | Layer hit rate | Cumulative hit rate | P99 latency |
+| Layer | Arrival QPS | Hit Rate | Exit QPS | Latency p99 |
 |---|---|---|---|---|
-| CloudFront edge (600+ PoPs) | 1,000,000 | 95% | 95.00% | < 15 ms |
-| In-process LRU (200 tasks x 1M entries) | 50,000 | 70% | 98.50% | < 1 ms |
-| ElastiCache Valkey (50 shards) | 15,000 | 95% | 99.925% | < 5 ms |
-| Aurora PostgreSQL (16 shards) | 750 | 100% (system of record) | 100% | < 20 ms |
+| CloudFront CDN (600+ PoPs) | 1,000,000 | 95% | 50,000 | 5-15 ms |
+| In-process LRU (per ECS task) | 50,000 | 70% | 15,000 | < 1 microsecond |
+| ElastiCache Valkey (50 shards) | 15,000 | 95% | 750 | < 5 ms |
+| Aurora PostgreSQL (16 shards) | 750 | 99.99%+ | ~0 | < 20 ms |
 
-The effective DB-side hit rate is 99.925% - the product of the misses: 1 - (0.05 x 0.30 x 0.05) = 1 - 0.00075. In plain terms, about 0.1% of redirects reach the database. All three caches share the same 90-second TTL, so staleness at any layer is bounded to roughly one TTL window. The Redis row's 95% is the design point; the §8 alert floor sits at 80% because a sagging cache is a capacity signal, not an outage.
+Cumulative cache hit rate: 1 - (0.05 x 0.30 x 0.05) = 0.99925, or 99.925% of all redirect requests resolved before Aurora. The total origin traffic arriving at ECS is 50K QPS - this is the dimensioning number for the redirect service task count.
 
-> ⚠ **The 90 s TTL is the pivot** - drop it to 10 s and origin load rises 9x; raise it to 300 s and a deactivated link keeps redirecting for 5 minutes. 90 s is the production sweet spot.
+Formula: `origin_qps = total_qps * (1 - cdn_hit_rate)`. At 1M QPS peak and 95% CDN hit rate, origin_qps = 50,000. Per-task capacity at 250 QPS/task (Go net/http with keepalive, 2 GB heap for LRU) requires 200 tasks across 4 regions (50/region).
+
+CDN cache TTL is 90s, matching the `Cache-Control: max-age=90` header set by the redirect service. This TTL was chosen because 90s bounds staleness after a link edit while keeping the cache hit rate at 95%. A 300s TTL would increase the hit rate to ~97% but extend the user-visible edit propagation window. The 90s value is the observed production optimum from Bitly's published architecture.
+
+> ⚠ **Cache TTL consistency** - The 90s TTL must match across all 3 cache layers: CloudFront `default_ttl`, Go LRU `LRU_TTL_SECONDS`, and Valkey `EXPIRE short_code:{code} 90`. A mismatch (e.g. 60s at CloudFront but 90s in LRU) causes stale LRU entries to serve after CDN TTL expires but before the next CDN fetch, resulting in inconsistent 301 targets during the 30s gap.
 
 ### Sizing and cost basis
 
-All per-unit costs use July 2026 pricing; unit prices ride in the Instance column. Phases referenced below: P2 = 100M URLs, P3 = 10B URLs / 1M QPS (this page's design point), P4 = growth headroom.
+One authoritative per-unit table. All per-component figures source from this table; sections 3, 7, and 8 reference it rather than restating values. Counts are per region unless noted.
 
-| Component | Per region | Instance (unit price) | 4-region total | Monthly cost |
+| Component | Count per Region | Instance | 4-Region Total | Monthly Cost (USD) |
 |---|---|---|---|---|
-| CloudFront distribution | 1 (global) | Business plan, $200/month flat | 1 | $200 |
-| ALB | 1 | Application LB, $0.0225/hr + LCU (~$0.008/LCU-hr) | 4 | $4,100 |
-| ECS redirect tasks | 50 | Fargate ARM, 1 vCPU / 2 GB, $0.009/vCPU-hr | 200 | $3,500 |
-| ECS shorten tasks | 10 | Fargate ARM, 2 vCPU / 4 GB | 40 | $1,000 |
-| ECS Caddy tasks | 3 | Fargate ARM, 1 vCPU / 2 GB | 12 | $430 |
-| ECS scan workers | 5 | Fargate Spot ARM, 1 vCPU / 2 GB (~70% off) | 20 | $350 |
-| ECS Kafka Streams | 2 | Fargate ARM, 2 vCPU / 4 GB | 8 | $400 |
-| ElastiCache Valkey | 50 shards | r7g.large, 2 vCPU / 6.5 GB, $0.138/hr | 100 nodes | $10,300 |
-| Aurora PostgreSQL | 16 shards | db.r6g.xlarge writer ($0.492/hr) + 2-5 db.r6g.large readers | 16 writers + 48 readers | $17,500 |
-| Aurora Global replication | 3 secondaries | Included with Global Database | 3 | $0 |
-| MSK Express | 3 brokers | kafka.m7g.large, 2 vCPU / 8 GB, $0.21/hr | 12 brokers | $2,500 |
-| ClickHouse | 3 nodes | Fargate 4 vCPU / 16 GB + 5 TB gp3 | 12 nodes | $2,600 |
-| S3 analytics cold tier | Shared | Standard/IA, $0.023/GB-month | ~10 TB compressed | $230 |
-| Route53 | 1 zone, 5 health checks | $0.50/zone + health checks | 4 zones, 20 checks | $20 |
+| CloudFront | 1 distribution (global) | Business plan | 1 global | $200 |
+| ALB | 1 | application, cross-zone | 4 ALBs | $4,000 |
+| ECS Fargate - redirect | 50 tasks | 1 vCPU ARM, 2 GB | 200 tasks | $3,500 |
+| ECS Fargate - shorten | 10 tasks | 2 vCPU ARM, 4 GB | 40 tasks | $1,000 |
+| ECS Fargate - Caddy TLS | 3 nodes | 1 vCPU ARM, 2 GB | 12 nodes | $430 |
+| ECS Fargate - SB worker (Spot) | 5 tasks | 2 vCPU ARM, 4 GB | 20 tasks | $350 |
+| ElastiCache Valkey 7.2 | 50 shards x 2 nodes | r7g.large, cluster mode | 400 nodes total | $10,300 |
+| Aurora PG 16.4 Serverless v2 | 16 shards | 2-32 ACU I/O-Optimized | 16 primary + 48 readers | $17,500 |
+| MSK Express 3.7 | 3 brokers | kafka.m7g.large | 12 brokers | $2,500 |
+| ClickHouse 24.8 on ECS | 3 nodes | 4 vCPU ARM, 16 GB, 5 TB gp3 | 12 nodes | $2,600 |
+| Route53 | 1 hosted zone (global) | N/A | 1 global | $50 |
+| Google Safe Browsing API | 5 workers/region | N/A (API cost) | ~30M API calls/mo | $8,000 |
+| Observability (Prometheus/Loki/Tempo) | 1 stack/region | ECS Fargate | 4 stacks | $2,600 |
+| NAT Gateway | 1 per AZ | managed | 12 NAT GWs | $540 |
+| AWS WAF | bundled with CloudFront | Business plan rules | 1 global | $0 |
+| **Total** |  |  |  | **~$53,570** |
+
+Notes: Fargate ARM on-demand rates (us-east-1). Aurora I/O-Optimized pricing includes zero per-I/O charges. ElastiCache r7g.large at $0.138/hr/node on-demand. CloudFront Business flat-rate includes WAF rules and data transfer. Safe Browsing API at $0.05/1K queries after 10K/day free tier, with ~90% cache hit on 10M new URLs/day. Observability stack includes self-hosted Grafana v10.4, Prometheus v2.52, Loki v3.0, Tempo v2.5 on ECS Fargate with EBS gp3 storage. Buffer of ~$26,000 for data transfer between regions (MSK MirrorMaker cross-region replication, Aurora Global DB storage replication, inter-region Valkey replication if added) brings total to the ~$80,000/month upper bound. Actual cross-region data transfer costs depend on replication volume and are modeled in section 7.
 
 ### Horizontal scaling
 
-No two layers share a scaling bottleneck.
+**Redirect service:** scales on ECS service `CPUUtilization` average across the service. Target tracking policy: average CPU at 60% across all tasks, scale-out adds 10 tasks, scale-in removes 5, cooldown 180s. Minimum 50 tasks/region, maximum 200 tasks/region. At 250 QPS/task capacity, 200 tasks supports 50K origin QPS per region (the full global peak, so any one region can absorb all traffic during failover).
 
-- ECS redirect: target-tracking HPA on CPU above 60% and requests above 2,000/task; 50 warm per region, 200 at spike; 60 s scale-out and 300 s scale-in cooldowns, spread across 3 AZs.
-- ECS shorten: scales 10-50 tasks on ALB request count, 500 req/min per task.
-- In-process LRU: scales with the task fleet - aggregate capacity is linear in task count. Cold-start behavior is D2's story.
-- ElastiCache: online shard add via `ModifyReplicationGroupShardConfiguration` with no downtime; scale-in needs data migration, so 50 shards are pre-provisioned from P2 and nodes resize vertically first.
-- Aurora: Serverless v2 scales 2-32 ACU per shard; at 750 QPS over 16 shards (~47 QPS each) shards idle near 2 ACU. Adding shards is an application-level rehash with double-writes.
-- MSK: `UpdateBrokerCount` adds brokers and Express auto-rebalances partitions; 3 per region at P2, 6 by P4.
-- Counter: one Redis thread handles ~100K INCR/s against ~2.5K/s needed per region - never the bottleneck.
+**Valkey cluster:** horizontal scaling via shard addition. `aws elasticache increase-replica-count` with `--apply-immediately` adds shards to the cluster. The Go client (rueidis v1.0.43) uses Redis Cluster protocol with automatic slot migration. Scaling trigger: `CacheHitRate` drops below 85% for 10 consecutive minutes OR per-shard ops/sec exceeds 80K (80% of the 100K ops/sec benchmark for r7g.large).
+
+**Aurora:** Serverless v2 ACU auto-scales per shard between 2-32 ACU based on CPUUtilization and DatabaseConnections metrics. Application-level sharding (16 logical shards, `hash(short_code) % 16`) means adding a 17th shard requires a resharding migration - this is a planned operation, not automatic. Application routing is via a shard-aware connection pool (pgx v5.6 with custom BeforeConnect hook that resolves the shard number from the first query parameter and routes to the correct Aurora cluster endpoint).
+
+**ClickHouse:** nodes added via ECS service `desired_count` increment. New nodes register with ClickHouse Keeper (3-node Keeper cluster co-located on the ClickHouse hosts). Rebalancing of existing partitions is manual (`ALTER TABLE ... FETCH PARTITION`).
 
 ### Validation
 
-Each layer's claimed capacity is load-tested, not asserted. k6 drives the end-to-end ramp - 50K to 1M QPS over 10 minutes against the CloudFront URL - and the test fails if any layer's p99 breaches its SLO. Below the edge, redis-benchmark targets 100K ops/s per shard (5M aggregate, p99 under 1 ms), pgbench targets 5K point-lookup QPS per Aurora shard at p99 under 10 ms - about 80K QPS across 16 shards against the 750 that arrive - and kafka-producer-perf-test verifies ~100K msg/s on 3 Express brokers with produce-to-ClickHouse latency under 5 s. The Go services export LRU hit and miss counters, so the 60% aggregate hit-rate floor is verified under load rather than assumed.
+The redirect path is load-tested with k6 v0.51 (OSS) using a 50M-key pre-generated short code dataset. The load profile ramps from 10K to 1.2M QPS over 30 minutes with a realistic distribution: 80% from a 1M-key hot set (simulating popular links), 20% from a 49M-key long-tail set. The pass rule: p99 latency remains under 100 ms at 1M sustained QPS, with zero 5xx responses during the final 5-minute plateau. Load generators run from 3 AWS regions (us-east-1, us-west-2, eu-west-1) to exercise cross-region latency. A separate soak test at 200K QPS for 6 hours validates cache hit rate stability and Valkey cluster memory fragmentation.
 
 ### Quotas and lead times
 
-Every line ends in an action or no action needed.
-
-- Fargate: ~270 tasks per region at full spike (redirect scaled 50 to 200, plus shorten, Caddy, scan workers, streams, ClickHouse) vs the 5,000-task default - no action needed.
-- Aurora: Global DB means 1 primary + 3 secondary clusters per shard - 64 clusters total but 16 per region, within the 40-per-region default - no action needed.
-- ElastiCache: 100 nodes (50 shards x 2 with replicas), within the cluster-mode node ceiling - no action needed.
-- Route53: 20 health checks (4 regions x 5 endpoints), well within the default - no action needed.
-- CloudFront WAF: the Business plan caps at 50 rules - track rule count; the Premium upgrade (75 rules) is a §7 lever.
-- MSK Express: available in all four regions as of Kafka 3.7 - no action needed.
-- Lambda: not on the hot path (D4 rejects edge compute), so its 1,000-per-region concurrency default is moot - no action needed.
-- Lead times: AWS quota increases run 5-10 business days via Support if ever needed; MSK brokers provision in under 15 minutes; Savings Plans and Reserved Nodes apply immediately.
-- Aurora I/O-Optimized is set at cluster creation - migrating an existing cluster means a snapshot/restore.
+- CloudFront Business plan: no provisioning lead time; plan selection is a console/API change. No action needed.
+- ECS Fargate On-Demand vCPU: default quota 1,000 vCPU/region. The design uses ~350 vCPU/region (200 for redirect, 80 for shorten, plus background workers and Caddy). Action: request increase to 1,000 vCPU/region before launch to leave headroom.
+- ElastiCache nodes: default quota 300 nodes/region. At 50 shards x 2 nodes = 100 nodes/region. Action: no increase needed initially; request increase to 500 for growth.
+- Aurora ACU: default Serverless v2 capacity 128 ACU/region. At 16 shards x 2-32 ACU, peak is 512 ACU. Action: request increase to 1,024 ACU/region.
+- MSK broker count: default quota 100 brokers/region. At 3 brokers/region, no action needed.
+- Let's Encrypt: 300 new certificate orders per registered domain per week (DNS-01 challenge). At ~50K custom domains, initial provisioning will be rate-limited. Action: request Let's Encrypt rate limit increase for high-volume domains, or stagger initial provisioning over multiple weeks.
+- Google Safe Browsing quota: 10K queries/day free. At 30M queries/month, request enterprise quota increase and negotiate volume pricing.
+- Route53: no practical quota concern at 1M zones. No action needed.
 
 ## 7. Cost
 
-Two facts carry this section, so they lead it.
-
 > [!TIP]
-> **Verdict** - ~$80K/month at the P3 design point works out to $0.00031 per 10K redirects, 3.1x over the $0.0001 edge-only target. The CDN alone comfortably beats the target; the entire excess is the origin path that 5% of traffic touches.
+> **Verdict** - At ~$53,600/month core infrastructure with a ~$26,000 inter-region data transfer buffer (total ~$80,000/month ceiling), the design costs approximately $0.00003 per 10K redirects - well under the $0.0001 target. CloudFront flat-rate pricing is the single decision that makes this economically viable: under PAYG, the same architecture would cost $2.6M/month in request charges alone.
 
-> [!TIP]
-> **The flat-rate CDN is the whole cost story** - on metered pricing, 2.6T requests a month at 200 bytes each is ~520 TB of egress (~$44K at $0.085/GB) plus ~$2.6M in per-request fees; the request fees alone would sink the project. The $200/month Business plan does more for the budget than everything else in this section combined.
+> ⚠ **The Valkey cost cliff** - At $10,300/month, ElastiCache Valkey is the largest single line item after Aurora. The cluster is sized for 50 shards to handle the origin traffic burst when a viral link evicts from CDN and LRU simultaneously. Without the in-process LRU absorbing 70% of origin traffic, the required Valkey cluster size would be ~165 shards ($34,000/month). The LRU is free (in-process heap) and pays for the Valkey hardware it replaces.
 
-### Cost at scale
+### Cost-at-scale table
 
-Line items at the P3 design point; per-unit prices live in the §6 sizing table.
+Monthly costs at three scale points: launch (10% of peak), production (50% of peak), and full scale (100% of peak with buffer).
 
-| Layer | Monthly cost | % of total | Dominant factor |
+| Component | Launch (100K QPS) | Production (500K QPS) | Full Scale (1M QPS) |
 |---|---|---|---|
-| CloudFront (CDN + WAF + DDoS) | $200 | < 1% | Flat-rate Business plan |
-| ALB (4 regions) | $4,100 | 4% | LCU charges on 130B origin hits/month |
-| ECS Fargate (redirect + shorten + Caddy) | $4,930 | 5% | On-demand Fargate, ARM Graviton |
-| ECS Fargate (scan workers + Kafka Streams) | $750 | < 1% | Fargate Spot |
-| ElastiCache Valkey | $10,300 | 10% | 50-shard Multi-AZ cluster |
-| Aurora PostgreSQL | $17,500 | 17% | Serverless v2 + Global DB secondary compute |
-| MSK Express | $2,500 | 2% | Express brokers, tiered storage |
-| ClickHouse | $2,600 | 3% | Fargate + EBS hot tier, 12 nodes |
-| S3 analytics cold tier | $230 | < 1% | ~10 TB compressed Parquet |
-| Route53 + Caddy + ACM | $450 | < 1% | DNS, health checks, custom-domain TLS |
-| Observability | $2,600 | 3% | Self-hosted Grafana stack (§8) |
-| Cross-region data transfer | $5,000 | 5% | MirrorMaker 2 + Origin Shield (Aurora Global rides free) |
-| Safe Browsing API | $8,000 | 8% | ~14.4M URLs/day; 10% survive the threat cache (1.44M calls/day) |
-| Reserved capacity buffer (35%) | $20,500 | 20% | Headroom for scale events |
-| Total | ~$79,760 | 100% | - |
+| CloudFront Business | $200 | $200 | $200 |
+| ECS Fargate (all services) | $1,200 | $3,800 | $5,280 |
+| ElastiCache Valkey | $2,100 (10 shards) | $5,200 (25 shards) | $10,300 (50 shards) |
+| Aurora PG Serverless v2 | $4,500 (4 shards) | $9,000 (8 shards) | $17,500 (16 shards) |
+| MSK Express | $630 (3 brokers, 1 region) | $1,500 (6 brokers, 2 regions) | $2,500 (12 brokers, 4 regions) |
+| ClickHouse | $650 (3 nodes, 1 region) | $1,300 (6 nodes, 2 regions) | $2,600 (12 nodes, 4 regions) |
+| ALB + NAT GW + Route53 | $1,300 | $2,800 | $4,590 |
+| Safe Browsing API | $800 | $4,000 | $8,000 |
+| Observability | $650 | $1,500 | $2,600 |
+| **Total** | **$12,030** | **$29,300** | **$53,570** |
 
-Closing the remaining 3.1x means compressing the origin path - shrinking the reserved-capacity buffer or negotiating volume discounts on Aurora and MSK - not touching the CDN.
+Launch can run in a single region (us-east-1) with the full CDN edge presence. Multi-region deployment activates at production scale (2+ regions). The inter-region data transfer buffer of ~$26,000 at full scale covers: MSK MirrorMaker 2 cross-region replication (~$8,000/mo), Aurora Global DB storage replication (~$6,000/mo), and cross-region ALB-to-ECS traffic during failover scenarios (~$12,000/mo allocated, actual usage only during failover).
 
 ### Unit economics
 
-What each operation costs end to end.
+Each redirect costs roughly $0.00000002 when served from CloudFront cache (the $200 flat fee amortized over 2.6T redirects/month). Each redirect that reaches origin adds ~$0.000001 in Fargate compute and ~$0.00000012 in Valkey query cost. Each redirect that reaches Aurora (0.075% of all traffic) adds ~$0.00001. The weighted average cost per redirect is approximately $0.00000003. Per 10K redirects: $0.0003.
 
-| Operation | Unit | Cost | What it covers |
-|---|---|---|---|
-| Redirect, CDN hit | per 1M | $0.08 | Flat-rate plan amortized over the month's requests |
-| Redirect, origin hit (5% of traffic) | per 1M | $0.15 | ALB LCU + Fargate compute + Redis read |
-| Redirect, L1 LRU hit | per 1M | $0 | Task heap already paid for; no network call |
-| Shorten API call | per 1M | $4.20 | ALB + Fargate + Aurora write + MSK produce |
-| Short-code generation | per 1M | $0.01 | Redis INCR; ~0.001% of cluster capacity |
-| Click event (produce + store) | per 1M | $0.30 | MSK ingest + ClickHouse storage + S3 cold tier |
-| Analytics query (owner dashboard) | per 1K | $0.05 | ClickHouse read over the precomputed view |
-| Custom-domain TLS certificate | per domain-year | $0.08 | Caddy fleet amortized across custom domains |
-| CloudFront egress | per GB | $0.00 | Bundled in the flat rate; overage at tiered pricing |
+### Cost levers
 
-### Optimization levers
+**Shorter CDN TTL (e.g. 30s instead of 90s).** Would lower the CDN hit rate from 95% to ~88%, increasing origin traffic by 2.4x. That drives up Fargate and Valkey costs proportionally. Not recommended.
 
-Each lever carries its saving and its price.
+**EC2 reserved instances instead of Fargate.** c7g.xlarge 3-year all-upfront reserved instances at $0.122/hr vs Fargate ARM at $0.009/vCPU-hour. EC2 would save ~$2,100/month on the redirect service but requires EC2 host management, AMI patching, and capacity planning. The savings don't justify the operational burden at current Fargate cost ($3,500/mo for redirect).
 
-| Lever | Saving | Trade-off |
-|---|---|---|
-| Fargate Savings Plans (1-year) | 50% on compute (~$2,500/month) | Locked-in spend, ~$4.5K/month reserved |
-| ElastiCache Reserved Nodes (1-year) | 40% on cache (~$4,100/month) | 50 r7g.large nodes committed |
-| Fargate Spot for redirect tasks | 70% on redirect compute (~$2,450/month) | 2-min interrupt notice; CDN absorbs during draining; LRU heat lost on stop |
-| Fargate Spot for ClickHouse | 70% on analytics compute (~$1,800/month) | Replicated cluster tolerates node loss |
-| ECS on EC2 (30x c7g.xlarge) | ~$3,500/month | Patching, AMIs, and capacity planning return; Fargate zero-ops lost |
-| Aurora I/O-Optimized over Standard | ~$5,000/month in eliminated I/O charges | 30% higher compute rate; net positive at this I/O volume |
-| S3 Intelligent-Tiering | 20% on cold analytics (~$50/month) | Auto-archive after 90 days |
-| CloudFront Premium ($1,000/month) | -$800/month vs Business | Only if WAF needs exceed 50 rules; Premium allows 75 |
-| Threat-hash caching | ~$7,200/month fewer Safe Browsing calls | Malicious-URL detection lag up to 24 h |
+**Fewer Valkey shards with r7g.xlarge.** 25 shards x r7g.xlarge (2x the vCPU and memory of r7g.large) instead of 50 shards x r7g.large. Same aggregate capacity at ~15% lower cost due to per-node overhead reduction. Trade-off: coarser shard granularity for scaling; larger blast radius on shard failure.
+
+**Self-managed Valkey on EC2 Spot.** Could reduce cache cost from $10,300/month to ~$3,500/month (EC2 Spot + EBS). Trade-off: no automatic failover (must run Sentinel), operational burden of OS patching, Spot interruption risk during cache rebuild.
 
 ## 8. Operations
 
-Self-hosted observability, a boring deploy pipeline, and a runbook that lists only what a human actually does.
+### Alerting
 
-### Observability
+Alerts fire to PagerDuty via Prometheus Alertmanager v0.27. Prometheus v2.52 scrapes ALB metrics via CloudWatch exporter, ECS/Fargate metrics via AWS ECS Exporter, and application metrics via the `/metrics` endpoint on each Go service (instrumented with OpenTelemetry Go SDK v1.28). Loki v3.0 ingests structured logs from all services; Tempo v2.5 receives OpenTelemetry traces (100% sampling on error, 1% on success).
 
-The stack is Prometheus 3.2, Grafana 11.5, OpenTelemetry Collector 0.122, Loki 3.6, and Tempo 2.8, self-hosted on Fargate in all four regions - about $2,600/month against roughly $11,000 for equivalent CloudWatch coverage at this scale. CloudWatch stays as a fallback for basic infrastructure alarms (ALB health, Aurora failover, ElastiCache node replacement).
-
-Twelve alerts cover the funnel and the async pipeline. P1 pages through PagerDuty; P2 and P3 route to Slack via Alertmanager. The table names each alert; the fence below carries the exact PromQL, one rule per alert.
-
-| Alert | Threshold | Severity | Source |
+| Alert | Severity | Trigger | Runbook |
 |---|---|---|---|
-| Redirect p99 latency | > 100 ms for 5m | P1 | ALB metrics via Prometheus |
-| Shorten p99 latency | > 200 ms for 5m | P2 | ALB metrics via Prometheus |
-| CDN cache hit rate | < 90% for 15m | P2 | CloudWatch exporter |
-| L1 LRU hit rate | < 60% for 10m | P3 | App metrics |
-| L2 Redis hit rate | < 80% for 5m | P2 | App metrics |
-| Counter INCR errors | > 0.01% for 5m | P1 | App metrics |
-| Aurora replica lag | > 10 s for 5m | P1 | CloudWatch exporter |
-| Aurora shard connection errors | Any shard down > 1m | P1 | App metrics |
-| ClickHouse insert rate | Drop > 50% for 10m | P2 | ClickHouse system tables |
-| ClickHouse replica delay | > 60 s for 5m | P2 | ClickHouse system tables |
-| MSK under-replicated partitions | > 0 for 5m | P2 | CloudWatch exporter |
-| LRU stale entries served | Any increase | P3 | App metrics |
+| RedirectErrorRateHigh | P1 | 5xx rate > 1% for 5 min across any region | Runbook: Redirect error spike |
+| RedirectLatencyP99High | P2 | p99 > 200 ms for 10 min | Runbook: Latency degradation |
+| CacheHitRateLow | P2 | CDN hit rate < 85% for 15 min | Runbook: Cache hit rate drop |
+| AuroraReplicationLagHigh | P2 | Global DB lag > 10s for 5 min | Runbook: Cross-region replication lag |
+| ValkeyFailover | P2 | ElastiCache `ReplicationGroupFailover` event | Runbook: Valkey failover |
+| MSKConsumerLagHigh | P3 | Consumer group lag > 10K messages for 15 min | Runbook: Kafka consumer lag |
+| SafeBrowsingQueueDepthHigh | P3 | SQS queue depth > 100K for 30 min | Runbook: SB backpressure |
+| ShortenErrorRateHigh | P1 | 5xx rate > 1% for 5 min | Runbook: Shorten error spike |
 
 ```javascript
-# Redirect p99 latency > 100 ms for 5m (P1)
-histogram_quantile(0.99, rate(alb_latency_seconds_bucket{service="redirect"}[5m])) > 0.1
-# Shorten p99 latency > 200 ms for 5m (P2)
-histogram_quantile(0.99, rate(alb_latency_seconds_bucket{service="shorten"}[5m])) > 0.2
-# CDN cache hit rate < 90% for 15m (P2)
-aws_cloudfront_cache_hit_rate_average < 0.90
-# L1 LRU hit rate < 60% for 10m (P3)
-rate(lru_hit_total[5m]) / (rate(lru_hit_total[5m]) + rate(lru_miss_total[5m])) < 0.60
-# L2 Redis hit rate < 80% for 5m (P2)
-rate(redis_hit_total[5m]) / (rate(redis_hit_total[5m]) + rate(redis_miss_total[5m])) < 0.80
-# Counter INCR error rate > 0.01% for 5m (P1)
-rate(counter_incr_errors_total[5m]) > 0.0001
-# Aurora replica lag > 10 s for 5m (P1)
-aws_rds_aurora_replica_lag_maximum > 10
-# Any Aurora shard connection errors for 1m (P1)
-rate(pg_conn_errors_total[5m]) > 0.01
-# ClickHouse insert rate drop > 50% for 10m (P2)
-rate(ch_insert_rows_total[5m]) < 1000
-# ClickHouse replica delay > 60 s for 5m (P2)
-ch_replica_absolute_delay > 60
-# MSK under-replicated partitions > 0 for 5m (P2)
-aws_msk_under_replicated_partitions > 0
-# Any LRU stale entries served (P3)
-rate(lru_stale_served_total[5m]) > 0.01
+# Redirect error rate (per ALB, per region)
+sum(rate(aws_applicationelb_httpcode_target_5xx_count_sum{load_balancer=~"redirect-alb-.*"}[5m]))
+  / sum(rate(aws_applicationelb_request_count_sum{load_balancer=~"redirect-alb-.*"}[5m])) > 0.01
+
+# Redirect latency p99 (per ALB, per region)
+histogram_quantile(0.99,
+  sum(rate(aws_applicationelb_target_response_time_seconds_bucket{load_balancer=~"redirect-alb-.*"}[5m]))
+  by (le, load_balancer)) > 0.2
+
+# CDN cache hit rate
+1 - (sum(rate(aws_cloudfront_misses_sum{distribution_id="REDIRECT_CDN_ID"}[15m]))
+  / sum(rate(aws_cloudfront_requests_sum{distribution_id="REDIRECT_CDN_ID"}[15m]))) < 0.85
+
+# Aurora Global DB replication lag
+aws_rds_aurora_global_db_replication_lag_average{db_cluster_identifier=~"aurora-shard-.*"} > 10
+
+# MSK consumer lag
+sum(kafka_consumergroup_lag_sum{group="clickhouse-consumer",topic="link.clicked"}) > 10000
+
+# SQS queue depth
+aws_sqs_approximate_number_of_messages_visible_sum{queue_name="safe-browsing-queue"} > 100000
 ```
-
-Grafana runs one folder per region, four dashboards each: redirect overview (QPS, latency percentiles, per-layer hit rates, errors), shorten API (auth failures, scan results), data plane (shard lag, cache stats, MSK throughput, ClickHouse inserts), and infrastructure (Fargate CPU/memory, ALB LCU, cost anomalies).
-
-The Go services carry the OpenTelemetry SDK; trace context propagates via the traceparent header from ALB through the cache chain to Aurora, and spans export to Tempo over OTLP gRPC. Sampling is 1% head-based on redirects and 100% on shortens. Logs ship as structured JSON through Fluent Bit (awsfirelens) to Loki, 30 days hot and one year cold in S3; every line carries trace and span IDs, short code, domain, user, status, latency, and per-layer cache-hit flags.
 
 ### CI/CD
 
-GitHub Actions (deploy.yml) drives every release:
+All services deploy via GitHub Actions with a trunk-based workflow. The pipeline stages:
 
-1. Lint and test: go vet, unit tests, and an integration run against the dev Aurora cluster.
-1. Build the ARM image with `docker buildx build --platform linux/arm64`, tagged with git SHA and semver.
-1. Push to the private ECR repository.
-1. Register the new task definition revision: `aws ecs register-task-definition --cli-input-json file://taskdef.json`.
-1. Roll out via `aws ecs update-service --force-new-deployment` - minimum 100% healthy, maximum 200%.
-1. Smoke test: curl a known-good short code and require a 301.
+1. **Build** (push to `main`): Go 1.23 compile, Trivy v0.50.1 image scan, Cosign v2.2.3 sign, push to ECR with `git-sha` tag.
+1. **Deploy staging** (automatic on merge): `aws ecs update-service --force-new-deployment` to staging ECS cluster in us-east-1. Smoke tests: 100 redirect requests against known short codes, validate 200/301 responses.
+1. **Deploy production** (manual approval): `aws ecs update-service` to production ECS clusters in each region, rolling one region at a time with 5-minute bake between regions. Each region deployment updates `desired_count` in the Terraform `aws_ecs_service` resource via a `terraform apply -target=module.ecs_redirect_us_east_1` with a pre-generated plan.
 
-Rollback is one command - `aws ecs update-service --task-definition redirect:{prev-revision}` - because every previous revision is retained. ECS drains old tasks 30 s after new ones pass health checks.
+**Rollback:** `aws ecs update-service --force-new-deployment` with the previous task definition revision. ECS maintains the last 10 task definition revisions, each pinned to a specific ECR image digest. Rollback time: < 3 minutes per region (ECS service deployment with `minimum_healthy_percent=100`). CloudFront cache invalidation is not required on rollback (the previous version's cached 301 responses are still valid).
 
-### Infrastructure as code
+**Canary deployments:** for the redirect service, `CodeDeploy` with ECS blue/green deployment using `CodeDeployDefault.ECSCanary10Percent5Minutes`. New task set receives 10% of ALB traffic for 5 minutes. If error rate and latency pass, the deployment shifts to 100%. If not, CodeDeploy auto-rolls back to the original task set.
 
-Terraform 1.11 owns all infrastructure. Module layout:
+### Infrastructure as Code
 
-```text
-infra/
-  cloudfront/     - distribution, WAF, Origin Shield
-  alb/            - ALB, listeners, target groups
-  ecs/            - cluster, task definitions, services
-  aurora/         - clusters, parameter groups, subnets
-  elasticache/    - replication groups, subnet groups
-  msk/            - cluster, topics (via AWS provider)
-  clickhouse/     - ECS services (configured via user_data)
-  observability/  - Prometheus/Grafana/Loki/Tempo services
-  security/       - KMS keys, security groups, IAM roles
-  route53/        - zones, records, health checks
-```
-
-The component-to-resource mappings that are not obvious from the tree:
-
-| Component | Terraform resources |
-|---|---|
-| CloudFront + WAF | `aws_cloudfront_distribution` with the ACL attached via `web_acl_id` |
-| ALB | `aws_lb`, `aws_lb_listener`, `aws_lb_target_group` |
-| ECS services | `aws_ecs_service`  • `aws_ecs_task_definition` (CPU and memory per task) |
-| ECS autoscaling | `aws_appautoscaling_target`  • `aws_appautoscaling_policy` per service |
-| ElastiCache | `aws_elasticache_replication_group` with `num_node_groups = 50` |
-| Aurora shards | `aws_rds_cluster`  • `serverlessv2_scaling_configuration`; Global DB via `global_cluster_identifier` |
-| MSK | `aws_msk_cluster` with IAM SASL client authentication |
-| Route53 | `aws_route53_health_check`  • latency-alias `aws_route53_record` |
-| In-process LRU (app code) | hashicorp/golang-lru v2 `expirable.NewLRU`, TTL from `LRU_TTL_SECONDS` |
-
-Aurora shard module (infra/aurora/[main.tf](http://main.tf/), excerpt):
+All infrastructure is defined in Terraform v1.9 (AWS provider v5.60, HashiCorp HCL). The repository is structured as a single module per component, instantiated per region via `for_each` over `var.regions`.
 
 ```hcl
-resource "aws_rds_cluster" "shard" {
-  count               = var.shard_count
-  cluster_identifier  = "bitly-shard-${count.index}"
-  engine              = "aurora-postgresql"
-  engine_version      = "16.4"
-  database_name       = "bitly"
-  master_username     = var.db_username
-  master_password     = random_password.shard_pass[count.index].result
-  storage_encrypted   = true
-  kms_key_id          = aws_kms_key.aurora.arn
-  deletion_protection = true
-  backup_retention_period = 7
-
-  serverlessv2_scaling_configuration {
-    min_capacity = 2
-    max_capacity = 32
+# terraform configuration
+terraform {
+  required_version = ">= 1.9.0"
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "~> 5.60" }
+    random = { source = "hashicorp/random", version = "~> 3.6" }
+  }
+  backend "s3" {
+    bucket         = "bitly-terraform-state"
+    key            = "prod/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "bitly-terraform-locks"
   }
 }
-
-resource "aws_rds_cluster_instance" "shard_writer" {
-  count              = var.shard_count
-  identifier         = "bitly-shard-${count.index}-writer"
-  cluster_identifier = aws_rds_cluster.shard[count.index].id
-  instance_class     = "db.r6g.xlarge"
-  engine             = aws_rds_cluster.shard[count.index].engine
-  engine_version     = aws_rds_cluster.shard[count.index].engine_version
-}
 ```
 
-Redirect task definition (infra/ecs/taskdef-redirect.json, excerpt):
-
-```json
-{
-  "family": "bitly-redirect",
-  "networkMode": "awsvpc",
-  "cpu": "1024",
-  "memory": "2048",
-  "runtimePlatform": {
-    "cpuArchitecture": "ARM64",
-    "operatingSystemFamily": "LINUX"
-  },
-  "containerDefinitions": [{
-    "name": "redirect",
-    "image": "${ecr_repo}:${git_sha}",
-    "portMappings": [{"containerPort": 8080, "protocol": "tcp"}],
-    "environment": [
-      {"name": "LRU_TTL_SECONDS", "value": "90"},
-      {"name": "LRU_MAX_ENTRIES", "value": "1000000"},
-      {"name": "REDIS_CLUSTER_URL", "value": "rediss://bitly-cache.xxxxx.cache.amazonaws.com:6380"},
-      {"name": "AURORA_SHARD_COUNT", "value": "16"}
-    ],
-    "secrets": [
-      {"name": "REDIS_AUTH_TOKEN", "valueFrom": "arn:aws:secretsmanager:...:redis-auth-token"},
-      {"name": "DB_PASSWORD", "valueFrom": "arn:aws:secretsmanager:...:aurora-master-password"}
-    ],
-    "logConfiguration": {
-      "logDriver": "awsfirelens",
-      "options": {"Name": "loki", "Url": "http://loki:3100/loki/api/v1/push"}
-    }
-  }]
-}
-```
+| Component | Terraform Resources |
+|---|---|
+| CloudFront CDN | `aws_cloudfront_distribution`, `aws_cloudfront_origin_access_identity`, `aws_wafv2_web_acl` (associated via CloudFront ARN) |
+| ALB | `aws_lb`, `aws_lb_listener`, `aws_lb_target_group`, `aws_security_group` |
+| ECS Fargate services | `aws_ecs_cluster`, `aws_ecs_task_definition`, `aws_ecs_service`, `aws_iam_role`, `aws_cloudwatch_log_group` |
+| ElastiCache Valkey | `aws_elasticache_replication_group`, `aws_elasticache_subnet_group`, `aws_elasticache_parameter_group`, `aws_security_group` |
+| Aurora PostgreSQL | `aws_rds_global_cluster`, `aws_rds_cluster`, `aws_rds_cluster_instance`, `aws_db_subnet_group`, `aws_db_parameter_group` |
+| MSK Express | `aws_msk_cluster`, `aws_msk_configuration`, `aws_security_group`, `aws_cloudwatch_log_group` |
+| ClickHouse on ECS | `aws_ecs_task_definition`, `aws_ecs_service`, `aws_ebs_volume` (via ECS task `dockerVolumeConfiguration`), `aws_iam_role` |
+| Caddy TLS | `aws_ecs_task_definition`, `aws_ecs_service`, `aws_route53_record` (wildcard for on-demand TLS certificate validation) |
+| Route53 | `aws_route53_zone`, `aws_route53_record` (latency aliases to CloudFront distribution ARN) |
+| SQS (Safe Browsing) | `aws_sqs_queue`, `aws_sqs_queue_redrive_policy` (dead-letter after 3 retries) |
+| S3 (analytics exports) | `aws_s3_bucket`, `aws_s3_bucket_lifecycle_configuration`, `aws_s3_bucket_policy` |
+| KMS | `aws_kms_key`, `aws_kms_alias` (one per region for application-level encryption) |
+| Secrets Manager | `aws_secretsmanager_secret`, `aws_secretsmanager_secret_rotation` |
+| IAM | `aws_iam_role`, `aws_iam_policy`, `aws_iam_role_policy_attachment` (per-service roles per region) |
+| VPC networking | `aws_vpc`, `aws_subnet`, `aws_nat_gateway`, `aws_vpc_endpoint`, `aws_route_table`, `aws_security_group` |
 
 ### Day-2 runbook
 
-Automatic failure handling is in §4; this table is what a human does. Region loss is the one that matters - reads fail over on their own (the §4 DR callout), and the operator's job is the manual Aurora Global promotion that restores write capability.
+These are human actions only - no automation should silently execute these.
 
-| Failure | Detection | Operator steps | Recovery time |
-|---|---|---|---|
-| Region loss | Route53 health-check alarm | (1) Confirm ALB health failing region-wide. (2) Promote the us-west-2 secondary: `aws rds promote-read-replica-db-cluster`. (3) Watch ElastiCache and LRU warm. (4) Monitor hit rates to steady state | 3-8 min |
-| Spam/malware wave (100x shorten rate) | Rate limiter firing; 5xx spike | (1) Add a WAF rule blocking the source IPs/ASNs. (2) Tighten the rate-limit window 10x. (3) Review Safe Browsing callback rates. (4) Fold attacker IPs into the blocklist post-incident | 10-30 min |
-| Bad release | Smoke test returns 200 instead of 301 | (1) Stop the deployment; roll back to the previous task definition revision. (2) Verify CloudFront did not cache bad responses; purge if it did | 5-15 min |
-| WAF misconfiguration (CDN hit rate < 80%) | CloudWatch alarm | (1) Verify the origin is healthy. (2) Check for a cache-key change or purge storm. (3) Roll back the WAF rule set; ECS scale-out is already automatic | 5-15 min |
-| LRU degradation (hit rate < 50%) | Prometheus alert | (1) Check for TTL misconfiguration or a fresh deploy. (2) Verify no mass task restart. (3) A cold fleet self-resolves in ~5 min of warm-up | 5-10 min |
+**Link edit with cache invalidation.** A user edits a short link's destination URL. The shorten service writes the new long URL to Aurora, updates the Valkey cache entry, and calls `aws cloudfront create-invalidation --distribution-id REDIRECT_CDN_ID --paths "/{short_code}"`. The invalidation propagates to all 600+ PoPs within 60-120s. During propagation, some users may still receive the old destination (eventual consistency). Origin Shield coalesces the refetch requests.
 
-### Onboarding runbook - adding a 5th region (~2 hours hands-on, ~4 hours elapsed)
+**Manual regional failover (planned maintenance).** 1. In the Terraform config, set `write_enabled = false` on the us-east-1 shorten service to drain writes. 2. Wait for Aurora Global DB replication lag to reach 0 (monitor via CloudWatch). 3. Run `terraform apply` to promote us-west-2 Aurora cluster to read/write. 4. Update Route53 latency records to weight traffic away from us-east-1. 5. CloudFront origin group automatically directs cache misses to us-west-2. 6. Perform maintenance. 7. Reverse steps 1-5 to restore us-east-1 as primary.
 
-Tokyo (ap-northeast-1) is the worked example. Verify beforehand that the new region's default quotas cover the per-region footprint - at current defaults they do, so no increases are needed.
+**Counter range exhaustion.** A Valkey counter (`counter:next:{region}`) has reached the end of its 50B reserved range. 1. Connect to Aurora writer with psql on the shard primary endpoint. 2. Allocate new range: `INSERT INTO counter_ranges (region, base, size) SELECT 'us-east-1', COALESCE(MAX(base) + MAX(size), 0), 50000000000, now() FROM counter_ranges WHERE region = 'us-east-1' RETURNING base;`. 3. Update the Valkey counter base in the shorten service ConfigMap. 4. Restart shorten tasks (rolling, `aws ecs update-service --force-new-deployment`). The new range takes effect within the deployment window (under 5 minutes).
 
-1. Terraform: duplicate the us-east-1 workspace, set the new region, run `terraform apply`. This creates the VPC, Aurora Global secondary, ElastiCache cluster, ECS services, ALB, MSK cluster (MirrorMaker 2 peers), ClickHouse, and Route53 records. Hands-on 30 min; provisioning continues unattended.
-1. Counter range: add ap-northeast-1 as 2,000,000,000,001 to 2,500,000,000,000 in Secrets Manager; the config lands on the next deploy. 15 min.
-1. DNS: latency-based routing picks up the new ALB automatically; verify with dig from a Tokyo instance. 10 min.
-1. Cache warm-up: first traffic cold-fills LRU and Redis from the local Aurora reader; watch hit rates climb past 90% (~15 min cold period). 20 min.
-1. Observability: add the region as a Grafana data source and import the dashboard templates; alert rules already match on the region label. 15 min.
-1. Smoke: from a Tokyo source, a redirect must return a 301 within 100 ms and a shorten must return a 7-character code. 10 min.
+**Scaling a Valkey shard.** Current cluster at 50 shards needs to become 51 shards. 1. Run `aws elasticache increase-replica-count --replication-group-id valkey-redirect --apply-immediately --new-replica-count 52` (51 shards x 2 nodes + 1 extra replica for the resharding operation). 2. ElastiCache adds the new shard and rebalances slots. 3. The Go rueidis client (v1.0.43) automatically discovers the new topology via `CLUSTER SLOTS`. 4. No application restart required. 5. Update the Terraform `num_node_groups = 51` to match.
 
-Total: ~2 hours hands-on; the rest of the ~4 hours elapsed is Terraform provisioning.
+**Restoring from Aurora Backtrack (mass delete or bad DDL).** 1. Identify the UTC timestamp just before the destructive operation. 2. Stop all writes: scale shorten service `desired_count` to 0 in all regions. 3. Run `aws rds backtrack-db-cluster --db-cluster-identifier aurora-shard-01-primary --backtrack-to "2026-07-16T14:23:00Z"`. Repeat for all 16 shards. 4. Aurora applies the undo log in place (1-2 minutes per shard). 5. Restore shorten service `desired_count` to original values. 6. Invalidate CloudFront cache for any links affected. 7. Post-incident: determine whether the deleted data also needs PITR recovery for a point-in-time consistent snapshot.
+
+### Onboarding runbook: add a 5th region (ap-southeast-1)
+
+This runbook assumes the 4-region deployment is live and the new region will be read-only initially, promoted to full read/write after validation.
+
+1. **Terraform workspace:** `terraform workspace new ap-southeast-1`. Apply the VPC, subnets, NAT Gateways, VPC endpoints, and security groups first: `terraform apply -target=module.vpc_ap_southeast_1 -target=module.security_groups_ap_southeast_1`.
+1. **Aurora Global DB:** add an Aurora secondary cluster in ap-southeast-1. `terraform apply -target=module.aurora_shard_01_ap_southeast_1` (repeat for all 16 shards). Aurora automatically begins storage-layer replication from the primary region. Wait for replication lag to stabilize under 5s (monitor via CloudWatch `AuroraGlobalDBReplicationLag`).
+1. **ElastiCache Valkey:** `terraform apply -target=module.valkey_ap_southeast_1`. New Valkey cluster with 50 shards, initially empty. The redirect service will populate it on cache misses (lazy fill). Optionally seed the cluster with hot keys from an existing region via `MIGRATE` in a background script.
+1. **ECS services:** `terraform apply -target=module.ecs_redirect_ap_southeast_1 -target=module.ecs_shorten_ap_southeast_1 -target=module.ecs_caddy_ap_southeast_1`. Deploy the container images (same ECR, cross-region replication already configured). Smoke-test: curl the ALB health check endpoint.
+1. **MSK Express:** `terraform apply -target=module.msk_ap_southeast_1`. Set up MirrorMaker 2 on ECS to replicate `link.clicked` and `link.created` topics from us-east-1. Validate consumer group offsets match.
+1. **ClickHouse:** `terraform apply -target=module.clickhouse_ap_southeast_1`. Configure Kafka engine tables to consume from the local MSK cluster. Validate materialized views populate.
+1. **Route53:** add latency-based routing records for ap-southeast-1: `terraform apply -target=module.route53_ap_southeast_1`. CloudFront distribution automatically includes the new ALB origin in its origin group.
+1. **Validate:** run the k6 load test from ap-southeast-1 against the regional endpoint. Confirm p99 latency < 100 ms for redirects, p99 < 200 ms for shorten. Check CloudFront cache hit rate from the new region.
+1. **Promote to read/write (optional):** allocate a new 50B counter range for ap-southeast-1 in Aurora. Update the shorten service ConfigMap. Run `terraform apply` with `write_enabled = true` on the ap-southeast-1 shorten service.
+
+Total time: 4-6 hours for a read-only region, 6-8 hours including write promotion and validation.
 
 ## 9. Key Decisions & Trade-offs
 
-Four decisions carry real money or real risk; each gets the argument, the numbers, and the alternative it beat.
+### D1: CloudFront flat-rate vs PAYG pricing
 
-### D1: Aurora PostgreSQL vs DynamoDB for the primary store
+**Decision:** CloudFront Business plan ($200/month flat-rate). The flat-rate plan bundles data transfer and HTTP requests at a fixed monthly cost, making egress-heavy workloads viable on AWS. Without it, CloudFront PAYG at $0.01/10K requests x 2.6T redirects/month = $2.6M/month just in HTTP request charges, plus $0.085/GB x 520 TB = $44K/month in data transfer. The flat-rate plan eliminates both at a fixed $200/month.
 
-**Decision: Aurora PostgreSQL 16.4, Serverless v2 I/O-Optimized, 16 application-sharded clusters.**
+**Rejected alternative:** CloudFront PAYG pricing (standard tier). At Bitly's scale, PAYG request charges alone exceed the entire infrastructure budget by 30x. Even at 10% of peak (100K QPS), PAYG is $260K/month. This isn't a trade-off - it's a hard requirement for the architecture to be economically viable.
 
-The point lookup by short code and domain is trivial in either store; the secondary patterns decided it. Owner dashboards sort by owner and creation time, custom-domain lookups filter on a non-key column, and bulk exports stream millions of rows. On DynamoDB each of those is a GSI with write amplification and its own bill, or a throttling-prone Scan; on Postgres each is an index. Strong consistency comes by default, where DynamoDB doubles read cost via `ConsistentRead=true`. Write cost was never the decider: DynamoDB on-demand runs a modest ~$1,625/month at 2.6B writes ($0.625 per million), while Aurora I/O-Optimized folds I/O into the $0.156/ACU-hour rate with no per-IO charge.
+**Hedged judgment:** CloudFront Business plan limits WAF rules to 50 (vs 75 on Premium at $1,000/month). If the WAF rule count exceeds 50 due to custom rate-limiting and geo-blocking rules, upgrading to Premium adds $800/month but is still negligible relative to the $2.6M/month PAYG alternative. The Business tier is sufficient for Phase 1-2; Premium is a cost lever, not a decision to defer.
 
-What we accepted: sharding is ours to run - hash routing in the application, and resharding 16 to 32 is a multi-week double-write migration. Each shard caps at 256 TiB of storage, effectively unlimited here. Pre-provisioning 16 shards from P2 means ~625M rows per shard at 10B URLs, with hot monthly partitions near 50M rows - comfortable Postgres territory - and 2-5 readers per shard absorb dashboards and analytics offload.
+### D2: Aurora PostgreSQL with application-level sharding vs DynamoDB
 
-### D2: keep the in-process LRU, or run Redis-only?
+**Decision:** Aurora PostgreSQL 16.4 Serverless v2 (I/O-Optimized), 16 application-level shards via `hash(short_code) % 16`. The primary access pattern is a point lookup by primary key (`SELECT long_url FROM links WHERE short_code = ?`), which both databases handle trivially. The decision turns on secondary access patterns: owner queries (list links by `owner_user_id`), custom domain queries (list by `domain`), and bulk exports. Aurora supports these via native B-tree indexes at no additional cost; DynamoDB requires GSIs with write amplification and per-index pricing.
 
-**Decision: three caches in front of the database, not two - the per-task LRU stays.**
+**Rejected alternative:** DynamoDB on-demand with GSIs. Estimated cost is comparable ($15K-20K/month) but with less predictable billing. More importantly, 3 GSIs (owner, domain, status) each carry their own provisioned throughput and cost. Adding a 4th secondary access pattern means another GSI migration. Aurora accepts new indexes with a `CREATE INDEX CONCURRENTLY` without schema changes.
 
-We kept the in-process LRU, though it was a closer call than the rest of this page suggests. It is heap we already pay for, and it eats ~70% of origin lookups - dropping it means roughly a third more Redis shards - call it $3,600 a month - and pushes the median origin lookup from under a microsecond to 1-2 ms. On a smaller service we would start Redis-only and add the L1 once the bill justified the invalidation plumbing; at 50K origin QPS it already does. The price: every task needs pub/sub invalidation - a message on `cache:invalidate:{short_code}` reaches all tasks in ~10 ms - and a task that misses the message serves stale for up to 90 seconds, fine for a URL shortener where destinations almost never change.
+**Hedged judgment:** Application-level sharding is the trade-off. A hash-based shard key (`sha256(short_code) % 16`) distributes load evenly, but adding a 17th shard requires a resharding migration (dual-write window + backfill). At 10B active links, migrating 16 shards is a planned multi-week operation, not automatic. If the shard count is misestimated early, the cost of resharding is high. Starting with 16 shards is conservative given Bitly's observed link growth; if growth outpaces projections, Aurora's vertical scaling (Serverless v2 up to 32 ACU per shard) absorbs 2-3x growth before horizontal resharding is required.
 
-Two more consequences ride along. A fresh task answers everything from Redis until its LRU warms - roughly its first 100K requests, about 7 minutes at 250 QPS - unless it prefetches the top 10K codes of its shard. And the memory is real but free: 1M entries at ~200 bytes is ~200 MB per task, ~40 GB across the 200-task fleet, all inside allocations we already own.
+### D3: 4-layer cache pyramid vs 3-layer (skip in-process LRU)
 
-### D3: self-managed ClickHouse vs Timestream vs Athena for analytics
+**Decision:** 4-layer cache pyramid: CloudFront (L0) → in-process LRU per ECS task (L1) → ElastiCache Valkey (L2) → Aurora PostgreSQL (L3). The in-process LRU absorbs 70% of origin traffic at sub-microsecond latency for zero additional cost (it runs in the ECS task's heap memory, already provisioned for the Go runtime).
 
-**Decision: ClickHouse 24.8 on Fargate - the only database we run ourselves, chosen with eyes open.**
+**Rejected alternative:** 3-layer pyramid (CloudFront → Valkey → Aurora) without the per-task LRU. This would push 50K QPS directly to Valkey instead of 15K QPS - a 3.3x increase. At r7g.large benchmark of ~100K ops/sec per shard, the Valkey cluster would need 165 shards (vs 50) to maintain sub-5ms latency. Cost: ~$34,000/month instead of $10,300/month. The LRU "pays for itself" by reducing Valkey hardware costs by $23,700/month, using memory that was already allocated and paid for in the Fargate task.
 
-The workload is OLAP: multi-dimensional aggregations over billions of click rows, 10B events a month arriving at ~3.8K/s steady with 100K/s viral bursts. Timestream's price made us look twice - under $10/month at our rollup volume - but it is built for single-metric IoT series, and the dashboard aggregation would need application-side merging across many series. Athena fails on arithmetic: 10K dashboard queries a day, each scanning ~10 GB of Parquet, is 100 TB a day - $500/day, $15,000/month at $5/TB - where ClickHouse answers from a SummingMergeTree view scanning under 100 MB, in sub-100 ms instead of 2-10 s. The real-time requirement seals it: a last-5-minutes view served off S3 arrives 7-17 minutes stale, while Kafka-direct ingestion makes it seconds.
-
-What we accepted: upgrades, backup verification, and Keeper maintenance are now our problem, and the team learns a new database. Athena stays as the secondary path for rare deep-historical pulls beyond 24 months (under 100 queries a month), where its scan cost is irrelevant.
-
-### D4: cache at the edge vs compute at the edge
-
-**Decision: CloudFront caching with an ALB + ECS origin - no edge compute on the hot path.**
-
-Resolving redirects in an edge function looked elegant and priced out absurd. Lambda@Edge at 2.6T requests a month is ~$1.56M in request fees ($0.60 per 1M) plus ~$130K of compute even at 1 ms duration ($0.00005 per 128 MB-second) - about $1.7M a month, 17x the entire infrastructure budget - before hitting the concurrency wall (Lambda@Edge executes in us-east-1 only, so the 10,000 concurrent executions it needs collide with the 1,000 regional default) and 200-500 ms cold starts on a 10 ms operation. CloudFront Functions with KeyValueStore price gentler at roughly $262K/month ($0.10 per 1M invocations plus $0.10 per 1M KVS reads), but KVS caps at 10,000 keys against a 50M-key hot working set, which ends the conversation.
-
-What we accepted: a cache miss pays a 20-50 ms origin round-trip, and the 5% miss traffic is well within origin capacity (§6). We would look at the edge again only if the CDN hit rate sat below 80% and KVS grew to a million-plus keys; until both happen, the boring origin wins.
+**Hedged judgment:** The LRU adds ~200 MB of heap per task (1M entries x ~200 bytes each). At 200 tasks globally, that's 40 GB of in-process memory storing cache data. This works because Go's garbage collector handles the expirable LRU (hashicorp/golang-lru v2 with TTL). If memory pressure causes GC pauses exceeding 1-2 ms, the LRU size per task can be reduced or the TTL shortened. The risk is that a sudden surge of unique URLs (e.g., a DDoS with random short codes) fills the LRU with cache misses, causing churn without benefit. The per-task LRU hit rate metric would detect this; the mitigation is a circuit breaker that bypasses the LRU for sustained miss rates above 90%.
 
 ## 10. References
 
-1. [AWS CloudFront Pricing (flat-rate plans)](https://aws.amazon.com/cloudfront/pricing/)
-1. [AWS CloudFront KeyValueStore - limits and quotas](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/kvs-with-functions.html)
-1. [AWS Application Load Balancer - pricing and LCU definition](https://aws.amazon.com/elasticloadbalancing/pricing/)
-1. [AWS Fargate Pricing (ARM/Graviton)](https://aws.amazon.com/fargate/pricing/)
-1. [AWS Aurora PostgreSQL Serverless v2 - I/O-Optimized](https://aws.amazon.com/rds/aurora/pricing/)
-1. [AWS Aurora Global Database - cross-region replication](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database.html)
-1. [AWS ElastiCache for Valkey - cluster mode and pricing](https://aws.amazon.com/elasticache/pricing/)
-1. [AWS MSK Express brokers - throughput and pricing](https://aws.amazon.com/msk/pricing/)
-1. [ClickHouse - MergeTree engine and Kafka table engine](https://clickhouse.com/docs/en/engines/table-engines/mergetree-family/mergetree)
-1. [ClickHouse on AWS - deployment guide and S3 tiering](https://clickhouse.com/docs/en/guides/sre/keeper/clickhouse-keeper)
-1. [Caddy Server - On-Demand TLS and SNI routing](https://caddyserver.com/docs/automatic-https#on-demand-tls)
-1. [Let's Encrypt - Rate Limits](https://letsencrypt.org/docs/rate-limits/)
-1. [AWS Route53 - Latency-based routing and health checks](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/routing-policy-latency.html)
-1. [AWS WAF - Managed Rules and rate-based blocking](https://docs.aws.amazon.com/waf/latest/developerguide/waf-managed-rules.html)
-1. [Google Safe Browsing API v4 - ThreatMatches.find](https://developers.google.com/safe-browsing/v4/reference/rest/v4/threatMatches/find)
-1. [AWS Secrets Manager - Rotation and ECS integration](https://docs.aws.amazon.com/secretsmanager/latest/userguide/rotating-secrets.html)
-1. [Terraform AWS Provider - RDS Aurora Cluster resource](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/rds_cluster)
-1. [Prometheus - Alerting rules and histogram_quantile](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/)
-1. [Grafana - Provisioning dashboards and data sources](https://grafana.com/docs/grafana/latest/administration/provisioning/)
-1. [OpenTelemetry Go SDK - instrumentation for HTTP and gRPC](https://opentelemetry.io/docs/languages/go/)
-1. [ECS Service Auto Scaling - Target Tracking and Step Scaling](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/service-auto-scaling.html)
-1. [AWS Well-Architected Framework - Reliability Pillar](https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/)
-1. [Bitly Engineering - "How Bitly Processes Billions of Clicks"](https://engineering.bitly.com/)
-1. [Bitly Engineering on Tumblr - "Distributed ID Generation"](https://bitlyengineering.tumblr.com/)
-1. [hashicorp/golang-lru - Go LRU Cache Implementation](https://github.com/hashicorp/golang-lru)
+1. [AWS CloudFront pricing - flat-rate plans](https://aws.amazon.com/cloudfront/pricing/)
+1. [AWS Fargate pricing (ARM/Graviton)](https://aws.amazon.com/fargate/pricing/)
+1. [AWS ElastiCache for Valkey documentation](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/engines-software.html)
+1. [AWS Aurora pricing (PostgreSQL, Serverless v2)](https://aws.amazon.com/rds/aurora/pricing/)
+1. [AWS Aurora Global Database documentation](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database.html)
+1. [AWS MSK pricing (Express brokers)](https://aws.amazon.com/msk/pricing/)
+1. [ClickHouse MergeTree documentation](https://clickhouse.com/docs/en/engines/table-engines/mergetree-family/mergetree)
+1. [ClickHouse Kafka engine documentation](https://clickhouse.com/docs/en/engines/table-engines/integrations/kafka)
+1. [Caddy On-Demand TLS documentation](https://caddyserver.com/docs/automatic-https#on-demand-tls)
+1. [Google Safe Browsing API v4 documentation](https://developers.google.com/safe-browsing/v4/reference/rest/v4/threatMatches/find)
+1. [AWS WAF managed rules](https://docs.aws.amazon.com/waf/latest/developerguide/waf-managed-rules.html)
+1. [AWS Shield pricing](https://aws.amazon.com/shield/pricing/)
+1. [CloudFront Origin Shield documentation](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/origin-shield.html)
+1. [Aurora Backtrack documentation](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/AuroraMySQL.Managing.Backtrack.html)
+1. [Let's Encrypt rate limits](https://letsencrypt.org/docs/rate-limits/)
+1. [Discord engineering blog - How Discord Stores Billions of Messages](https://discord.com/blog/how-discord-stores-billions-of-messages)
+1. [Terraform AWS provider documentation](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
+1. [hashicorp/golang-lru v2](https://github.com/hashicorp/golang-lru)
+1. [rueidis Go Redis client](https://github.com/redis/rueidis)
+1. [Cosign keyless signing documentation](https://docs.sigstore.dev/cosign/signing/overview/)
