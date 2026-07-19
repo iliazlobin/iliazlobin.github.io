@@ -2,8 +2,8 @@
 layout: post
 title: "Infra: Uber Ride-Hailing Platform on AWS and GCP"
 category: infra
-date: 2026-07-17
-tags: [AWS, GCP, Multi-Cloud, Kubernetes, EKS, Karpenter, Redis, Kafka, MSK, ScyllaDB, Aurora MySQL, Elasticsearch, Apache Flink, Envoy, Istio, ALB, CloudFront, Route53, WAF, Grafana, M3DB, Jaeger, Prometheus, OpenTelemetry, Fluent Bit, Terraform, GitHub Actions, Argo CD, Argo Rollouts, Argo Workflows, Bazel, KMS, Secrets Manager, Trivy, Cosign, External Secrets, PagerDuty, Go, H3]
+date: 2026-07-18
+tags: [AWS, GCP, Multi-Cloud, Kubernetes, Istio, ScyllaDB, Apache Flink, Kafka, Redis, H3, Terraform, Prometheus]
 description: "Uber operates a real-time ride-hailing matching platform at planetary scale: 170M monthly active riders, 5M drivers, across 10,000+ cities in 70+ countries."
 thumbnail: /images/posts/infra-uber-ride-hailing-platform-on-aws-and-gcp.svg
 ---
