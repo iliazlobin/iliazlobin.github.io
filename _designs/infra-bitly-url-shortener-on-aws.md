@@ -2,8 +2,8 @@
 layout: post
 title: "Infra: Bitly URL Shortener on AWS"
 category: infra
-date: 2026-07-17
-tags: [ALB, Alertmanager, Aurora PostgreSQL, Caddy, ClickHouse, CloudFront, CodeDeploy, Cosign, ECR, ECS Fargate, ElastiCache, ElastiCache Valkey, GitHub Actions, Go 1.23, Grafana, IAM, KMS, Let'S Encrypt, Loki, MSK Kafka, NAT Gateway, OpenTelemetry, Origin Shield, Prometheus, Route53, S3, SQS, Secrets Manager, Security Hub, Sigstore, TLS 1.3, Tempo, Terraform, Trivy, VPC, WAF, K6]
+date: 2026-07-18
+tags: [AWS, ECS Fargate, CloudFront, Aurora PostgreSQL, ElastiCache Valkey, ClickHouse, MSK Kafka, Terraform, GitHub Actions, Prometheus, Grafana]
 description: "Bitly operates a URL shortener at planetary scale: 1M redirect QPS peak, 10B active links across 4 AWS regions in active-active deployment. The workload is read-dominant at roughly 100:1 reads to writes under steady state, surging to 1000:1 during viral spikes."
 thumbnail: /images/posts/infra-bitly-url-shortener-on-aws.svg
 ---
