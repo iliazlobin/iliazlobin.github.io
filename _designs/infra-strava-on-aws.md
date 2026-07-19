@@ -2,8 +2,8 @@
 layout: post
 title: "Infra: Strava on AWS"
 category: infra
-date: 2026-07-17
-tags: [AWS, Data Platform, EKS, Kafka, Flink, PostgreSQL, Cassandra, Redis, Valkey, S3, Terraform, Prometheus, ArgoCD, CloudFront, Wasabi, Go, Ruby, GitHub Actions, KEDA, Imgproxy, Valhalla, PostGIS]
+date: 2026-07-18
+tags: [AWS, EKS, Data Platform, Kafka, Flink, PostgreSQL, PostGIS, Cassandra, Redis, S3, Terraform, Prometheus]
 description: "Strava is a fitness-tracking social network with 120M+ registered athletes and 3B+ uploaded activities."
 thumbnail: /images/posts/infra-strava-on-aws.svg
 ---
