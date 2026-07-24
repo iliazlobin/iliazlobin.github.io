@@ -2,18 +2,19 @@
 layout: page
 title: Portfolio
 permalink: /portfolio/
-description: "Selected work by Ilia Zlobin across AI/agentic systems, cloud platform engineering, and applied ML — each with source code, architecture diagrams, and walkthrough videos."
+description: "Selected work by Ilia Zlobin across AI/agentic systems, cloud platform engineering, and applied ML — with source code, architecture diagrams, and walkthrough videos."
 ---
 
 <link rel="stylesheet" href="{{ '/assets/css/portfolio.css' | relative_url }}?v={{ site.time | date: '%s' }}">
 
-<p class="portfolio-intro">Selected work across AI/agentic systems, cloud platform engineering, and applied ML — each with source code, architecture diagrams, and walkthrough videos.</p>
+<p class="portfolio-intro">Selected work across AI/agentic systems, cloud platform engineering, and applied ML — with source code, architecture diagrams, and walkthrough videos.</p>
 
 <div class="portfolio-layout">
 
 <aside class="portfolio-rail">
   <div class="rail-title">Projects</div>
   <nav>
+    <a href="#hermes" data-spy><span class="yr">2026</span><span class="nm">Hermes Agent Fleet</span><span class="star">★</span></a>
     <a href="#agentic-enterprise" data-spy><span class="yr">2025</span><span class="nm">Agentic Enterprise</span><span class="star">★</span></a>
     <a href="#events-concierge" data-spy><span class="yr">2025</span><span class="nm">Events Concierge</span><span class="star">★</span></a>
     <a href="#ingestion-pipeline" data-spy><span class="yr">2025</span><span class="nm">Ingestion Pipeline</span><span class="star">★</span></a>
@@ -30,6 +31,17 @@ description: "Selected work by Ilia Zlobin across AI/agentic systems, cloud plat
 </aside>
 
 <div class="portfolio-feed">
+
+<article id="hermes" class="portfolio-item is-featured reveal">
+  <a class="thumb" href="/designs/agents-hermes-a-high-level-overview/"><img src="/images/posts/agents-hermes-a-high-level-overview.svg" alt="Hermes agent fleet architecture diagram" loading="lazy"></a>
+  <div class="body">
+    <div class="yr-badge">2026</div>
+    <h3>Hermes - Autonomous AI Agent Fleet</h3>
+    <p>A one-operator autonomous agent fleet built on the open-source Hermes Agent framework (Nous Research), run at production scale: 21 kanban boards, 98 specialized worker profiles, and 2,100+ completed tasks at a 93% completion rate. Slack channels route each vertical - research, system design, infrastructure, builds, content - onto durable dependency-gated boards worked by disposable Docker sandboxes. Deterministic gate scripts and cross-model rubric verifiers decide what ships; the system-design, infra, and tech write-ups on this site are its output.</p>
+    <ul class="tags"><li>Multi-Agent</li><li>Orchestration</li><li>Hermes Agent</li><li>Docker</li><li>SQLite</li><li>Slack</li><li>Notion</li></ul>
+    <div class="links"><a href="/designs/agents-hermes-a-high-level-overview/">Case Study ↗</a></div>
+  </div>
+</article>
 
 <article id="agentic-enterprise" class="portfolio-item is-featured reveal">
   <a class="thumb" href="/images/agentic-enterprise-design.png" target="_blank" rel="noopener"><img src="/images/agentic-enterprise-design.png" alt="Agentic Enterprise system design" loading="lazy"></a>
