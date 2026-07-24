@@ -59,6 +59,10 @@ Three pipeline shapes cover most real work:
 
 **Design to build to experiment.** The longest chain in this deployment: a design pipeline publishes to a designs database, promotion turns it into a build pipeline with staged engineering reviews, and an optional experiment cycle deploys and evaluates the result. Databases connect the stages, so every artifact has a paper trail.
 
+![Notion System Designs database - versioned design rows with bar version, track, status, and publish checkboxes](/images/posts/agents-hermes-system-designs-db.png)
+
+*The paper trail in practice: the System Designs database in Notion. One row per versioned design, stamped with the quality-bar version it was written against, tagged by track (ML, Infra), and shipped by ticking a Publish checkbox that a watcher job sweeps to this site.*
+
 The transferable insight: dependency gating plus durable state does the orchestration. There is no message bus between agents and no shared memory - a card either has what the worker needs in its body, or the worker blocks and says so.
 
 ## Skills
