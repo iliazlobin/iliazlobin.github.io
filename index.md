@@ -12,6 +12,13 @@ description: "Ilia Zlobin — Principal/Staff Software Engineer in the San Franc
 
 ---
 
+## Coaching
+I coach engineers one-on-one through interviews for software, ML, and AI engineering roles — coding, system design, behavioral, and AI-enabled rounds. Sessions are built on my own preparation corpus: verified coding solutions, full system design documents, and role roadmaps.
+
+*(The material is free to read and booking is open on* [**Engineering Guidance**](https://coaching.iliazlobin.com/)*.)*
+
+---
+
 ## Career Focus
 - **Platform Engineering** — architecting and operating multi-cloud landing zones, enterprise-grade Kubernetes platforms, developer portals, and GitOps-driven workflows at scale.
 - **Cloud-Native Infrastructure** — extensive experience with AWS, GCP, and Azure; led organizational migrations of 200+ services across 2,000+ Kubernetes nodes, establishing standardized infrastructure patterns.
