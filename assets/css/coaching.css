@@ -1,6 +1,6 @@
 /* =========================================================================
-   coaching.css — /coaching/ page: round cards, the moves list, availability,
-   contact block. Builds on the tokens and .btn/.tags rules in site.css.
+   coaching.css — /coaching/ page: the two track cards, the moves list, and the
+   interview round cards. Builds on the tokens and .btn rules in site.css.
    ========================================================================= */
 
 .coaching-intro { color: var(--ink-faint); font-size: 1.02rem; margin: .2rem 0 1.4rem; }
@@ -53,25 +53,33 @@
 }
 .moves li b { color: var(--ink); font-weight: 600; }
 
-/* ---- Availability ---- */
-.avail {
-  border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
-  background: var(--card); max-width: 480px; margin: 1.1rem 0 .6rem;
-}
-.avail div { display: flex; justify-content: space-between; gap: 1rem; padding: .7rem 1.1rem; font-size: .94rem; }
-.avail div + div { border-top: 1px solid var(--line); }
-.avail .days { font-weight: 600; color: var(--ink); }
-.avail .hours { color: var(--ink-soft); font-variant-numeric: tabular-nums; }
-.avail-note { font-size: .86rem; color: var(--ink-faint); margin: 0; }
-
-/* ---- Contact ---- */
-.contact-card {
-  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-  box-shadow: var(--shadow); padding: 1.3rem 1.4rem; margin: 1.1rem 0 .4rem;
-}
-.contact-card p { margin: 0 0 .9rem; font-size: .95rem; }
-.contact-card .cta-row { margin: 0; }
-
 @media screen and (max-width: 600px) {
   .round-grid { grid-template-columns: 1fr; }
+}
+
+/* ---- Two tracks: what I can help with ---- */
+.track-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.1rem;
+  margin: 1.2rem 0 .4rem;
+}
+.track-card {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 1.15rem 1.35rem 1.25rem;
+}
+.track-card h3 { margin: 0 0 .15rem; font-size: 1.06rem; }
+.track-card ul { margin: 0; padding: 0; list-style: none; }
+.track-card li {
+  position: relative; padding: .38rem 0 .38rem 1.05rem;
+  font-size: .92rem; line-height: 1.5; color: var(--ink-soft);
+}
+.track-card li + li { border-top: 1px solid var(--line); }
+.track-card li::before {
+  content: ""; position: absolute; left: 0; top: .92rem;
+  width: 5px; height: 5px; border-radius: 999px; background: var(--accent); opacity: .45;
+}
+
+@media screen and (max-width: 600px) {
+  .track-grid { grid-template-columns: 1fr; }
 }

@@ -12,12 +12,15 @@ description: "Ilia Zlobin — Principal/Staff Software Engineer in the San Franc
 
 ---
 
-## Coaching
-I coach engineers one-on-one through interviews for software, ML, and AI engineering roles — coding, system design, behavioral, and AI-enabled rounds. Sessions are built on my own preparation corpus: verified coding solutions, full system design documents, and role roadmaps.
+{% comment %}
+HIDDEN-COACHING - temporarily hidden. To restore, delete this comment wrapper
+(this opening tag and the closing one below); leave everything between intact.
 
-*(What each round tests, how sessions work, and availability are on the* [**Coaching**](/coaching/) *page.)*
+## Coaching
+I work one-on-one with engineers growing toward Staff, Staff+, and Principal roles — technical leadership, communication, promotion readiness, and career strategy, alongside interview preparation across coding, system design, ML system design, behavioral, and AI-enabled rounds.
 
 ---
+{% endcomment %}
 
 ## Career Focus
 - **Platform Engineering** — architecting and operating multi-cloud landing zones, enterprise-grade Kubernetes platforms, developer portals, and GitOps-driven workflows at scale.
