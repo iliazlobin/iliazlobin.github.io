@@ -1,0 +1,77 @@
+/* =========================================================================
+   coaching.css — /coaching/ page: round cards, the moves list, availability,
+   contact block. Builds on the tokens and .btn/.tags rules in site.css.
+   ========================================================================= */
+
+.coaching-intro { color: var(--ink-faint); font-size: 1.02rem; margin: .2rem 0 1.4rem; }
+
+/* Prose holds a readable measure; only the card grid and the rules use the full
+   1080px wrapper, so the two do not have to agree on width. */
+.coaching > p,
+.coaching > ul,
+.coaching > ol { max-width: 780px; }
+
+/* Anchor targets sit clear of the header when jumped to. */
+.coaching h2 { scroll-margin-top: 1.5rem; }
+
+/* ---- What each round tests ---- */
+.round-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.1rem;
+  margin: 1.2rem 0 .4rem;
+}
+.round-card {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 1.15rem 1.25rem 1.25rem;
+  transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+}
+.round-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); border-color: #d4dbe6; }
+.round-card h3 { margin: 0 0 .5rem; font-size: 1.06rem; }
+.round-card p { margin: 0 0 .6rem; font-size: .93rem; line-height: 1.55; }
+.round-card p:last-child { margin-bottom: 0; }
+/* The failure mode line — the part worth reading twice. */
+.round-card .miss {
+  font-size: .88rem; color: var(--ink-faint);
+  border-left: 2px solid #f0b429; padding-left: .7rem;
+}
+.round-card .miss b { color: var(--ink-soft); font-weight: 600; }
+
+/* ---- The seven moves ---- */
+.moves { list-style: none; counter-reset: move; padding: 0; margin: 1.1rem 0 0; }
+.moves li {
+  counter-increment: move; position: relative;
+  padding: .1rem 0 .9rem 2.6rem; font-size: .96rem; line-height: 1.6;
+}
+.moves li::before {
+  content: counter(move);
+  position: absolute; left: 0; top: .12rem;
+  width: 1.75rem; height: 1.75rem; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-soft); border: 1px solid #dbe4ff;
+  color: var(--accent-dark); font-size: .8rem; font-weight: 700;
+}
+.moves li b { color: var(--ink); font-weight: 600; }
+
+/* ---- Availability ---- */
+.avail {
+  border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  background: var(--card); max-width: 480px; margin: 1.1rem 0 .6rem;
+}
+.avail div { display: flex; justify-content: space-between; gap: 1rem; padding: .7rem 1.1rem; font-size: .94rem; }
+.avail div + div { border-top: 1px solid var(--line); }
+.avail .days { font-weight: 600; color: var(--ink); }
+.avail .hours { color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.avail-note { font-size: .86rem; color: var(--ink-faint); margin: 0; }
+
+/* ---- Contact ---- */
+.contact-card {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 1.3rem 1.4rem; margin: 1.1rem 0 .4rem;
+}
+.contact-card p { margin: 0 0 .9rem; font-size: .95rem; }
+.contact-card .cta-row { margin: 0; }
+
+@media screen and (max-width: 600px) {
+  .round-grid { grid-template-columns: 1fr; }
+}

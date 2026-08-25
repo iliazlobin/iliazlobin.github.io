@@ -15,7 +15,7 @@ description: "Ilia Zlobin — Principal/Staff Software Engineer in the San Franc
 ## Coaching
 I coach engineers one-on-one through interviews for software, ML, and AI engineering roles — coding, system design, behavioral, and AI-enabled rounds. Sessions are built on my own preparation corpus: verified coding solutions, full system design documents, and role roadmaps.
 
-*(The material is free to read and booking is open on* [**Engineering Guidance**](https://coaching.iliazlobin.com/)*.)*
+*(What each round tests, how sessions work, and availability are on the* [**Coaching**](/coaching/) *page.)*
 
 ---
 

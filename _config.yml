@@ -28,6 +28,12 @@ twitter_username: iliazlobin
 github_username: iliazlobin
 linkedin_username: iliazlobin
 
+# Google Calendar appointment-schedule booking link for the Coaching section on the
+# About page. Created in the Google Calendar UI (no API exists for appointment
+# schedules); paste the "Share > booking page link" URL here. While empty, the
+# Coaching section renders the email link only — no dead "Book a session" link.
+booking_url: ""
+
 # Build settings
 theme: minima
 plugins:
@@ -36,6 +42,7 @@ plugins:
 header_pages:
   - resume.md
   - portfolio.md
+  - coaching.md
   - designs.md
   - machine-learning.md
   - infrastructure.md
