@@ -23,6 +23,8 @@ I work one-on-one with engineers growing toward Staff, Staff+, and Principal rol
 {% endcomment %}
 
 ## Career Focus
+- **Generative AI Systems** — taking LLM applications from prototype to production: retrieval and context pipelines, fine-tuning and inference infrastructure, and evaluation harnesses that decide what ships.
+- **Agentic Platforms** — multi-agent orchestration with frameworks such as LangGraph, tool and API integration into existing systems, and the observability and gating that let autonomous workers run unattended.
 - **Platform Engineering** — architecting and operating multi-cloud landing zones, enterprise-grade Kubernetes platforms, developer portals, and GitOps-driven workflows at scale.
 - **Cloud-Native Infrastructure** — extensive experience with AWS, GCP, and Azure; led organizational migrations of 200+ services across 2,000+ Kubernetes nodes, establishing standardized infrastructure patterns.
 - **Distributed Systems** — designing and scaling data pipelines, observability platforms, and developer productivity solutions for organization-wide adoption.
