@@ -15,4 +15,4 @@ description: "AI agent write-ups by Ilia Zlobin — agentic system designs and d
 
 <p class="portfolio-intro">AI agents in practice — designs and deep dives on agentic systems: multi-agent orchestration, tool use, planning and memory, evaluation, and the harnesses that turn LLMs into reliable autonomous workers. Diagrams and code throughout.</p>
 
-{% include design-list.html category="agents" prefix="Agents: " label="Agents" empty_text="No agent write-ups yet — first ones landing soon." %}
+{% include design-list.html category="ai" prefix="AI: " label="AI" empty_text="No AI write-ups yet — first ones landing soon." %}

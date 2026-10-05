@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Dropbox"
+title: "SD: Dropbox"
 category: system-design
 date: 2026-07-02
 tags: [Distributed-Systems, Caching, Event-Driven]

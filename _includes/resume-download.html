@@ -1,0 +1,4 @@
+<a class="resume-download" href="{{ '/assets/documents/ilia-zlobin-resume.pdf' | relative_url }}" download="Ilia-Zlobin-Resume.pdf" type="application/pdf" aria-label="Download Resume PDF" title="Download Resume PDF">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3v12m-4-4 4 4 4-4M4 16v4h16v-4"/></svg>
+  {% unless include.icon_only %}<span>{{ include.label | default: 'Download Resume PDF' | escape }}</span>{% endunless %}
+</a>

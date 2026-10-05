@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Infra: Uber Ride-Hailing Platform on AWS and GCP"
+title: "INFRA: Uber Ride-Hailing Platform on AWS and GCP"
 category: infra
 date: 2026-07-18
 tags: [AWS, GCP, Multi-Cloud, Kubernetes, Istio, ScyllaDB, Apache Flink, Kafka, Redis, H3, Terraform, Prometheus]

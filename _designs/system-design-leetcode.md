@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: LeetCode"
+title: "SD: LeetCode"
 category: system-design
 date: 2026-07-02
 tags: [Distributed-Systems, Interview-Prep, Security, Real-Time, Sandbox, Scalability, Leaderboard]

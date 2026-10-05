@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Infra: Google Docs on GCP"
+title: "INFRA: Google Docs on GCP"
 category: infra
 date: 2026-07-17
 tags: [GCP, Cloudflare, Compute, Kubernetes, GitOps, Terraform, Prometheus, Redis]

@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Infra: Strava on AWS"
+title: "INFRA: Strava on AWS"
 category: infra
 date: 2026-07-18
 tags: [AWS, EKS, Data Platform, Kafka, Flink, PostgreSQL, PostGIS, Cassandra, Redis, S3, Terraform, Prometheus]

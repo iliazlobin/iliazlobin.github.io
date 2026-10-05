@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: ZooKeeper"
+title: "TECH: ZooKeeper"
 category: tech
 date: 2026-07-15
 tags: [Deep-Dive, Distributed-Systems]

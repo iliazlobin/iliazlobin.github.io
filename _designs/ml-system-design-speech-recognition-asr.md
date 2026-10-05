@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "ML System Design: Speech Recognition / ASR"
+title: "ML: Speech Recognition / ASR"
 category: system-design-ml
 date: 2026-07-15
 tags: [Machine-Learning, NLP, ASR, Audio]

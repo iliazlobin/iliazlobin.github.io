@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: Flink"
+title: "TECH: Flink"
 category: tech
 date: 2026-07-15
 tags: [Deep-Dive, Streaming, Open-Source]

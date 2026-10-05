@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Rate Limiter"
+title: "SD: Rate Limiter"
 category: system-design
 date: 2026-07-01
 tags: [Distributed-Systems, Caching, Real-Time, Interview-Prep]

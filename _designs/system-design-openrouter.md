@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: OpenRouter"
+title: "SD: OpenRouter"
 category: system-design
 date: 2026-07-23
 tags: [Interview-Prep, Distributed-Systems, API-Gateway, LLM-Infra]

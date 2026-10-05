@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: Elasticsearch"
+title: "TECH: Elasticsearch"
 category: tech
 date: 2026-07-15
 tags: [Deep-Dive, Search, Databases]

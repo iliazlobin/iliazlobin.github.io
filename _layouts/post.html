@@ -2,27 +2,32 @@
 layout: default
 ---
 <link rel="stylesheet" href="{{ '/assets/css/blog.css' | relative_url }}?v={{ site.time | date: '%s' }}">
+<link rel="stylesheet" href="{{ '/assets/css/diagrams.css' | relative_url }}?v={{ site.time | date: '%s' }}">
 {%- assign words = content | number_of_words -%}
 {%- assign minutes = words | divided_by: 200 | plus: 1 -%}
-<article class="post" itemscope itemtype="https://schema.org/BlogPosting">
+<article class="post post--google-diagrams" itemscope itemtype="https://schema.org/BlogPosting">
   <header class="post-header">
     <div class="meta">
       <time datetime="{{ page.date | date_to_xmlschema }}" itemprop="datePublished">
         {{ page.date | date: "%B %-d, %Y" }}
       </time>
       <span class="reading-time">{{ minutes }} min read</span>
-      {%- if page.tags and page.tags.size > 0 %}
+      {%- assign type_label = site.data.design_types[page.category] %}
+      {%- if type_label or page.tags.size > 0 %}
       {%- comment %} A design's tags route to ITS OWN category page (with ?tag= filter), not the blog. {%- endcomment %}
       {%- case page.category %}
-        {%- when 'tech' %}{%- assign tag_base = '/tech/' %}
+        {%- when 'tech' %}{%- assign tag_base = '/infrastructure/' %}
         {%- when 'infra' %}{%- assign tag_base = '/infrastructure/' %}
-        {%- when 'system-design-ml' %}{%- assign tag_base = '/machine-learning/' %}
+        {%- when 'system-design-ml' %}{%- assign tag_base = '/designs/' %}
+        {%- when 'low-level-design' %}{%- assign tag_base = '/designs/' %}
+        {%- when 'ai' %}{%- assign tag_base = '/designs/' %}
         {%- when 'research' %}{%- assign tag_base = '/research/' %}
         {%- when 'system-design' %}{%- assign tag_base = '/designs/' %}
         {%- else %}{%- assign tag_base = '/blog/' %}
       {%- endcase %}
       <span class="post-tags">
-        {%- for tag in page.tags %}<a class="tag" href="{{ tag_base | relative_url }}?tag={{ tag | url_encode }}">{{ tag }}</a>{% endfor -%}
+        {%- if type_label %}<a class="tag" href="{{ tag_base | relative_url }}?type={{ page.category | url_encode }}">{{ type_label | escape }}</a>{% endif -%}
+        {%- for tag in page.tags %}<a class="tag" href="{{ tag_base | relative_url }}?tag={{ tag | url_encode }}">{% if tag == 'System Design' %}SD{% else %}{{ tag | escape }}{% endif %}</a>{% endfor -%}
       </span>
       {%- endif %}
     </div>
@@ -42,17 +47,12 @@ layout: default
   </div>
 </article>
 
-{%- if page.collection == 'designs' %}
-<nav class="post-footer">
-  <a href="{{ '/designs/' | relative_url }}">← All designs</a>
-  <a href="{{ '/portfolio/' | relative_url }}">Portfolio →</a>
-</nav>
-{%- else %}
+{%- unless page.collection == 'designs' %}
 <nav class="post-footer">
   <a href="{{ '/blog/' | relative_url }}">← All posts</a>
   <a href="{{ '/portfolio/' | relative_url }}">Portfolio →</a>
 </nav>
-{%- endif %}
+{%- endunless %}
 
 <style>
   /* GitHub MVP button on a design page header (shown only when the design has an mvp_repo) */
@@ -67,22 +67,71 @@ layout: default
 <!-- Mermaid: render fenced ```mermaid blocks (client-side, GitHub-Pages safe) -->
 <script type="module">
   import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  import { normalizeDiagramStyles } from "{{ '/assets/js/diagram-palette.mjs' | relative_url }}?v={{ site.time | date: '%s' }}";
   const blocks = document.querySelectorAll(".post-content .language-mermaid");
   blocks.forEach((block) => {
     const code = block.querySelector("code") || block;
     const div = document.createElement("div");
     div.className = "mermaid";
-    div.textContent = code.textContent.trim();
-    block.parentNode.replaceChild(div, block);
+    div.dataset.source = code.textContent.trim();
+    div.textContent = normalizeDiagramStyles(div.dataset.source);
+    const container = block.matches("code") ? block.closest("pre") : block;
+    container.parentNode.replaceChild(div, container);
   });
   if (document.querySelector(".post-content .mermaid")) {
     mermaid.initialize({
       startOnLoad: false,
-      theme: "neutral",
+      theme: "base",
       securityLevel: "strict",
       fontFamily: "Inter, -apple-system, Segoe UI, Roboto, sans-serif",
+      // Shared Google Cloud-inspired presentation; article geometry stays in blog.css.
+      themeVariables: {
+        background: "#ffffff",
+        primaryColor: "#ffffff",
+        primaryTextColor: "#202124",
+        primaryBorderColor: "#9aa0a6",
+        secondaryColor: "#e8f0fe",
+        secondaryTextColor: "#202124",
+        secondaryBorderColor: "#9aa0a6",
+        tertiaryColor: "#e6f4ea",
+        tertiaryTextColor: "#202124",
+        tertiaryBorderColor: "#dadce0",
+        lineColor: "#5f6368",
+        textColor: "#202124",
+        edgeLabelBackground: "#ffffff",
+        clusterBkg: "#e8f0fe",
+        clusterBorder: "#e8f0fe",
+        actorBkg: "#ffffff",
+        actorBorder: "#9aa0a6",
+        actorTextColor: "#202124",
+        actorLineColor: "#dadce0",
+        signalColor: "#5f6368",
+        signalTextColor: "#3c4043",
+        noteBkgColor: "#e8f0fe",
+        noteBorderColor: "#d2e3fc",
+        noteTextColor: "#202124",
+        labelBoxBkgColor: "#e6f4ea",
+        labelBoxBorderColor: "#dadce0",
+        labelTextColor: "#202124",
+        loopTextColor: "#3c4043",
+      },
+      flowchart: { curve: "linear", padding: 18, nodeSpacing: 35, rankSpacing: 55 },
+      sequence: { mirrorActors: false, wrap: true, actorMargin: 35, diagramMarginX: 20 },
     });
-    try { await mermaid.run({ nodes: document.querySelectorAll(".post-content .mermaid") }); }
-    catch (e) { console.error("Mermaid render error:", e); }
+    try {
+      await mermaid.run({ nodes: document.querySelectorAll(".post-content .mermaid") });
+      document.querySelectorAll(".post--google-diagrams .mermaid svg").forEach((svg) => {
+        svg.style.setProperty("--diagram-natural-width", `${svg.viewBox.baseVal.width}px`);
+      });
+    }
+    catch (e) {
+      console.error("Mermaid render error:", e);
+      // Keep the source readable if a diagram cannot render.
+      document.querySelectorAll(".post--google-diagrams .mermaid").forEach((div) => {
+        const pre = document.createElement("pre");
+        pre.textContent = div.dataset.source;
+        div.replaceWith(pre);
+      });
+    }
   }
 </script>

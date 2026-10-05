@@ -39,6 +39,42 @@
 /* ---- Feed ---- */
 .portfolio-feed { display: flex; flex-direction: column; gap: 1.5rem; }
 
+/* Desktop lists are a viewport-sized browser, not a page of moving rails.
+   The long navigation list can be scrolled separately when needed. */
+.design-browser .portfolio-feed:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.design-browser .portfolio-item { scroll-margin-top: calc(var(--design-controls-height, 180px) + 1rem); }
+.design-browser .card-link::after { content: ""; position: absolute; inset: 0; z-index: 1; }
+.design-browser .card-link:focus-visible::after { outline: 2px solid var(--accent); outline-offset: -3px; border-radius: var(--radius); }
+.design-browser .type-label, .design-browser .pc-tags a, .design-browser .links a { position: relative; z-index: 2; }
+@media (min-width: 901px) {
+  body.design-browser-page { height: 100dvh; overflow: hidden; }
+  body.design-browser-page .site-header { flex-shrink: 0; }
+  body.design-browser-page .site-footer { display: none; }
+  body.design-browser-page .page-content { flex: 1; min-height: 0; padding: 1.6rem 0 1rem; }
+  body.design-browser-page .page-content > .wrapper { height: 100%; box-sizing: border-box; }
+  body.design-browser-page .page-content > .wrapper > .post {
+    height: 100%; min-height: 0; margin-bottom: 0; display: flex; flex-direction: column;
+  }
+  body.design-browser-page .post-header { flex-shrink: 0; margin-bottom: 1rem; }
+  body.design-browser-page .post-content {
+    flex: 1; min-height: 0; margin-bottom: 0; display: flex; flex-direction: column;
+  }
+  body.design-browser-page .portfolio-intro { flex-shrink: 0; margin-bottom: 1rem; }
+  body.design-browser-page .design-browser { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  body.design-browser-page .design-controls { position: relative; flex-shrink: 0; margin-bottom: .8rem; }
+  body.design-browser-page .design-layout { flex: 1; min-height: 0; align-items: stretch; }
+  body.design-browser-page .portfolio-rail { position: static; min-height: 0; height: 100%; }
+  body.design-browser-page .rail-group { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+  body.design-browser-page .rail-title { flex-shrink: 0; }
+  body.design-browser-page .portfolio-rail nav { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  body.design-browser-page .portfolio-feed {
+    position: relative; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    padding: .3rem .5rem var(--design-feed-tail, 1rem) .3rem; box-sizing: border-box;
+    scrollbar-gutter: stable;
+  }
+  body.design-browser-page .portfolio-item { flex-shrink: 0; scroll-margin: 0; }
+}
+
 /* Category section heading inside the feed (e.g. "System Design", "ML System Design").
    Margins are tuned against the flex `gap`; the first heading sits flush with the top. */
 .portfolio-feed .feed-section {
@@ -120,6 +156,9 @@
   transition: border-color .15s ease, box-shadow .15s ease;
 }
 .tag-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.unified-search { flex: 1 0 100%; max-width: none; min-width: 0; box-sizing: border-box; padding: .65rem .8rem; gap: .5rem; }
+.unified-search .ti-field { flex: 1 1 220px; min-width: 140px; }
+.unified-search .ti-clear { margin-left: auto; }
 .ti-icon { width: 16px; height: 16px; color: var(--ink-faint); flex: 0 0 auto; }
 .ti-tokens { display: contents; }
 .ti-token {
@@ -142,15 +181,16 @@
 }
 .ti-opt:hover, .ti-opt.active { background: var(--accent-soft); color: var(--accent); }
 .ti-opt strong { color: var(--accent); font-weight: 800; }
-.ti-opt .ti-c { font-size: .72rem; font-weight: 700; color: var(--ink-faint); }
-.bc-right { display: flex; align-items: center; gap: .7rem; }
-.result-count { font-size: .82rem; color: var(--ink-faint); font-weight: 600; white-space: nowrap; }
+.ti-opt .ti-c { flex-shrink: 0; font-size: .72rem; font-weight: 700; color: var(--ink-faint); }
 .ti-clear {
   font-family: inherit; font-size: .82rem; font-weight: 600; color: var(--ink-soft);
   background: #fff; border: 1px solid var(--line); border-radius: 999px; padding: .3rem .75rem; cursor: pointer;
   transition: all .15s ease; white-space: nowrap;
 }
 .ti-clear:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Type is separate from topic tags; both combine with text search. */
+.design-controls .type-filters { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: .45rem; }
 
 /* Clickable tag chips on the design cards (replace the old static .tags list) */
 .pc-tags { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .8rem; }
@@ -165,5 +205,6 @@
 .portfolio-item.is-filtered { opacity: 0; transform: translateY(-8px) scale(.98); pointer-events: none; transition: opacity .22s ease, transform .22s ease; }
 
 .no-results { color: var(--ink-faint); padding: 1.5rem 0; }
+.result-count { font-size: .8rem; color: var(--ink-faint); }
 .link-btn { font-family: inherit; background: none; border: 0; color: var(--accent); font-weight: 600; cursor: pointer; padding: 0; }
 .link-btn:hover { text-decoration: underline; }

@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Google News"
+title: "SD: Google News"
 category: system-design
 date: 2026-06-29
 tags: [News-Aggregation, Real-Time, Event-Driven, Ranking]

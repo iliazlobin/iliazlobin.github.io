@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Infra: Bitly URL Shortener on AWS"
+title: "INFRA: Bitly URL Shortener on AWS"
 category: infra
 date: 2026-07-18
 tags: [AWS, ECS Fargate, CloudFront, Aurora PostgreSQL, ElastiCache Valkey, ClickHouse, MSK Kafka, Terraform, GitHub Actions, Prometheus, Grafana]

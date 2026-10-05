@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Online Auction"
+title: "SD: Online Auction"
 category: system-design
 date: 2026-07-01
 tags: [Real-Time, Distributed-Systems, Event-Driven, Interview-Prep]

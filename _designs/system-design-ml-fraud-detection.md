@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "ML System Design: Fraud Detection"
+title: "ML: Fraud Detection"
 category: system-design-ml
 redirect_from:
   - /designs/ml-system-design-fraud-detection/

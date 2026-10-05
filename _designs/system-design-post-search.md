@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Post Search"
+title: "SD: Post Search"
 category: system-design
 date: 2026-07-02
 tags: [Search, Indexing, Social]

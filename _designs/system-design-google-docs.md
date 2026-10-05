@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Google Docs"
+title: "SD: Google Docs"
 category: system-design
 date: 2026-07-01
 tags: [Real-Time, Distributed-Systems, Interview-Prep]

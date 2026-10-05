@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Distributed Cache"
+title: "SD: Distributed Cache"
 category: system-design
 date: 2026-07-02
 tags: [Caching, Distributed-Systems, Redis, Consistent-Hashing]

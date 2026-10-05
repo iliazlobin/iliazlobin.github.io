@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: TimescaleDB"
+title: "TECH: TimescaleDB"
 category: tech
 date: 2026-07-15
 tags: [Deep-Dive, Databases]

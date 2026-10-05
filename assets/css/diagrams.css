@@ -1,0 +1,29 @@
+/* Shared Google Cloud-inspired diagrams. Keep the shared article width and
+   text alignment; the diagram theme must not change the page layout. */
+
+.post--google-diagrams .mermaid {
+  justify-content: flex-start;
+  padding: 1.4rem;
+  border-color: #dadce0;
+  border-radius: 16px;
+  background: #fff;
+}
+.post--google-diagrams .mermaid svg { margin: auto; flex: 0 0 auto; }
+.post--google-diagrams .mermaid .node rect { rx: 6px; ry: 6px; }
+.post--google-diagrams .mermaid .cluster rect { rx: 10px; ry: 10px; }
+.post--google-diagrams .mermaid .cluster-label { font-weight: 600; }
+.post--google-diagrams .mermaid .edgeLabel p { background: #fff; }
+.post--google-diagrams .post-content p code,
+.post--google-diagrams .post-content li code,
+.post--google-diagrams .post-content td code { overflow-wrap: anywhere; white-space: normal; }
+
+/* The diagram scrolls, not the whole page. Preserve readable labels on phones. */
+@media (max-width: 700px) {
+  .post--google-diagrams .mermaid { padding: .8rem; }
+  .post--google-diagrams .mermaid svg { min-width: var(--diagram-natural-width, 640px); }
+  .post--google-diagrams .post-content pre { max-width: 100%; box-sizing: border-box; }
+  .post--google-diagrams .post-content table { display: block; overflow-x: auto; }
+}
+
+/* Show source when JavaScript or the Mermaid CDN is unavailable. */
+.post--google-diagrams .language-mermaid { display: block; }

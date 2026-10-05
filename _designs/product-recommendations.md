@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "ML System Design: Product Recommendations"
+title: "ML: Product Recommendations"
 category: system-design-ml
 date: 2026-07-16
 tags: [Recommendation, Machine-Learning, Personalization, Ranking]

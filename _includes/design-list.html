@@ -1,78 +1,93 @@
 {%- comment %}
-  Renders one category's designs as the Portfolio-style rail + feed, with a tag filter.
-  Dedicated single-category pages (System Design, Machine Learning, Infra, Tech, Research)
-  call this once; the page's own H1 + intro supply the heading.
+  Renders selected categories as one rail, feed and tag filter.
   Params:
     include.category    — front-matter `category:` slug to filter on
+    include.categories  — comma-separated category slugs, instead of category
     include.prefix      — title prefix stripped from each card's display name
+    include.secondary_prefix — optional second title prefix to strip
     include.label       — small-caps label shown atop the sidebar rail
-    include.count_noun  — singular noun for the result counter (default "write-up")
     include.empty_text  — shown when the category has no designs yet
   The tag filter reuses the blog's setupBlogFilter() (assets/js/site.js) — same
   data-blog-filter / data-blog-feed / data-blog-tags contract, layout-agnostic.
 {%- endcomment %}
-{%- assign designs = site.designs | where: "category", include.category | sort: "date" | reverse %}
+{%- assign categories = include.categories | default: include.category | split: ',' %}
+{%- assign secondary_prefix = include.secondary_prefix | default: '' %}
+{%- assign designs = site.designs | where_exp: "design", "categories contains design.category" | sort: "date" | reverse %}
 {%- if designs.size > 0 %}
 
-{%- comment %} Tag universe for THIS category (name + count) — powers the filter box + suggestions. {%- endcomment %}
+{%- comment %} Topic tags for this listing's autocomplete. {%- endcomment %}
 {%- assign all_tags = "" | split: "" %}
 {%- for d in designs %}{%- assign all_tags = all_tags | concat: d.tags %}{%- endfor %}
 {%- assign uniq_tags = all_tags | uniq | sort %}
 
-{%- if uniq_tags.size > 0 %}
-<div class="blog-controls" data-blog-filter data-count-noun="{{ include.count_noun | default: 'write-up' }}">
-  <div class="tag-input" data-tag-input>
+<section class="design-browser" data-design-browser aria-label="{{ include.label }} browser">
+<div class="blog-controls design-controls" data-blog-filter data-unified-search>
+  {%- if categories.size > 1 %}
+  <div class="type-filters" role="group" aria-label="Filter {{ include.label }} by type">
+    <button class="type-filter" type="button" data-type-filter="" aria-pressed="true">All</button>
+    {%- for category in categories %}
+    <button class="type-filter" type="button" data-type-filter="{{ category | escape }}" aria-pressed="false">{{ site.data.design_types[category] | default: category | escape }}</button>
+    {%- endfor %}
+  </div>
+  {%- endif %}
+  <div class="tag-input unified-search" data-tag-input>
     <svg class="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path></svg>
     <span class="ti-tokens"></span>
-    <input type="text" class="ti-field" placeholder="Filter by tag…" aria-label="Filter {{ include.label }} write-ups by tag" autocomplete="off" spellcheck="false">
-    <div class="ti-suggest" hidden role="listbox" aria-label="Tag suggestions"></div>
-  </div>
-  <div class="bc-right">
-    <span class="result-count" data-result-count></span>
+    <input type="search" class="ti-field" data-content-search placeholder="Search titles, descriptions or tags…" aria-label="Search {{ include.label }}" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="{{ include.label | slugify }}-search-suggestions" autocomplete="off" spellcheck="false">
     <button class="ti-clear" data-tag-clear type="button" hidden>Clear all</button>
+    <div id="{{ include.label | slugify }}-search-suggestions" class="ti-suggest" hidden role="listbox" aria-label="Search suggestions"></div>
   </div>
 </div>
-<script type="application/json" data-blog-tags>[{%- for t in uniq_tags %}{%- assign m = all_tags | where_exp: "x", "x == t" %}{"name": {{ t | jsonify | replace: '</', '<\/' }}, "count": {{ m.size }}}{%- unless forloop.last %},{% endunless %}{%- endfor %}]</script>
-{%- endif %}
+<script type="application/json" data-blog-tags>[{%- for t in uniq_tags %}{"name": {{ t | jsonify | replace: '</', '<\/' }}{% if t == 'System Design' %}, "label": "SD"{% endif %}}{%- unless forloop.last %},{% endunless %}{%- endfor %}]</script>
 
-<div class="portfolio-layout">
+<div class="portfolio-layout design-layout">
 
 <aside class="portfolio-rail">
   <div class="rail-group">
     <div class="rail-title">{{ include.label }}</div>
-    <nav>
+    <nav aria-label="{{ include.label }} navigation">
       {%- for d in designs %}
-      {%- assign name = d.title | remove_first: include.prefix %}
-      <a href="#{{ d.title | slugify }}" data-spy data-tags="{{ d.tags | join: '|' | escape }}"><span class="nm">{{ name | escape }}</span></a>
+      {%- assign name = d.title | remove_first: include.prefix | remove_first: secondary_prefix %}
+      {%- assign anchor_id = d.url | split: '/' | last %}
+      {%- assign type_label = site.data.design_types[d.category] %}
+      {%- capture search_text %}{{ name }} {{ type_label }} {{ d.category | replace: '-', ' ' }} {{ d.description | default: d.excerpt | strip_html }} {{ d.tags | join: ' ' }}{% endcapture %}
+      <a href="#{{ anchor_id }}" data-spy data-type="{{ d.category | escape }}" data-search="{{ search_text | strip_newlines | escape }}" data-tags="{{ d.tags | join: '|' | escape }}"><span class="nm">{{ name | escape }}</span></a>
       {%- endfor %}
     </nav>
   </div>
 </aside>
 
-<div class="portfolio-feed" data-blog-feed>
+<div class="portfolio-feed" data-blog-feed tabindex="0" role="region" aria-label="{{ include.label }} write-ups">
   {%- for d in designs %}
-  {%- assign name = d.title | remove_first: include.prefix %}
+  {%- assign name = d.title | remove_first: include.prefix | remove_first: secondary_prefix %}
+  {%- assign anchor_id = d.url | split: '/' | last %}
+  {%- assign legacy_id = d.title | replace: 'SD: ', 'System Design: ' | replace: 'ML: ', 'ML System Design: ' | slugify %}
   {%- assign seed = d.title | size | modulo: 6 %}
-  <article id="{{ d.title | slugify }}" class="portfolio-item" data-tags="{{ d.tags | join: '|' | escape }}">
+  {%- assign type_label = site.data.design_types[d.category] %}
+  {%- capture search_text %}{{ name }} {{ type_label }} {{ d.category | replace: '-', ' ' }} {{ d.description | default: d.excerpt | strip_html }} {{ d.tags | join: ' ' }}{% endcapture %}
+  <article id="{{ anchor_id }}" data-legacy-id="{{ legacy_id }}" class="portfolio-item" data-type="{{ d.category | escape }}" data-search="{{ search_text | strip_newlines | escape }}" data-tags="{{ d.tags | join: '|' | escape }}">
     {%- if d.thumbnail %}
-    <a class="thumb" href="{{ d.url | relative_url }}" aria-label="{{ name | escape }} — read the design"><img src="{{ d.thumbnail | relative_url }}?v={{ site.time | date: '%s' }}" alt="{{ name | escape }} architecture diagram" loading="lazy"></a>
+    <div class="thumb"><img src="{{ d.thumbnail | relative_url }}?v={{ site.time | date: '%s' }}" alt="{{ name | escape }} architecture diagram" loading="lazy"></div>
     {%- else %}
-    <a class="thumb placeholder g{{ seed }}" href="{{ d.url | relative_url }}" aria-label="{{ name | escape }} — read the design"><span>{{ name | escape }}</span></a>
+    <div class="thumb placeholder g{{ seed }}"><span>{{ name | escape }}</span></div>
     {%- endif %}
     <div class="body">
-      <h3><a href="{{ d.url | relative_url }}">{{ name | escape }}</a></h3>
+      {%- if type_label %}
+      <a class="type-label" data-type-filter="{{ d.category | escape }}" href="?type={{ d.category | url_encode }}">{{ type_label | escape }}</a>
+      {%- endif %}
+      <h3><a class="card-link" href="{{ d.url | relative_url }}">{{ name | escape }}</a></h3>
       <p>{{ d.description | default: d.excerpt | strip_html | truncatewords: 46 }}</p>
       {%- if d.tags.size > 0 %}
-      <div class="pc-tags">{%- for tag in d.tags %}<a class="tag" data-tag="{{ tag | escape }}" href="?tag={{ tag | url_encode }}">{{ tag | escape }}</a>{%- endfor %}</div>
+      <div class="pc-tags">{%- for tag in d.tags %}<a class="tag" data-tag="{{ tag | escape }}" href="?tag={{ tag | url_encode }}">{% if tag == 'System Design' %}SD{% else %}{{ tag | escape }}{% endif %}</a>{%- endfor %}</div>
       {%- endif %}
-      <div class="links"><a class="gh" href="{{ d.url | relative_url }}">Read the design →</a>{% if d.mvp_repo %}<a class="gh" href="{{ d.mvp_repo }}" target="_blank" rel="noopener">GitHub MVP ↗</a>{% endif %}</div>
+      {%- if d.mvp_repo %}<div class="links"><a class="gh" href="{{ d.mvp_repo }}" target="_blank" rel="noopener">GitHub MVP ↗</a></div>{% endif %}
     </div>
   </article>
   {%- endfor %}
+  <p class="no-results" hidden>No {{ include.label | downcase }} write-ups match that filter. <button class="link-btn" data-filter-clear type="button">Clear filter</button></p>
 </div>
 </div>
-
-<p class="no-results" hidden>No {{ include.label | downcase }} write-ups match that filter. <button class="link-btn" data-filter-clear type="button">Clear filter</button></p>
+</section>
 {%- else %}
 <p>{{ include.empty_text | default: "No designs yet — first write-ups landing soon." }}</p>
 {%- endif %}

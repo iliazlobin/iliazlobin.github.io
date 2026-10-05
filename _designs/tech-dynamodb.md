@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: DynamoDB"
+title: "TECH: DynamoDB"
 category: tech
 date: 2026-07-16
 tags: [Deep-Dive, Databases, Cloud, NoSQL]

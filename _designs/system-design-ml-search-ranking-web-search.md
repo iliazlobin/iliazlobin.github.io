@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "ML System Design: Search Ranking / Web Search"
+title: "ML: Search Ranking / Web Search"
 category: system-design-ml
 redirect_from:
   - /designs/ml-system-design-search-ranking-web-search/

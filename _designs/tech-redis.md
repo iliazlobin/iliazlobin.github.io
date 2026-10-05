@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: Redis"
+title: "TECH: Redis"
 category: tech
 date: 2026-07-15
 tags: [Deep-Dive, Databases, Caching]

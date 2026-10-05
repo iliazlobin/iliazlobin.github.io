@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Video Conferencing (Zoom)"
+title: "SD: Video Conferencing (Zoom)"
 category: system-design
 date: 2026-07-07
 tags: [Video-Conferencing, WebRTC, Real-Time, Zoom, Meeting-Systems, SFU]

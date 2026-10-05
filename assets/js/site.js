@@ -7,6 +7,7 @@
 
   var reduceMotion = window.matchMedia &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var browserSelector = "[data-design-browser], [data-content-browser]";
 
   /* ---------------------------------------------------------------------
      1) Reveal-on-scroll for any [.reveal] element.
@@ -121,6 +122,7 @@
         currently in view.
      --------------------------------------------------------------------- */
   function setupScrollspy() {
+    if (document.querySelector(browserSelector)) return;
     var links = Array.prototype.slice.call(document.querySelectorAll(".portfolio-rail [data-spy]"));
     if (!links.length || !("IntersectionObserver" in window)) return;
     var map = {};
@@ -153,11 +155,113 @@
     document.querySelectorAll(".portfolio-feed .portfolio-item").forEach(function (s) { io.observe(s); });
   }
 
+  // Keep list navigation and filters still; move only the desktop card panel.
+  function setupContentBrowser() {
+    var browser = document.querySelector(browserSelector);
+    if (!browser) return;
+    var feed = browser.querySelector("[data-blog-feed]");
+    var controls = browser.querySelector("[data-blog-filter]");
+    var links = Array.prototype.slice.call(browser.querySelectorAll("[data-spy]"));
+    var cards = Array.prototype.slice.call(feed.querySelectorAll(".portfolio-item"));
+    var desktop = window.matchMedia("(min-width: 901px)");
+    var frame = 0;
+    var anchoredCard = null;
+    document.body.classList.add("design-browser-page");
+
+    function visibleCards() {
+      return cards.filter(function (card) { return card.style.display !== "none"; });
+    }
+    function markActive(card) {
+      links.forEach(function (link) {
+        var active = !!card && link.getAttribute("href") === "#" + card.id;
+        link.classList.toggle("active", active);
+        if (active) link.setAttribute("aria-current", "location");
+        else link.removeAttribute("aria-current");
+      });
+    }
+    function updateActive() {
+      frame = 0;
+      var visible = visibleCards();
+      var top = desktop.matches ? feed.getBoundingClientRect().top + 8 : controls.getBoundingClientRect().bottom + 16;
+      var active = visible[0];
+      visible.forEach(function (card) {
+        if (card.getBoundingClientRect().top <= top) active = card;
+      });
+      markActive(active);
+    }
+    function queueActive() {
+      if (!frame) frame = requestAnimationFrame(updateActive);
+    }
+    function alignCard(card) {
+      var padding = parseFloat(getComputedStyle(feed).paddingTop) || 0;
+      feed.scrollTo({ top: card.offsetTop - padding, behavior: "instant" });
+    }
+    function measure() {
+      browser.style.setProperty("--design-controls-height", controls.offsetHeight + "px");
+      var visible = visibleCards();
+      var last = visible[visible.length - 1];
+      // Leave enough room to align even the final card with the panel's top.
+      var tail = desktop.matches && last ? Math.max(16, feed.clientHeight - last.offsetHeight - 8) : 16;
+      feed.style.setProperty("--design-feed-tail", tail + "px");
+      // Lazy diagrams can change earlier card heights after a selection.
+      if (desktop.matches && anchoredCard) alignCard(anchoredCard);
+      queueActive();
+    }
+    function findCard(id) {
+      return visibleCards().find(function (card) {
+        return card.id === id || card.getAttribute("data-legacy-id") === id;
+      });
+    }
+    function navigate(card) {
+      if (!card) return;
+      anchoredCard = desktop.matches ? card : null;
+      if (desktop.matches) {
+        alignCard(card);
+      } else {
+        window.scrollTo({ top: window.scrollY + card.getBoundingClientRect().top - controls.offsetHeight - 16,
+          behavior: reduceMotion ? "auto" : "smooth" });
+      }
+      markActive(card);
+      var url = new URL(window.location);
+      url.hash = card.id;
+      history.replaceState(null, "", url);
+    }
+    links.forEach(function (link) {
+      link.addEventListener("click", function (event) {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        navigate(findCard(link.getAttribute("href").slice(1)));
+      });
+    });
+    ["wheel", "touchstart", "pointerdown", "keydown"].forEach(function (type) {
+      feed.addEventListener(type, function () { anchoredCard = null; }, { passive: true });
+    });
+    feed.addEventListener("scroll", queueActive, { passive: true });
+    feed.addEventListener("content:navigate", function (event) { navigate(findCard(event.detail)); });
+    window.addEventListener("scroll", function () { if (!desktop.matches) queueActive(); }, { passive: true });
+    window.addEventListener("hashchange", function () { navigate(findCard(decodeURIComponent(window.location.hash.slice(1)))); });
+    window.addEventListener("resize", measure);
+    feed.addEventListener("design:filter", function () {
+      anchoredCard = null;
+      feed.scrollTop = 0;
+      measure();
+      markActive(visibleCards()[0]);
+    });
+    if ("ResizeObserver" in window) {
+      var observer = new ResizeObserver(measure);
+      observer.observe(feed); observer.observe(controls);
+      cards.forEach(function (card) { observer.observe(card); });
+    }
+    measure();
+    requestAnimationFrame(function () {
+      var card = findCard(decodeURIComponent(window.location.hash.slice(1)));
+      if (card) navigate(card); else updateActive();
+    });
+  }
+
   /* ---------------------------------------------------------------------
-     5) Blog tag filtering: a token/autocomplete input. Type to search tags,
-        Enter/click to add a token, Backspace to remove. Filtering is applied
-        in place with a fade animation; selection syncs to the URL (?tag=a,b).
-        Semantics: OR — a post shows if it has ANY selected tag.
+     5) Topic tags use OR matching. On content lists, type and text
+        search further narrow the results (AND). State syncs to the URL.
      --------------------------------------------------------------------- */
   function setupBlogFilter() {
     var root = document.querySelector("[data-blog-filter]");
@@ -170,20 +274,50 @@
     var suggest = box.querySelector(".ti-suggest");
     var countEl = root.querySelector("[data-result-count]");
     var clearBtn = root.querySelector("[data-tag-clear]");
-    // Works for BOTH layouts: the blog timeline (.tl-item) and the design/category
-    // pages (.portfolio-item). Design pages have no year dividers (the loop no-ops) and a
-    // sticky rail whose entries must hide alongside their filtered-out cards.
+    var searchField = root.querySelector("[data-content-search]");
+    var unifiedSearch = root.hasAttribute("data-unified-search");
+    var typeButtons = Array.prototype.slice.call(root.querySelectorAll("[data-type-filter]"));
+    // Blog timelines and card lists share filtering; rail entries follow their cards.
     var cards = Array.prototype.slice.call(feed.querySelectorAll(".tl-item, .portfolio-item"));
+    var itemLabel = root.getAttribute("data-item-label") || "Article";
+    var articles = cards.map(function (card) {
+      var link = card.querySelector(".card-link");
+      var title = link || card.querySelector("h3");
+      return title ? { card: card, title: title.textContent.trim(), url: link ? link.getAttribute("href") : "#" + card.id } : null;
+    }).filter(Boolean);
     var dividers = Array.prototype.slice.call(feed.querySelectorAll(".year-divider"));
-    var railLinks = Array.prototype.slice.call(document.querySelectorAll(".portfolio-rail a[data-tags]"));
+    var railLinks = Array.prototype.slice.call(document.querySelectorAll(".portfolio-rail a[data-spy]"));
     var noun = root.getAttribute("data-count-noun") || "post";
     var noRes = document.querySelector(".no-results");
+    var isPanelBrowser = !!feed.closest(browserSelector);
 
     var allTags = [];
     var dataEl = document.querySelector("[data-blog-tags]");
     if (dataEl) { try { allTags = JSON.parse(dataEl.textContent); } catch (e) {} }
+    else {
+      // Portfolio tags are authored once on each card, not in a second index.
+      var tagCounts = new Map();
+      cards.forEach(function (card) {
+        (card.getAttribute("data-tags") || "").split("|").filter(Boolean).forEach(function (name) {
+          tagCounts.set(name, (tagCounts.get(name) || 0) + 1);
+        });
+      });
+      tagCounts.forEach(function (count, name) { allTags.push({ name: name, count: count }); });
+    }
     allTags.sort(function (a, b) { return a.name.localeCompare(b.name); });
     var selected = [];
+    var selectedType = "";
+    var searchWords = [];
+
+    function normalize(text) {
+      return String(text).toLowerCase().replace(/[-_]+/g, " ").trim();
+    }
+    function isType(type) {
+      return cards.some(function (card) { return cardTypes(card).indexOf(type) > -1; });
+    }
+    function cardTypes(card) {
+      return (card.getAttribute("data-types") || card.getAttribute("data-type") || "").split("|");
+    }
 
     function esc(s) {
       return String(s).replace(/[&<>"]/g, function (c) {
@@ -194,7 +328,14 @@
       for (var i = 0; i < allTags.length; i++) { if (allTags[i].name === name) return true; }
       return false;
     }
+    function tagLabel(name) {
+      for (var i = 0; i < allTags.length; i++) { if (allTags[i].name === name) return allTags[i].label || name; }
+      return name;
+    }
     function matches(card) {
+      if (selectedType && cardTypes(card).indexOf(selectedType) < 0) return false;
+      var text = normalize(card.getAttribute("data-search") || card.textContent);
+      if (!searchWords.every(function (word) { return text.indexOf(word) > -1; })) return false;
       if (!selected.length) return true;
       var tags = (card.getAttribute("data-tags") || "").split("|");
       for (var i = 0; i < selected.length; i++) { if (tags.indexOf(selected[i]) > -1) return true; }
@@ -206,11 +347,16 @@
       cards.forEach(function (card) {
         var show = matches(card);
         if (show) visible++;
+        if (isPanelBrowser) {
+          card.style.display = show ? "" : "none";
+          card.classList.remove("is-filtered");
+          return;
+        }
         var hidden = card.style.display === "none";
         if (show && hidden) {
           card.style.display = "";
           requestAnimationFrame(function () {
-            requestAnimationFrame(function () { card.classList.remove("is-filtered"); });
+            requestAnimationFrame(function () { if (matches(card)) card.classList.remove("is-filtered"); });
           });
         } else if (show) {
           card.classList.remove("is-filtered");
@@ -227,13 +373,26 @@
         }
         d.style.display = has ? "" : "none";
       });
-      railLinks.forEach(function (a) { a.style.display = matches(a) ? "" : "none"; });
+      railLinks.forEach(function (a) {
+        var card = document.getElementById(a.getAttribute("href").slice(1));
+        a.style.display = card && matches(card) ? "" : "none";
+      });
       if (noRes) noRes.hidden = visible > 0;
       if (countEl) countEl.textContent = visible + " " + noun + (visible === 1 ? "" : "s");
-      if (clearBtn) clearBtn.hidden = selected.length === 0;
+      if (clearBtn) clearBtn.hidden = selected.length === 0 && !selectedType && !searchWords.length;
+      typeButtons.forEach(function (button) {
+        button.setAttribute("aria-pressed", String(button.getAttribute("data-type-filter") === selectedType));
+      });
       var url = new URL(window.location);
       if (selected.length) url.searchParams.set("tag", selected.join(",")); else url.searchParams.delete("tag");
+      if (typeButtons.length) {
+        if (selectedType) url.searchParams.set("type", selectedType); else url.searchParams.delete("type");
+      }
+      if (searchField) {
+        if (searchWords.length) url.searchParams.set("q", searchField.value.trim()); else url.searchParams.delete("q");
+      }
       history.replaceState(null, "", url);
+      if (isPanelBrowser) feed.dispatchEvent(new Event("design:filter"));
     }
 
     function renderTokens() {
@@ -241,7 +400,8 @@
       selected.forEach(function (name) {
         var tok = document.createElement("span");
         tok.className = "ti-token";
-        tok.innerHTML = "<span>" + esc(name) + "</span><button type=\"button\" aria-label=\"Remove " + esc(name) + "\">×</button>";
+        var label = tagLabel(name);
+        tok.innerHTML = "<span>" + esc(label) + "</span><button type=\"button\" aria-label=\"Remove " + esc(label) + "\">×</button>";
         tok.querySelector("button").addEventListener("click", function (e) { e.stopPropagation(); removeTag(name); });
         tokensWrap.appendChild(tok);
       });
@@ -249,7 +409,9 @@
     function addTag(name) {
       if (!name || selected.indexOf(name) > -1 || !isTag(name)) return;
       selected.push(name);
-      renderTokens(); field.value = ""; closeSuggest(); applyFilter(); field.focus();
+      renderTokens(); field.value = "";
+      if (unifiedSearch) searchWords = [];
+      closeSuggest(); applyFilter(); field.focus();
     }
     function removeTag(name) {
       selected = selected.filter(function (s) { return s !== name; });
@@ -262,54 +424,152 @@
       if (idx < 0) return esc(name);
       return esc(name.slice(0, idx)) + "<strong>" + esc(name.slice(idx, idx + q.length)) + "</strong>" + esc(name.slice(idx + q.length));
     }
-    function openSuggest() {
+    function openSuggest(showAll) {
       var q = (field.value || "").toLowerCase().trim();
-      var avail = allTags.filter(function (t) { return selected.indexOf(t.name) < 0 && t.name.toLowerCase().indexOf(q) > -1; });
+      if (unifiedSearch && !q && !showAll) { closeSuggest(); return; }
+      var tagOptions = allTags.filter(function (t) {
+        return selected.indexOf(t.name) < 0 &&
+          (normalize(t.name).indexOf(normalize(q)) > -1 || normalize(tagLabel(t.name)).indexOf(normalize(q)) > -1);
+      }).map(function (t) {
+        return { name: t.name, label: tagLabel(t.name), kind: "Tag", count: t.count };
+      });
+      var articleOptions = [];
+      if (unifiedSearch && q) {
+        var words = normalize(q).split(/\s+/);
+        articleOptions = articles.filter(function (article) {
+          var title = normalize(article.title);
+          return matches(article.card) && words.every(function (word) { return title.indexOf(word) > -1; });
+        }).map(function (article) {
+          return { label: article.title, url: article.url, kind: itemLabel };
+        }).sort(function (a, b) {
+          // Ignore the type prefix when ranking starts-with matches.
+          var aTitle = normalize(a.label.replace(/^[^:]+:\s*/, ""));
+          var bTitle = normalize(b.label.replace(/^[^:]+:\s*/, ""));
+          return Number(bTitle.indexOf(normalize(q)) === 0) - Number(aTitle.indexOf(normalize(q)) === 0) ||
+            a.label.localeCompare(b.label);
+        }).slice(0, 6);
+      }
+      var avail = articleOptions.concat(tagOptions);
+      if (unifiedSearch) avail = avail.slice(0, 8);
       if (!avail.length) { closeSuggest(); return; }
-      suggest.innerHTML = avail.map(function (t, i) {
-        return "<button type=\"button\" class=\"ti-opt" + (i === 0 ? " active" : "") + "\" role=\"option\" data-name=\"" + esc(t.name) + "\">" +
-               highlight(t.name, q) + " <span class=\"ti-c\">" + t.count + "</span></button>";
+      if (!suggest.id) suggest.id = "tag-suggestions";
+      suggest.innerHTML = avail.map(function (option, i) {
+        var active = !unifiedSearch && i === 0;
+        return "<button type=\"button\" id=\"" + suggest.id + "-" + i + "\" class=\"ti-opt" + (active ? " active" : "") +
+               "\" role=\"option\" aria-label=\"" + esc(option.label + (unifiedSearch ? ", " + option.kind.toLowerCase() : "")) +
+               "\" aria-selected=\"" + active + "\"" +
+               (option.url ? " data-url=\"" + esc(option.url) + "\"" : " data-name=\"" + esc(option.name) + "\"") + ">" +
+               "<span>" + highlight(option.label, q) + "</span>" +
+               " <span class=\"ti-c\">" + esc(unifiedSearch ? option.kind : option.count) + "</span></button>";
       }).join("");
       suggest.hidden = false;
+      if (unifiedSearch) {
+        field.setAttribute("aria-expanded", "true");
+        field.removeAttribute("aria-activedescendant");
+      }
       Array.prototype.slice.call(suggest.querySelectorAll(".ti-opt")).forEach(function (o) {
-        o.addEventListener("mousedown", function (e) { e.preventDefault(); addTag(o.getAttribute("data-name")); });
+        o.addEventListener("mousedown", function (e) { e.preventDefault(); });
+        o.addEventListener("click", function () { chooseOption(o); });
       });
     }
-    function closeSuggest() { suggest.hidden = true; suggest.innerHTML = ""; }
+    function chooseOption(option) {
+      var url = option.getAttribute("data-url");
+      if (url) {
+        closeSuggest();
+        if (url.charAt(0) === "#" && isPanelBrowser) {
+          feed.dispatchEvent(new CustomEvent("content:navigate", { detail: url.slice(1) }));
+        } else window.location.assign(url);
+      } else addTag(option.getAttribute("data-name"));
+    }
+    function closeSuggest() {
+      suggest.hidden = true; suggest.innerHTML = "";
+      if (unifiedSearch) {
+        field.setAttribute("aria-expanded", "false");
+        field.removeAttribute("aria-activedescendant");
+      }
+    }
     function moveActive(dir) {
       var opts = Array.prototype.slice.call(suggest.querySelectorAll(".ti-opt"));
       if (!opts.length) return;
       var i = -1; opts.forEach(function (o, idx) { if (o.classList.contains("active")) i = idx; });
-      if (i > -1) opts[i].classList.remove("active");
-      i = (i + dir + opts.length) % opts.length;
-      opts[i].classList.add("active"); opts[i].scrollIntoView({ block: "nearest" });
+      i = i < 0 ? (dir > 0 ? 0 : opts.length - 1) : (i + dir + opts.length) % opts.length;
+      opts.forEach(function (o, idx) {
+        o.classList.toggle("active", idx === i);
+        o.setAttribute("aria-selected", String(idx === i));
+      });
+      if (unifiedSearch) field.setAttribute("aria-activedescendant", opts[i].id);
+      suggest.scrollTop += Math.max(0, opts[i].offsetTop + opts[i].offsetHeight - suggest.scrollTop - suggest.clientHeight);
+      if (opts[i].offsetTop < suggest.scrollTop) suggest.scrollTop = opts[i].offsetTop;
     }
 
-    field.addEventListener("input", openSuggest);
-    field.addEventListener("focus", openSuggest);
-    field.addEventListener("keydown", function (e) {
-      if (e.key === "Enter") { e.preventDefault(); var a = suggest.querySelector(".ti-opt.active"); if (a) addTag(a.getAttribute("data-name")); }
-      else if (e.key === "Backspace" && field.value === "" && selected.length) { removeTag(selected[selected.length - 1]); }
-      else if (e.key === "ArrowDown") { e.preventDefault(); moveActive(1); }
-      else if (e.key === "ArrowUp") { e.preventDefault(); moveActive(-1); }
-      else if (e.key === "Escape") { closeSuggest(); }
+    function updateSearch() {
+      var query = normalize(searchField.value);
+      searchWords = query ? query.split(/\s+/) : [];
+      applyFilter();
+    }
+    field.addEventListener("input", function () {
+      if (unifiedSearch) updateSearch();
+      openSuggest(false);
     });
-    box.addEventListener("click", function () { field.focus(); });
+    field.addEventListener("focus", function () { openSuggest(false); });
+    field.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        var a = suggest.querySelector(".ti-opt.active");
+        var exact = allTags.find(function (t) {
+          return normalize(t.name) === normalize(field.value) || normalize(tagLabel(t.name)) === normalize(field.value);
+        });
+        if (a) chooseOption(a);
+        else if (unifiedSearch && exact) addTag(exact.name);
+        else closeSuggest();
+      }
+      else if (e.key === "Backspace" && field.value === "" && selected.length) { removeTag(selected[selected.length - 1]); }
+      else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (suggest.hidden) openSuggest(true);
+        moveActive(e.key === "ArrowDown" ? 1 : -1);
+      }
+      else if (e.key === "Escape") {
+        // Search inputs otherwise clear their value on Escape in Chrome/Safari.
+        e.preventDefault();
+        closeSuggest();
+      }
+    });
+    box.addEventListener("click", function (e) { if (!e.target.closest("button")) field.focus(); });
     document.addEventListener("click", function (e) { if (!box.contains(e.target)) closeSuggest(); });
+    function clearFilters() {
+      selected = []; selectedType = ""; searchWords = [];
+      field.value = "";
+      if (searchField) searchField.value = "";
+      closeSuggest(); renderTokens(); applyFilter();
+      (searchField || field).focus();
+    }
     if (clearBtn) clearBtn.addEventListener("click", function (e) {
       e.stopPropagation();
-      if (!selected.length) return;
-      selected = [];
-      renderTokens(); applyFilter(); field.focus();
+      clearFilters();
     });
 
     // "Clear filter" button inside the no-results message — wire it to the same clear action
     var filterClearBtn = document.querySelector("[data-filter-clear]");
     if (filterClearBtn) filterClearBtn.addEventListener("click", function (e) {
       e.preventDefault();
-      if (!selected.length) return;
-      selected = [];
-      renderTokens(); applyFilter(); field.focus();
+      clearFilters();
+    });
+
+    if (searchField && searchField !== field) searchField.addEventListener("input", updateSearch);
+    function selectType(type) {
+      selectedType = isType(type) ? type : "";
+      closeSuggest(); applyFilter();
+    }
+    typeButtons.forEach(function (button) {
+      button.addEventListener("click", function () { selectType(button.getAttribute("data-type-filter")); });
+    });
+    Array.prototype.slice.call(feed.querySelectorAll("[data-type-filter]")).forEach(function (link) {
+      link.addEventListener("click", function (e) {
+        e.preventDefault();
+        selectType(link.getAttribute("data-type-filter"));
+        if (!isPanelBrowser) window.scrollTo({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
+      });
     });
 
     // in-card tag chips add to the filter instead of navigating away
@@ -317,21 +577,65 @@
       a.addEventListener("click", function (e) {
         e.preventDefault();
         addTag(a.getAttribute("data-tag"));
-        window.scrollTo({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
+        if (!isPanelBrowser) window.scrollTo({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
       });
     });
 
-    if (countEl) countEl.textContent = cards.length + " " + noun + (cards.length === 1 ? "" : "s");
-
-    // initial selection from ?tag=a,b (e.g. arriving from a single post's tag link)
-    var initial = new URL(window.location).searchParams.get("tag");
+    // Restore shared links and reloads, ignoring unknown tags/types.
+    var params = new URL(window.location).searchParams;
+    var initial = params.get("tag");
     if (initial) {
       initial.split(",").forEach(function (n) {
         n = n.trim();
         if (isTag(n) && selected.indexOf(n) < 0) selected.push(n);
       });
-      if (selected.length) { renderTokens(); applyFilter(); }
     }
+    var initialType = params.get("type");
+    if (typeButtons.length && isType(initialType)) selectedType = initialType;
+    if (searchField) {
+      searchField.value = params.get("q") || "";
+      var query = normalize(searchField.value);
+      searchWords = query ? query.split(/\s+/) : [];
+    }
+    renderTokens(); applyFilter();
+  }
+
+  // The email stays plain text visually; clicking it copies the address.
+  function setupEmailCopy() {
+    var button = document.querySelector("[data-copy-email]");
+    if (!button) return;
+    var status = button.parentElement.querySelector("[role='status']");
+    var timer;
+
+    function report(copied) {
+      clearTimeout(timer);
+      status.textContent = copied ? "Copied" : "Couldn't copy. Select the address to copy it.";
+      timer = setTimeout(function () { status.textContent = ""; }, copied ? 2500 : 6000);
+    }
+
+    function copyFallback(address) {
+      var field = document.createElement("textarea");
+      field.value = address;
+      field.readOnly = true;
+      field.style.position = "fixed";
+      field.style.opacity = "0";
+      document.body.appendChild(field);
+      field.select();
+      var copied = false;
+      try { copied = document.execCommand("copy"); } catch (e) { /* Show manual-copy help. */ }
+      field.remove();
+      button.focus({ preventScroll: true });
+      report(copied);
+    }
+
+    button.addEventListener("click", function () {
+      var address = button.getAttribute("data-copy-email");
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(address).then(function () { report(true); }, function () { copyFallback(address); });
+      } else {
+        copyFallback(address);
+      }
+    });
   }
 
   /* ---------------------------------------------------------------------
@@ -362,6 +666,8 @@
     setupReveal();
     setupScrollspy();
     setupBlogFilter();
+    setupContentBrowser();
+    setupEmailCopy();
     setupHeadingAnchors();
   }
 

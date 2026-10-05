@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Yelp"
+title: "SD: Yelp"
 category: system-design
 date: 2026-06-30
 tags: [Search, Geospatial, Read-Heavy, Real-Time, Advertising, Interview-Prep]

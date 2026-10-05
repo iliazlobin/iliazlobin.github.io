@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "ML System Design: Harmful-Content Detection"
+title: "ML: Harmful-Content Detection"
 category: system-design-ml
 date: 2026-07-16
 tags: [Machine-Learning, Classification, Content-Moderation]

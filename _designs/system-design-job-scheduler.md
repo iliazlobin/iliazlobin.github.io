@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Job Scheduler"
+title: "SD: Job Scheduler"
 category: system-design
 date: 2026-06-29
 tags: [Distributed-Systems, Interview-Prep, Scheduling]

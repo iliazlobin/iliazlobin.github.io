@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Metrics Monitoring"
+title: "SD: Metrics Monitoring"
 category: system-design
 date: 2026-07-08
 tags: [Metrics, Monitoring, Prometheus, Datadog, TSDB]

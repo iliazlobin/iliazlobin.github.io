@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Web Crawler"
+title: "SD: Web Crawler"
 category: system-design
 date: 2026-07-02
 tags: [Distributed-Systems, Write-Heavy, Interview-Prep]
