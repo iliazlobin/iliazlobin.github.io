@@ -3,7 +3,19 @@
   <div class="wrapper">
     {%- assign default_paths = site.pages | map: "path" -%}
     {%- assign page_paths = site.header_pages | default: default_paths -%}
-    <a class="site-title" rel="author" href="{{ "/" | relative_url }}">{{ site.title | escape }}</a>
+    <div class="site-identity">
+      <div class="site-heading">
+        <span class="site-title">{{ site.title | escape }}</span>
+        {%- if site.header_pages contains page.path -%}
+        <div class="site-page-heading">
+          <span class="site-heading-separator" aria-hidden="true">/</span>
+          <h1 class="site-page-title">{{ page.title | escape }}</h1>
+        </div>
+        {%- endif -%}
+      </div>
+      <p class="site-role">Principal Software Engineer · Generalist</p>
+      <p class="site-location">San Francisco Bay Area, CA</p>
+    </div>
 
     {%- if page_paths -%}
       <nav class="site-nav" aria-label="Primary">
@@ -21,7 +33,7 @@
             {%- assign my_page = site.pages | where: "path", path | first -%}
             {%- if my_page.title -%}
             {%- comment -%}Nav shows a short `nav_title` when set (e.g. "Design", "ML"); the page keeps its full `title` for the H1 + SEO.{%- endcomment -%}
-            <a class="page-link" href="{{ my_page.url | relative_url }}">{{ my_page.nav_title | default: my_page.title | escape }}</a>
+            <a class="page-link" href="{{ my_page.url | relative_url }}"{% if my_page.url == page.url %} aria-current="page"{% endif %}>{{ my_page.nav_title | default: my_page.title | escape }}</a>
             {%- endif -%}
           {%- endfor -%}
         </div>

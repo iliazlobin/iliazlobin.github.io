@@ -1,9 +1,9 @@
 ---
 layout: page
-title: System Design
+title: Design
 nav_title: Design
 permalink: /designs/
-description: "System design write-ups by Ilia Zlobin — production-grade architectures with diagrams, data models, deep dives, and trade-offs."
+description: "System, machine-learning, low-level and AI designs by Ilia Zlobin, with diagrams, code and trade-offs."
 ---
 
 <link rel="stylesheet" href="{{ '/assets/css/portfolio.css' | relative_url }}?v={{ site.time | date: '%s' }}">
@@ -14,6 +14,6 @@ description: "System design write-ups by Ilia Zlobin — production-grade archit
   .portfolio-item h3 a:hover { color: var(--accent); }
 </style>
 
-<p class="portfolio-intro">System design write-ups — production-grade architectures, section for section: requirements, back-of-the-envelope estimates, data model, high-level design, and the deep dives. Diagrams and code throughout.</p>
+<p class="portfolio-intro">System architecture, machine learning, low-level design and agentic AI. Explore the requirements, implementation choices and trade-offs, with diagrams and code.</p>
 
-{% include design-list.html category="system-design" prefix="System Design: " label="System Design" %}
+{% include design-list.html categories="system-design,system-design-ml,low-level-design,ai" label="Design" %}

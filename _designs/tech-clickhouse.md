@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: ClickHouse"
+title: "TECH: ClickHouse"
 category: tech
 date: 2026-07-16
 tags: [Deep-Dive, Databases, Analytics, Open-Source]

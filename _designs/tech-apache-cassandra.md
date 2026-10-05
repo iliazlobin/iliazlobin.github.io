@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: Apache Cassandra"
+title: "TECH: Apache Cassandra"
 category: tech
 date: 2026-07-15
 tags: [Deep-Dive, Databases, NoSQL, Distributed-Systems, Open-Source]

@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: Kafka"
+title: "TECH: Kafka"
 category: tech
 date: 2026-07-15
 tags: [Deep-Dive, Messaging, Streaming, Distributed-Systems, Open-Source, Data-Platforms]

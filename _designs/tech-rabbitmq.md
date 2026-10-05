@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: RabbitMQ"
+title: "TECH: RabbitMQ"
 category: tech
 date: 2026-07-15
 tags: [Deep-Dive, Messaging, Queue]

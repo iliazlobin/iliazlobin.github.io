@@ -164,3 +164,25 @@ back to the `## 1` overview) to `images/posts/<file>.svg` via kroki.io and write
   **same** `images/posts/<file>.svg` path. `blog.md` appends a build-time `?v=` to the card URL (same scheme
   as CSS/JS), so each deploy serves a fresh URL — browsers and Cloudflare (`max-age=14400`) can't keep showing
   a stale placeholder. Without that versioning a re-rendered diagram stays invisible for up to 4h behind cache.
+
+## Publication checks
+
+Publish through a task branch and a ready pull request targeting `master`. Require
+Copilot review and passing **Site checks** for the current head before merging;
+merging starts the existing GitHub Pages deployment. Verify the deployed revision
+and live pages before calling a change published.
+
+Run these checks locally before opening the pull request:
+
+```sh
+git diff --check
+node --check assets/js/site.js
+node --test tests/*.test.mjs
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+bundle exec jekyll build
+python3 tests/check_built_site.py _site
+```
+
+The build check covers the five-tab navigation, reviewed article routes, internal
+links/assets, legacy index redirects, and the downloadable résumé. Diagram syntax,
+desktop/mobile layout, and interactive filters also need browser verification.

@@ -45,16 +45,10 @@ header_pages:
   # HIDDEN-COACHING: nav tab temporarily hidden; uncomment to restore.
   # - coaching.md
   - designs.md
-  - machine-learning.md
   - infrastructure.md
-  - tech.md
-  - research.md
-  - agents.md
-  - blog.md
   - index.md
 
-# System-design write-ups live in their own /designs section (separate from the Blog, which is
-# for platform/AI engineering notes and deep dives). Each design is a page at /designs/<slug>/.
+# Design and infrastructure write-ups share one collection with stable article URLs.
 collections:
   designs:
     output: true
@@ -90,6 +84,11 @@ defaults:
 # Excluded items can be processed by explicitly listing the directories or
 # their entries' file path in the `include:` list.
 #
+exclude:
+  - tests
+  - Gemfile
+  - Gemfile.lock
+  - BLOG-AUTHORING.md
 # exclude:
 #   - .sass-cache/
 #   - .jekyll-cache/

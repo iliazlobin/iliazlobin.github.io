@@ -1,0 +1,31 @@
+/* Shared category badges and filters for Portfolio, Resume and design lists. */
+.project-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin-bottom: .6rem;
+}
+.project-meta .yr-badge,
+.project-meta .type-label { margin-bottom: 0; }
+
+.type-filter, .type-label {
+  display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px;
+  padding: .25rem .7rem; font-family: inherit; font-size: .8rem; font-weight: 600;
+  color: var(--ink-soft); background: #fff; text-decoration: none; cursor: pointer;
+}
+.type-filter:hover, .type-filter[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.type-filter:focus-visible, .type-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.type-label { align-self: flex-start; margin-bottom: .7rem; font-size: .72rem; }
+.type-label[data-type-filter="system-design"] { color: #1d4ed8; background: #eff6ff; border-color: #bfdbfe; }
+.type-label[data-type-filter="system-design-ml"] { color: #7e22ce; background: #faf5ff; border-color: #e9d5ff; }
+.type-label[data-type-filter="ml"] { color: #7e22ce; background: #faf5ff; border-color: #e9d5ff; }
+.type-label[data-type-filter="low-level-design"] { color: #0f766e; background: #f0fdfa; border-color: #99f6e4; }
+.type-label[data-type-filter="ai"] { color: #9a3412; background: #fff7ed; border-color: #fed7aa; }
+.type-label[data-type-filter="infra"] { color: #047857; background: #ecfdf5; border-color: #a7f3d0; }
+.type-label[data-type-filter="full-stack"] { color: #1d4ed8; background: #eff6ff; border-color: #bfdbfe; }
+.type-label[data-type-filter="ai-ml"] { color: #7e22ce; background: #faf5ff; border-color: #e9d5ff; }
+.type-label[data-type-filter="research"] { color: #92400e; background: #fffbeb; border-color: #fde68a; }
+.type-label[data-type-filter="tech"] { color: #92400e; background: #fffbeb; border-color: #fde68a; }
+.type-label:hover { text-decoration: underline; }

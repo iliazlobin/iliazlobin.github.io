@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: Hadoop"
+title: "TECH: Hadoop"
 category: tech
 date: 2026-07-15
 tags: [Deep-Dive, Data-Platforms, Distributed-Systems, Distributed-Storage, Open-Source]

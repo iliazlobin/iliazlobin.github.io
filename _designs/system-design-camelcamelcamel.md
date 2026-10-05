@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: CamelCamelCamel"
+title: "SD: CamelCamelCamel"
 category: system-design
 date: 2026-07-01
 tags: [Interview-Prep, Distributed-Systems, Event-Driven, Re-Design]

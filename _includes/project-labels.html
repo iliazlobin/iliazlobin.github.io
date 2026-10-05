@@ -1,0 +1,14 @@
+{%- if include.type %}
+<div class="project-meta">
+  {%- if include.year %}
+  <span class="yr-badge">{{ include.year }}</span>
+  {%- endif %}
+  <a class="type-label" data-type-filter="{{ include.type | escape }}" href="{% if include.filter_page %}{{ include.filter_page | relative_url }}{% endif %}?type={{ include.type | url_encode }}">{{ site.data.project_types[include.type] | escape }}</a>
+</div>
+{%- elsif include.tags %}
+<div class="pc-tags">
+  {%- for tag in include.tags %}
+  <a class="tag" data-tag="{{ tag | escape }}" href="?tag={{ tag | url_encode }}">{{ tag | escape }}</a>
+  {%- endfor %}
+</div>
+{%- endif %}

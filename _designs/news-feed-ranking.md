@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "ML System Design: News Feed Ranking"
+title: "ML: News Feed Ranking"
 category: system-design-ml
 date: 2026-07-09
 tags: [Machine-Learning, Ranking, Recommendation, Personalization]

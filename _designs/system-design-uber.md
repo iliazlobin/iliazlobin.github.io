@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Uber"
+title: "SD: Uber"
 category: system-design
 date: 2026-06-30
 tags: [Ride-Sharing, Real-Time, Geospatial]

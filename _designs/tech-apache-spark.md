@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: Apache Spark"
+title: "TECH: Apache Spark"
 category: tech
 date: 2026-07-15
 tags: [Deep-Dive, Big-Data, Data-Platforms, Open-Source]

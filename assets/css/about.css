@@ -1,0 +1,46 @@
+.about-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 128px;
+  align-items: start;
+  gap: 2rem;
+  max-width: 850px;
+  margin: 1.2rem 0 1.75rem;
+}
+
+.about-lead {
+  margin: 0 0 .8rem;
+  font-size: 1.02rem;
+}
+
+.about-photo {
+  width: 128px;
+  height: 128px;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: var(--shadow);
+}
+
+.about-section {
+  max-width: 850px;
+  margin-top: 1.4rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--line);
+}
+
+.about-section h2 {
+  margin: 0 0 .6rem;
+  font-size: 1.2rem;
+}
+
+.about-section p {
+  margin: 0;
+}
+
+.about-section p + p {
+  margin-top: .8rem;
+}
+
+@media (max-width: 600px) {
+  .about-intro { grid-template-columns: 1fr; gap: 1rem; }
+  .about-photo { grid-row: 1; width: 96px; height: 96px; }
+}

@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Infra: News Feed Multi Cloud"
+title: "INFRA: News Feed Multi Cloud"
 category: infra
 date: 2026-07-17
 tags: [Multi-Cloud, Data-Platform, Redis, MySQL, Kafka, Kubernetes, Terraform, GitOps, Prometheus, CDN]

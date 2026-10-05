@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Infra: Rate Limiter on Kubernetes Bare Metal"
+title: "INFRA: Rate Limiter on Kubernetes Bare Metal"
 category: infra
 date: 2026-07-17
 tags: [Kubernetes, On-Prem, Compute, Redis, GitOps, Prometheus, Nginx, Grafana, Helm, Loki]

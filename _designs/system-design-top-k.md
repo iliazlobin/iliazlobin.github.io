@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Top-K"
+title: "SD: Top-K"
 category: system-design
 date: 2026-06-30
 tags: [Real-Time, Write-Heavy, Streaming, Data-Structures]

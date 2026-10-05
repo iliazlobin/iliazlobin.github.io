@@ -1,8 +1,9 @@
 ---
 layout: page
-title: Infra
+title: Infrastructure
+nav_title: Infra
 permalink: /infrastructure/
-description: "Infrastructure & platform write-ups by Ilia Zlobin — the last mile to get projects and experiments running: on-prem and AWS/GCP/Azure, DevOps/MLOps, CI/CD, deployment, SRE, and observability."
+description: "Infrastructure and technology deep dives by Ilia Zlobin: cloud platforms, databases, messaging, deployment and observability."
 ---
 
 <link rel="stylesheet" href="{{ '/assets/css/portfolio.css' | relative_url }}?v={{ site.time | date: '%s' }}">
@@ -13,6 +14,6 @@ description: "Infrastructure & platform write-ups by Ilia Zlobin — the last mi
   .portfolio-item h3 a:hover { color: var(--accent); }
 </style>
 
-<p class="portfolio-intro">Infrastructure &amp; platform write-ups — the last mile to get projects and experiments actually running: on-prem and AWS/GCP/Azure, DevOps and MLOps, CI/CD, deployment, SRE, and observability. Diagrams and code throughout.</p>
+<p class="portfolio-intro">Cloud platforms and the technologies behind them: databases, messaging, orchestration, deployment and observability. Diagrams and code throughout.</p>
 
-{% include design-list.html category="infra" prefix="Infra: " label="Infra" %}
+{% include design-list.html categories="infra,tech" label="Infrastructure" %}

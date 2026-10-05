@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: etcd"
+title: "TECH: etcd"
 category: tech
 date: 2026-07-16
 tags: [Deep-Dive, Distributed-Systems, Infrastructure]

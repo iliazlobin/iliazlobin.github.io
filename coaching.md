@@ -129,9 +129,7 @@ Every round has a stated subject and an unstated one. The stated subject is the 
 
 The design corpus on this site is written to the same bar I coach to — free to read, with or without a session:
 
-- [**System design**](/designs/) — 34 full design documents, all written to one method.
-- [**ML system design**](/machine-learning/) — 12 documents, from framing and metrics through serving.
-- [**Infrastructure**](/infrastructure/) — 6 end-to-end builds on AWS, GCP, and bare-metal Kubernetes.
-- [**Tech deep dives**](/tech/) — 17 studies of the systems those designs are built on.
+- [**Design**](/designs/) — system and machine-learning architectures, from requirements through evaluation.
+- [**Infrastructure**](/infrastructure/) — cloud platforms and technology deep dives into databases, messaging and orchestration.
 
 </div>

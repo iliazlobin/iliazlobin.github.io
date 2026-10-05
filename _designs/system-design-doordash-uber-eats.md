@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: DoorDash / Uber Eats"
+title: "SD: DoorDash / Uber Eats"
 category: system-design
 date: 2026-07-08
 tags: [Distributed-Systems, Geospatial, Real-Time, Event-Driven, Recommendation, Kafka, Food-Delivery]

@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "ML System Design: Autocomplete / Query Suggestion"
+title: "ML: Autocomplete / Query Suggestion"
 category: system-design-ml
 date: 2026-07-09
 tags: [Machine-Learning, Retrieval, Search, NLP]

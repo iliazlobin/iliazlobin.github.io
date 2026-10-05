@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Instagram"
+title: "SD: Instagram"
 category: system-design
 date: 2026-07-02
 tags: [Social-Media, Read-Heavy, Media, Interview-Prep]

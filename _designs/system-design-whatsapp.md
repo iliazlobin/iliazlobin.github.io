@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: WhatsApp"
+title: "SD: WhatsApp"
 category: system-design
 date: 2026-06-30
 tags: [Distributed-Systems, Real-Time, Event-Driven, Write-Heavy]

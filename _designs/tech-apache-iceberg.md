@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: Apache Iceberg"
+title: "TECH: Apache Iceberg"
 category: tech
 date: 2026-07-15
 tags: [Deep-Dive, Data-Platforms, Open-Source, Databases, Lakehouse]

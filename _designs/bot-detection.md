@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "ML System Design: Bot Detection"
+title: "ML: Bot Detection"
 category: system-design-ml
 date: 2026-07-08
 tags: [Machine-Learning, Bot-Detection, Classification]

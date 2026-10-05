@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: TikTok/Reels"
+title: "SD: TikTok/Reels"
 category: system-design
 date: 2026-07-02
 tags: [Interview-Prep, Distributed-Systems, Video, Real-Time, Recommendation, Machine-Learning, Streaming]

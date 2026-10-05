@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Tech: Prometheus / Grafana"
+title: "TECH: Prometheus / Grafana"
 category: tech
 date: 2026-07-16
 tags: [Deep-Dive, Observability, Monitoring]

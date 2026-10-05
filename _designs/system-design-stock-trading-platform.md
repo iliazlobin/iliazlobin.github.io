@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "System Design: Stock Trading Platform"
+title: "SD: Stock Trading Platform"
 category: system-design
 date: 2026-07-02
 tags: [Interview-Prep, Distributed-Systems, Fintech, Real-Time]
