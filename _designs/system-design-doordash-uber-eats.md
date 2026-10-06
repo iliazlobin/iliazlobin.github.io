@@ -4,424 +4,298 @@ title: "SD: DoorDash / Uber Eats"
 category: system-design
 date: 2026-07-08
 tags: [Distributed-Systems, Geospatial, Real-Time, Event-Driven, Recommendation, Kafka, Food-Delivery]
-description: "DoorDash and Uber Eats operate a three-sided marketplace: customers order food from restaurants and a driver picks it up and delivers it."
 thumbnail: /images/posts/system-design-doordash-uber-eats.svg
+last_modified_at: 2026-10-06
+description: "Design of a food-delivery marketplace covering restaurant discovery, checkout, driver assignment and live order tracking."
+notion_source: https://app.notion.com/p/396d865005a8812d96bdd73abd3ee5b4
 ---
 
-DoorDash and Uber Eats operate a three-sided marketplace: customers order food from restaurants and a driver picks it up and delivers it.
+Design of a food-delivery marketplace covering restaurant discovery, checkout, driver assignment and live order tracking.
 
 <!--more-->
-## 1. Problem
 
-DoorDash and Uber Eats operate a three-sided marketplace: customers order food from restaurants and a driver picks it up and delivers it. Each side runs on its own clock — a customer expects their burrito in 35 minutes, a restaurant needs 12 minutes to cook it, and a driver is 6 blocks away finishing another drop-off. The system must coordinate these three timelines in real time across millions of concurrent participants, and it must never lose an order mid-flight, because a customer whose dinner vanishes from the app doesn't call support — they open a competitor.
+## Problem
+
+A user chooses a restaurant, places an order and expects the food to arrive within the promised time. The restaurant needs a clear preparation request, while a driver needs a feasible pickup and delivery route.
+
+These activities overlap. A restaurant may finish cooking before a driver arrives, several orders may compete for the same driver, and mobile location updates can arrive late. The system keeps the order state durable and coordinates dispatch using current availability and estimated travel times.
+
+## Requirements
+
+### Functional requirements
+
+- **Find restaurants:** search nearby open restaurants, view menus and receive personalized recommendations.
+- **Place an order:** confirm items, prices and delivery address; authorize payment and send the order to the restaurant.
+- **Assign a driver:** offer deliveries to eligible drivers and confirm one assignment per order.
+- **Track delivery:** show order progress, driver location and an updated arrival estimate.
+- **Plan routes:** combine compatible deliveries while respecting pickup-before-drop-off and delivery deadlines.
+- **Handle cancellations:** update the order, payment and delivery assignment consistently.
+
+### Non-functional requirements
+
+Design targets:
+
+- **Scale:** 2.5B orders/year, about 400 order creations/s at peak; 2M active drivers reporting location every five seconds.
+- **Availability:** 99.95% for checkout and order tracking.
+- **Durability:** every acknowledged order remains recoverable; retries preserve the original order and payment attempt.
+- **Freshness:** accepted GPS updates appear in tracking within three seconds at p99; show the last update time.
+- **Dispatch:** target assignment within 30 seconds when suitable drivers are available.
+- **Security:** authorize access by order role and retain precise locations only for their defined operational purpose.
+
+Grocery substitutions and long-distance shipping are outside this design.
+
+## Back-of-the-envelope calculations
+
+- **Orders:** 2.5B / 31.5M seconds ≈ 79/s average; a 5× burst gives about 400/s.
+- **Location updates:** 2M / 5 seconds = 400K updates/s. At 100 bytes/update, payload ingestion is about 40MB/s before protocol and replication overhead.
+- **Current locations:** 2M × 200 bytes ≈ 400MB of logical position records, plus geospatial indexes and Redis overhead.
+- **Tracking fan-out:** accepted update rate × active viewers per order. Count connections and bytes separately from location ingestion.
+
+Order transactions and location updates have very different workloads, so they use separate storage and scaling paths.
+
+## Core entities
+
+- **Order:** the purchased items, price snapshot, delivery address and current lifecycle state.
+- **Restaurant:** menu, service area, opening state and preparation-time signals.
+- **Driver:** availability, current position and accepted delivery work.
+- **Assignment:** the confirmed relationship between an order and a driver.
+
+```protobuf
+message Order {
+  string order_id;
+  string user_id;
+  string restaurant_id;
+  repeated OrderItem items;
+  int64 total_minor_units;          // Currency stored separately
+  string delivery_address;
+  string status;                   // Accepted, preparing, picked_up, delivered, cancelled
+  string assignment_id;
+  Timestamp created_at;
+  int64 version;                   // Preconditions for state transitions
+}
+
+message OrderItem {
+  string menu_item_id;
+  int32 quantity;
+  int64 unit_price_minor_units;     // Checkout snapshot
+}
+
+message DriverPosition {
+  string driver_id;
+  double latitude;
+  double longitude;
+  Timestamp observed_at;
+  int64 sequence;                   // Reject older position updates
+  string availability;
+}
+
+message Assignment {
+  string assignment_id;
+  string order_id;
+  string driver_id;
+  string status;                   // Offered, accepted, expired, completed
+  Timestamp offer_expires_at;
+}
+```
+
+Payment details remain with the payment provider; orders store provider references rather than card data.
+
+## API
+
+```yaml
+GET /v1/restaurants:
+  query: {latitude: number, longitude: number, cuisine: string, cursor: string}
+  response: {restaurants: array, next_cursor: string}
+
+POST /v1/orders:
+  headers: {Idempotency-Key: checkout-attempt}
+  body: {restaurant_id: string, items: array, address_id: string, payment_token: string}
+  response: {order_id: string, status: string, estimated_arrival: timestamp}
+
+POST /v1/assignments/{assignment_id}/accept:
+  body: {driver_id: string, offer_version: integer}
+  response: {order_id: string, route: array}
+  errors: [409 offer_expired_or_already_assigned]
+
+POST /v1/drivers/me/positions:
+  body: {latitude: number, longitude: number, observed_at: timestamp, sequence: integer}
+
+GET /v1/orders/{order_id}:
+  response: {status: string, driver_position: object, position_updated_at: timestamp, eta: timestamp}
+
+WebSocket /v1/orders/{order_id}/tracking:
+  events: [order_status, driver_position, eta_update]
+```
+
+## High-level design
+
+Checkout commits the order and its outgoing event together. Dispatch consumes accepted orders and current driver availability. Tracking combines durable order changes with recent positions.
 
 ```mermaid
-graph LR
-    Customer["Customer App"] -->|<br/>search, order, track| API["API Gateway"]
-    Driver["Driver App"] -->|<br/>accept, navigate, update| API
-    API --> Core["Core Services<br/>checkout, dispatch,<br/>tracking, search"]
-    Core --> Stores["Data Stores<br/>orders, driver locations,<br/>restaurant catalog"]
-
-    classDef client fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
-    classDef infra fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a
-    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
-    class Customer,Driver client
-    class API,Core infra
-    class Stores store
-
+flowchart TB
+    U["User"] --> C["Catalog and checkout"]
+    C --> O[("Order database")]
+    O --> E["Outbox and event log"]
+    E --> D["Dispatch and routing"]
+    P["Driver app"] --> L[("Current locations")]
+    L --> D
+    D --> A["Driver offer and acceptance"]
+    E --> T["Tracking and ETA"]
+    L --> T
+    T --> V["User tracking view"]
 ```
 
-## 2. Requirements
+## Storage
 
-**Functional**
+- **PostgreSQL:** orders, price snapshots, idempotency records and assignments need transactions, unique constraints and conditional state changes. An order update and its outbox row commit in the same transaction. Partition historical orders as retention grows; 400 creates/s alone is not a reason to discard transactional storage.
+- **PostgreSQL with PostGIS:** restaurant coordinates and service areas support indexed distance and containment queries. [ST_DWithin](https://postgis.net/docs/ST_DWithin.html) accepts meters for geography values and can use a spatial index.
+- **Redis:** recent driver positions and city-level geospatial indexes support frequent updates and nearby-driver queries. [GEOSEARCH](https://redis.io/docs/latest/commands/geosearch/) finds candidates within a radius; application-level freshness checks exclude stale positions. A cleanup job removes expired members from the geo index.
+- **Kafka:** durable order and location events support dispatch, tracking and feature updates. Order IDs provide ordering for order changes; driver IDs provide ordering for position streams.
+- **Object storage and analytical tables:** retained events and delivery outcomes support offline ETA training and operational analysis with restricted location access.
 
-- FR1: Search restaurants and browse menus by location, cuisine, and rating
-- FR2: Place an order with items, payment, and delivery address
-- FR3: Receive dispatch offers and accept or decline in real time
-- FR4: Track driver location and order status from placement through delivery
-- FR5: Follow an optimized multi-stop route to restaurant and customer
-- FR6: Receive personalized restaurant recommendations
+A tracking connection reads a current snapshot after reconnecting. Redis pub/sub updates improve responsiveness; durable order state provides recovery.
 
-**Non-functional**
+## From request to response
 
-- NFR1: Order placement reliability >99.99% — no silently lost orders
-- NFR2: Driver position to customer display latency under 3 seconds
-- NFR3: Dispatch assigns a driver within 30 seconds of order placement
-- NFR4: 99.95% availability; degrade gracefully under 5× normal peak
+### Finding a restaurant
 
-**Out of scope:** restaurant onboarding and menu management, payment processing details, delivery insurance, customer support, driver background checks.
+The catalog service searches within the delivery area, filters closed or unavailable restaurants and returns menus and availability. A ranker orders eligible restaurants using user preferences, expected arrival time and current service capacity.
 
-## 3. Back of the envelope
+Cache restaurant details separately from availability. A cached menu improves browsing latency, while checkout revalidates item availability and prices.
 
-- **Order peak QPS:** 2.5B orders/year ÷ 31.5M seconds × 5 (peak-to-average) ≈ **400 orders/s** → far exceeds single-DB write throughput; the checkout write path is the bottleneck.
-- **Tracking write volume:** 2M concurrent drivers × 1 position update/5s ≈ **400K writes/s** → two orders of magnitude above single-shard write capacity.
-- **Order storage:** 2.5B orders × 10 KB ≈ **25 TB/year** → modest; the write path, not storage, constrains the design.
+### Placing an order
 
-## 4. Entities
+The checkout service validates the cart and address, reserves an idempotency key and creates a pending order. It authorizes payment through the provider with a stable payment-attempt ID, then records the accepted order and restaurant-notification event.
 
-```sql
-Customer {
-  id:              uuid        PK
-  name:            string
-  email:           string
-  addresses:       jsonb       ← [{"label":"Home","lat":...,"lng":...}]
-  payment_methods: jsonb       ← tokenized; never raw card numbers
-  created_at:      timestamp
-}
+If authorization succeeds but the response is lost, reconciliation checks the same provider reference before retrying. Restaurant rejection or cancellation triggers a recorded compensation, such as releasing an authorization. Workers retry each step using the order and event IDs.
 
-Restaurant {
-  id:              uuid        PK
-  name:            string
-  location:        geo_point   ← lat/lng for spatial proximity queries
-  cuisine:         string[]
-  status:          enum        ← active, busy, closed, offline
-  prep_time_avg:   smallint    ← minutes; denormalized for dispatch scoring
-  rating:          decimal(2,1)
-}
+### Assigning a driver
 
-Order {
-  id:              uuid        PK
-  customer_id:     uuid        FK
-  restaurant_id:   uuid        FK
-  driver_id:       uuid?       ← populated when dispatch succeeds
-  status:          enum        ← created, preparing, ready, picked_up, delivered
-  items:           jsonb       ← snapshot of name, qty, price at order time
-  total:           decimal(8,2)
-  delivery_address: jsonb      ← snapshot; survives customer address changes
-  promised_by:     timestamp   ← ETA shown to customer
-  created_at:      timestamp
-}
+Dispatch searches nearby available drivers, rejects stale positions and scores feasible order/driver pairs. The service sends a time-limited offer. Acceptance commits only while the offer is current and the order and driver remain eligible.
 
-Driver {
-  id:              uuid        PK
-  name:            string
-  status:          enum        ← offline, idle, on_delivery
-  rating:          decimal(2,1)
-}
+Competing acceptances use database preconditions and uniqueness constraints. One assignment succeeds; another request receives a conflict and refreshed availability. A driver can carry multiple orders only when the accepted route satisfies capacity and deadline rules.
 
-DriverPosition {
-  driver_id:       uuid        PK
-  location:        geo_point   ← current lat/lng
-  bearing:         smallint    ← heading in degrees
-  speed:           decimal(4,1) ← mph
-  updated_at:      timestamp   ← TTL: 30s; stale drivers drop from search
-}
+### Tracking a delivery
 
-```
+The driver app reports timestamped positions. Ingestion accepts newer sequence numbers, updates the current-position store and publishes an update to the order's tracking channel. The user receives the position, freshness timestamp and revised ETA.
 
-**API**
+Five-second reporting already limits how current the map can be. The three-second target covers processing after an update reaches the service. During a mobile disconnect, the map shows the last known position and its age.
 
-- `GET /restaurants?lat=&lng=&radius=&cuisine=` — search nearby restaurants
-- `GET /restaurants/{id}/menu` — browse menu items with prices and availability
-- `POST /orders` — place an order, returns order_id and initial ETA
-- `GET /orders/{id}` — get full order status, driver ETA, and latest position
-- `WS wss://tracking.example.com/{order_id}` — real-time driver position stream
-- `POST /dispatch/offers/{id}/accept` — driver accepts a dispatch offer
+### Planning a combined route
 
-## 5. High-Level Design
+The router evaluates inserting a pickup and drop-off into an existing route. It preserves pickup-before-delivery, capacity and each order's promised arrival window. It returns the best feasible route within a bounded compute deadline.
 
-The system splits into two lanes: a request/response lane for search, ordering, and status (low throughput, transactional), and a streaming lane for driver positions and dispatch offers (high throughput, latency-sensitive). A shared geo-index powers the spatial queries that both lanes depend on.
+Checking every possible route becomes expensive as orders accumulate. Candidate pruning and bounded optimization are covered below.
+
+## Deep dives
+
+### How do we assign drivers without delaying other orders?
+
+Independent nearest-driver decisions can assign a scarce driver to an easy order while leaving another order with no feasible pickup.
+
+- **Nearest available driver:** fast and easy to explain; ignores preparation time, existing routes and competing orders.
+- **Score each pair greedily:** incorporates travel and readiness estimates, but still optimizes one decision at a time.
+- **Bounded batch optimization — recommended:** compare a small city's recent orders and eligible drivers together, with a greedy fallback for the compute deadline.
+
+Use a short dispatch interval, prune distant pairs and estimate pickup time, lateness risk and added route distance. The optimizer selects compatible assignments subject to driver capacity and offer state. Offers become final only through the assignment transaction.
+
+[DoorDash's dispatch design](https://careersatdoordash.com/blog/using-ml-and-optimization-to-solve-doordashs-dispatch-problem/) combines prediction and optimization. This proposal uses the same separation: models estimate outcomes; an optimizer selects feasible assignments.
+
+If the optimizer times out, use its best feasible result or the greedy fallback. Re-run expired offers with refreshed driver state.
+
+**One dispatch batch from candidates to accepted work**
+
+Build a bipartite graph: recent unassigned orders on one side, eligible drivers on the other. First prune by service area, stale location, driver capacity and whether pickup/delivery windows can still be met. Compute route/restaurant-readiness estimates only for surviving edges.
+
+An edge cost combines expected pickup wait, delivery lateness and added travel under explicit weights. The optimizer chooses a feasible set of edges before its deadline. Model predictions supply costs; assignment constraints supply correctness.
 
 ```mermaid
-graph TD
-    Cust["Customer App"] -->|search, order| GW["API Gateway"]
-    Driver["Driver App"] -->|position heartbeat,<br/>accept/reject| GW
-    GW --> Search["Search Service"]
-    GW --> Checkout["Checkout Service"]
-    GW --> Track["Tracking Service"]
-    GW --> Dispatch["Dispatch Service"]
-    Search --> PG["Restaurant DB<br/>(PostGIS)"]
-    Checkout --> Kafka["Kafka<br/>order events"]
-    Checkout --> OrderDB["Order DB<br/>(Cassandra)"]
-    Track --> Redis["Driver Location<br/>(Redis GEO)"]
-    Track --> Push["Push Gateway"]
-    Dispatch --> Redis
-    Dispatch --> Kafka
-    Kafka --> Dispatch
-
-    classDef client fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
-    classDef svc fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a
-    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
-    classDef mq fill:#e8daef,stroke:#8e44ad,color:#1a1a1a
-    class Cust,Driver client
-    class Search,Checkout,Track,Dispatch,GW,Push svc
-    class PG,OrderDB,Redis store
-    class Kafka mq
-
+flowchart TB
+    O["Recent orders"] --> C["Pruned order-driver pairs"]
+    D["Fresh eligible drivers"] --> C
+    C --> E["Route and readiness estimates"]
+    E --> M["Bounded matching optimization"]
+    M --> T["Transactional offers<br>order and driver versions"]
+    T --> A["Driver acceptance"]
 ```
 
-#### FR1: Search restaurants and browse menus
+Suppose driver A can serve orders X or Y, while driver B can serve only X. Greedily giving X to A strands Y; selecting B-X and A-Y serves both. This is why pair scoring alone is not the final decision.
 
-- **Components:** Search Service, Restaurant DB (PostGIS).
+Persist offers with expiry and expected order/driver versions. Acceptance conditionally claims the actual assignment; stale optimizer output is rejected and the order re-enters dispatch. Optimizer timeout returns its best feasible solution or the bounded greedy fallback, never a partially committed set of conflicting assignments.
 
-**Flow:**
+### How do we search fresh driver positions at high write rates?
 
-1. Customer opens app; client sends `GET /restaurants?lat=37.77&lng=-122.42&radius=3`.
-1. Search Service queries PostGIS: `SELECT *, ST_Distance(location, ST_MakePoint(lng, lat)) AS dist FROM restaurants WHERE status = 'active' AND ST_DWithin(location, ST_MakePoint(lng, lat), radius * 1609.34) ORDER BY dist LIMIT 50`.
-1. Results return with name, cuisine, rating, prep time estimate, and delivery fee.
-1. Tapping a restaurant triggers `GET /restaurants/{id}/menu` — served from a read replica, cached in Redis with a 5-minute TTL since menu changes are infrequent.
+Putting every GPS update in the order database would add a large write workload unrelated to checkout.
 
-**Design consideration:** PostGIS spatial indexes (GiST on the location column) make bounding-box queries constant-time for the restaurant catalog. With ~600K restaurants, a single read replica handles search comfortably. The hot path is the real-time driver location index, not the restaurant catalog — that lives in Redis GEO (see DD1) because it updates 400K times per second.
+- **Relational location history:** durable and queryable, but expensive for the live update path.
+- **One global in-memory geo index:** simple, with concentrated traffic and large queries.
+- **Regional geo indexes — recommended:** partition by city or geographic cell and query neighboring partitions near boundaries.
 
-#### FR2: Place an order
+Keep coordinates, observation time and sequence together. The geospatial index provides candidates; the position record provides the freshness check. An expired driver record must also be removed from the geo index because a geo member has no independent key TTL.
 
-- **Components:** Checkout Service, Order DB (Cassandra), Kafka.
+Redis loss temporarily reduces dispatch coverage. Rebuild from fresh driver heartbeats and retained recent events; accepted assignments remain in PostgreSQL.
 
-**Flow:**
+**Publish a location safely to the candidate index**
 
-1. Customer submits cart + payment method + delivery address via `POST /orders`.
-1. Checkout Service validates: restaurant is open and accepting orders, payment method is valid, delivery address is within range.
-1. Checkout writes the order to Cassandra with status `created`, keyed by `order_id`.
-1. On successful write, Checkout publishes an `OrderCreated` event to Kafka and returns `order_id` + initial ETA to the client.
-1. The Kafka event triggers the Dispatch Service to begin driver matching.
+The driver stream carries a monotonic session epoch and sequence alongside coordinates and observation time. Ignore older updates after a new session takes ownership. Route by city/cell; update the location record and its geo membership using a shard-local atomic operation where colocated.
 
-**Design consideration:** The checkout is the one write that must never be lost. The old Python/Django monolith had no proper transaction boundaries — orders could vanish between steps. The current design uses a single Cassandra write as the atomic commit point: if that write succeeds, the order exists. If it fails, the client retries with an idempotency key. Kafka publication is fire-and-forget — the order is durable in Cassandra regardless of whether the event publishes on the first attempt.
+A radius query returns possible drivers, then the dispatch service reads their records and rejects stale or unavailable entries. Near a partition boundary, query neighboring cells and deduplicate driver IDs. Straight-line distance is a shortlist signal; road-network travel time determines the final cost.
 
-#### FR3: Dispatch offers to drivers
-
-- **Components:** Dispatch Service, Driver Location store (Redis GEO), Kafka.
-
-**Flow:**
-
-1. Dispatch Service consumes `OrderCreated` events from Kafka.
-1. Queries Redis GEO for idle drivers within a 3-mile radius of the restaurant: `GEORADIUS driver:locations <lng> <lat> 3 mi ASC`.
-1. Scores each candidate: prep time match, driver proximity, acceptance likelihood (see DD3).
-1. Solves the assignment as an optimization problem.
-1. Pushes an `Offer` to the top-ranked driver's WebSocket connection with order summary and payout.
-1. If driver accepts within 30 seconds, Dispatch writes the driver assignment to Cassandra. If declined or timed out, Dispatch re-runs with the next-ranked driver.
-
-**Design consideration:** Dispatch is a latency budget of ~30 seconds per order. Batch processing — grouping orders that arrive within a 5-second window — improves match quality because the optimizer can consider batching (one driver picks up two orders from the same restaurant). The trade-off is that batching adds up to 5 seconds of deliberate delay to the first order in the window, which is acceptable because the restaurant hasn't started cooking yet.
-
-#### FR4: Track driver location and order status
-
-- **Components:** Tracking Service, Driver Location store, Push Gateway.
-
-**Flow:**
-
-1. Driver app sends a position heartbeat every 5 seconds.
-1. Tracking Service writes to Redis GEO and simultaneously updates the driver's in-memory position for active subscribers.
-1. Customer app connects via `WS wss://tracking.example.com/{order_id}`. The Tracking Service resolves the order to its assigned driver, subscribes to that driver's position channel, and begins forwarding updates.
-1. When the driver marks the order as picked up, the Tracking Service updates order status in Cassandra and pushes a status-change event over the WebSocket.
-1. Positions are stored with a 35-second TTL in Redis — if a driver's app crashes, their position disappears and the Dispatch Service stops offering them orders.
-
-**Design consideration:** Customer-facing position updates don't need the full 5-second resolution. The Tracking Service throttles WebSocket pushes to one update per 3 seconds, applying dead-reckoning between samples: the receiver interpolates the driver's current position from the last known location, bearing, and speed.
-
-#### FR5: Multi-stop routing
-
-- **Components:** Routing Engine (embedded in Dispatch), third-party map provider.
-
-**Flow:**
-
-1. When a driver accepts an offer, the Routing Engine requests a route: driver's current location → restaurant → customer.
-1. For batched orders, the route includes two restaurants and two customers, sequenced to minimize total drive time.
-1. The Routing Engine solves this as a traveling-salesman variant using ruin-and-recreate.
-1. Turn-by-turn directions stream to the driver's navigation app.
-
-**Design consideration:** The routing problem is NP-hard, but at per-order scale (2–4 stops), ruin-and-recreate converges in under a second. The Routing Engine runs multithreaded: large drive-only orders (10+ stops) are split into chunks solved concurrently.
-
-#### FR6: Personalized recommendations
-
-- **Components:** Recommendation Service, Feature Store (Redis), ML Model Serving.
-
-**Flow:**
-
-1. On app open, the client requests `GET /recommendations?lat=&lng=`.
-1. Recommendation Service fetches user features and restaurant features from the Feature Store.
-1. A graph neural network model scores candidate restaurants.
-1. Results are ranked and filtered to the customer's delivery radius, then returned.
-
-**Design consideration:** Recommendations are pre-computed in batch for most users and served from a cache. Real-time inference runs only for active-session users, keeping inference QPS manageable.
-
-## 6. Deep dives
-
-### DD1: Geo-indexing for nearby search
-
-**Problem.** Two different spatial queries with opposing requirements: the restaurant catalog is ~600K records, slowly changing, queried at ~50K QPS; driver locations are ~2M records, updating at 400K writes/s, queried at ~400 QPS. One index cannot serve both.
-
-**Approach 1: Single relational geo-index for both**
-
-Store both restaurants and driver locations in PostGIS with GiST indexes, updating driver positions as SQL UPDATEs.
-
-- **Pro:** Simple — one technology, one operational surface.
-- **Con:** 400K row updates per second on a relational table is a heavy write load even with partitioning. Vacuum and index maintenance become a full-time job. The dispatch query contends with 400K writes/s for the same index pages.
-
-**Approach 2: Redis GEO for drivers, PostGIS for restaurants**
-
-Driver positions live entirely in Redis as `GEOADD driver:locations <lng> <lat> <driver_id>`. Restaurants stay in PostGIS. Dispatch queries Redis with `GEORADIUS`, which computes distance on sorted-set lookups.
-
-- **Pro:** Redis GEO is an in-memory sorted set; `GEORADIUS` with a 3-mile radius resolves in under a millisecond. Writes are single `GEOADD` commands with no locking overhead. The restaurant catalog stays in PostGIS where rich filtering is natural.
-- **Con:** Two geo subsystems to operate. Driver position data is ephemeral — if Redis restarts without persistence, all positions are lost until the next heartbeat cycle.
-
-**Approach 3: S2 cell hierarchy for both**
-
-Encode every lat/lng into an S2 cell ID at multiple resolution levels. Store both datasets in a key-value store keyed by S2 cell.
-
-- **Pro:** Uniform interface. S2 cells tessellate the sphere evenly. Cell-based prefix scans in any ordered KV store are fast.
-- **Con:** Operational overhead of maintaining the cell hierarchy. Redis GEO already implements this internally with 52-bit Geohash.
-
-**Decision:** Approach 2 — Redis GEO for the hot driver location path, PostGIS for the restaurant catalog.
-
-**Rationale:** The driver location workload is the hard problem. 400K writes/s on a relational table creates a noisy-neighbor problem where the dispatch SELECT and the tracking UPDATE contend for the same index pages. Separating them into an in-memory geo-index for the write-heavy dataset and a disk-backed spatial index for the read-heavy dataset means each gets the storage engine that matches its access pattern. The same split is used in production delivery systems — a fast ephemeral index for active drivers and a durable catalog for places.
-
-**Edge cases:**
-
-- **Redis failure recovery:** A Redis node crash loses all driver positions in that shard. Drivers heartbeat every 5 seconds, so positions repopulate within one heartbeat cycle. During the gap, Dispatch excludes drivers in the affected shard from candidate generation.
-- **Geo-fencing at city boundaries:** A driver 3.1 miles away in a neighboring city won't appear in a 3-mile radius query. Dispatch widens the radius in 0.5-mile increments if the initial query returns fewer than 5 candidates, up to a 10-mile cap.
-- **Dense urban areas:** A 3-mile radius in Manhattan returns hundreds of idle drivers. `GEORADIUS` with `COUNT 50` limits results, and the ML scoring layer filters further.
-
-> [!TIP]
-> Redis GEO uses a 52-bit Geohash internally — the same algorithm as S2 but implemented as a ZSET. The sorted-set skiplist gives O(log N) range queries with no spatial index build step. A single `GEOADD` is just a `ZADD` under the hood, which is why it handles 400K writes/s on modest hardware.
-
-### DD2: Real-time tracking pipeline
-
-**Problem.** 2 million drivers each send a position update every 5 seconds. That is 400,000 writes per second. For a customer watching their driver approach, the system must turn those writes into a visual position on a map with under 3 seconds of end-to-end latency.
-
-**Approach 1: Polling from the client**
-
-Customer app calls `GET /orders/{id}/position` on a 2-second interval.
-
-- **Pro:** Simple REST endpoint. No persistent connection state.
-- **Con:** Read amplification. At 2M active deliveries, 1M polling customers generate 500K QPS of position reads. Wastes bandwidth on unchanged positions.
-
-**Approach 2: WebSocket push per order**
-
-Customer opens a WebSocket. The Tracking Service subscribes to the assigned driver's position channel.
-
-- **Pro:** Push model eliminates polling reads. Latency drops to one hop.
-- **Con:** Connection state per watcher. At 2M concurrent watchers, the Tracking Service holds 2M open WebSocket connections. A single driver with 3 watchers triggers 3 pushes per heartbeat.
-
-**Approach 3: Pub/sub with dead-reckoning and throttling**
-
-The Tracking Service maintains a pub/sub channel per driver. Customers subscribe via their WebSocket. On each driver heartbeat, the server pushes to all subscribers — but throttles to one push per 3 seconds regardless of heartbeat frequency. Between pushes, the customer app runs dead-reckoning: it animates the marker from the last known position toward the last known bearing at the last known speed.
-
-- **Pro:** Throttling caps per-driver push rate at 20/min regardless of subscribers. Dead-reckoning makes 3-second updates feel continuous.
-- **Con:** Dead-reckoning errors accumulate if a driver turns. At city speeds (25 mph), the maximum error between updates is ~110 feet — visually acceptable on a phone map.
-
-**Decision:** Approach 3 — WebSocket pub/sub with throttled push and client-side dead-reckoning.
-
-**Rationale:** Polling is a non-starter at this scale. Straight WebSocket push without throttling burns server CPU on redundant pushes (a driver at a red light sends 12 identical heartbeats per minute). Throttling cuts push volume by 60% with no perceptible quality loss because dead-reckoning fills the gaps.
-
-**Edge cases:**
-
-- **Driver enters a tunnel:** Heartbeats stop. After 30 seconds without a heartbeat, the server pushes a "location unavailable" status.
-- **Driver switches apps mid-delivery:** Same tunnel behavior. The dispatch system sees the driver disappear from Redis GEO and stops offering new orders while preserving the current assignment.
-- **WebSocket reconnection:** The customer switches from Wi-Fi to cellular. The client reconnects and re-subscribes. The server replays the most recent position immediately.
-
-```mermaid
-sequenceDiagram
-    participant Driver as Driver App
-    participant Redis as Driver Location<br/>(Redis)
-    participant Track as Tracking Service
-    participant Customer as Customer App
-
-    Driver->>Redis: GEOADD + SET (every 5s, TTL 35s)
-    Note over Track: subscribed to driver:1234:track
-    loop every heartbeat
-        Track->>Redis: SUBSCRIBE driver:1234:track
-        Redis-->>Track: position update
-        Track->>Track: apply throttle (1 push / 3s max)
-    end
-    Track->>Customer: push {lat, lng, bearing, speed}
-    Note over Customer: dead-reckon between pushes
-
+```text
+GPS update → epoch/sequence check → regional geo index
+Nearby IDs → freshness/availability check → road ETA shortlist
 ```
 
+Moving across cells removes the old membership with a version guard so a late removal cannot erase the new one. Cleanup removes expired members from the geo set; key TTL on a separate record does not do that automatically. Rebuild after Redis loss from fresh heartbeats/recent retained events and throttle dispatch while coverage recovers.
 
-> [!NOTE]
-> Dead-reckoning quality depends on a bearing field. A driver heading north at 30 mph on a straight avenue looks smooth. A driver zigzagging through a parking lot does not — but parking lot speeds are low enough (5 mph) that the 110-foot maximum error shrinks to ~20 feet, below the noise floor of consumer GPS.
+### How do we give an ETA that reflects uncertainty?
 
-### DD3: Dispatch optimization
+Cooking, driver arrival and travel can overlap. Adding independent component averages can hide long waits, and adding component p90 values does not generally produce the route's p90.
 
-**Problem.** An order arrives. The naive solution — assign the nearest idle driver — ignores three hard realities: the nearest driver might be finishing a delivery, the restaurant takes 15 minutes to cook, and that driver historically declines 40% of offers from this restaurant.
+- **Distance and historical averages:** useful baseline, weak on restaurant queues and changing demand.
+- **Gradient-boosted models with quantile outputs:** strong tabular baseline with measurable interval coverage.
+- **Shared probabilistic model:** can share information across delivery types, with greater serving and training complexity.
 
-**Approach 1: Nearest-idle assignment**
+Start with component-aware gradient-boosted predictions and an end-to-end arrival model. Measure absolute error, late-arrival rate and interval coverage by city, restaurant and order stage. Promote the shared model when it improves those outcomes within the latency budget.
 
-Query Redis GEO for the closest idle driver. Offer the order. If declined, move to the second-closest.
+[DoorDash's probabilistic ETA work](https://careersatdoordash.com/blog/improving-etas-with-multi-task-models-deep-learning-and-probabilistic-forecasts/) separates the arrival distribution from the business decision about what time to display. Apply that separation here: dispatch needs expected route cost and lateness risk, while the user needs a realistic arrival window.
 
-- **Pro:** O(1) per order. Simple.
-- **Con:** No consideration of prep time. No batching — two orders from the same restaurant go to different drivers. Acceptance rate ignored.
+Store feature and model versions with each prediction. Training joins features available at prediction time to completed-delivery outcomes.
 
-**Approach 2: Scoring with greedy assignment**
+**Account for overlap before predicting arrival**
 
-Rate every driver-order pair on predicted total delivery time and assign greedily.
+For a readying restaurant and an approaching driver, pickup begins at the later of their completion times. A useful baseline is `max(food_ready_time, driver_arrival_time)`, followed by handoff and delivery travel. Simply summing preparation and driver travel overstates the wait when they overlap.
 
-- **Pro:** Accounts for prep time. A driver arriving exactly when food is ready scores higher than a driver who will wait 14 minutes.
-- **Con:** Cannot optimize across orders — two orders at the same restaurant might be batched but greedy misses that.
+```text
+Food preparation -----------|
+Driver approach ------|     | pickup/handoff → delivery travel
+                      later ready stage determines pickup start
+```
 
-**Approach 3: ML-scored mixed-integer program**
+Train the end-to-end output against completed delivery outcomes using features available at each order stage. Record whether the restaurant accepted, preparation started or pickup completed; one model can then condition on the remaining work rather than repeatedly predicting already completed time.
 
-A three-layer pipeline: (1) candidate generator queries Redis GEO for idle drivers; (2) an ML layer predicts prep time, travel time, and acceptance likelihood; (3) an optimization layer formulates the assignment as a MIP solved with an off-the-shelf solver.
+Component distributions are correlated during demand spikes. Adding component P90s gives no general end-to-end P90 guarantee. Use joint/end-to-end quantile outputs or a validated simulation of stage dependence, then calibrate interval coverage by city/restaurant/stage. Dispatch consumes expected cost and lateness risk; the displayed window uses the product's separately chosen percentile policy.
 
-- **Pro:** Global optimization across orders. Batch decisions, strategic delay, and ML predictions are all modeled.
-- **Con:** Solving a MIP with tens of thousands of variables requires a commercial solver. If it doesn't converge within 5 seconds, fall back to greedy.
+### How do combined routes remain practical?
 
-**Decision:** Approach 3 — ML-scored MIP with a greedy fallback timeout.
+Exhaustive route enumeration grows rapidly with the number of stops.
 
-**Rationale:** At 400 peak orders/second, the difference between greedy and global optimization is measured in percentage points of on-time rate — and each percentage point is tens of thousands of refunded orders per day. The MIP runs in a 5-second window. The architecture uses an MIP solver with ML feature inputs from a dedicated feature store, running in a continuous batch loop rather than per-order.
+- **First feasible insertion:** cheap, but may create poor routes.
+- **Exact optimization over all orders:** finds an optimum within its model, with unpredictable runtime as the search grows.
+- **Bounded insertion and local improvement — recommended:** shortlist compatible orders, insert their stops and improve the route until the deadline.
 
-**Edge cases:**
+Score added travel, food waiting time and missed delivery windows. Keep the best feasible route throughout the search. If traffic changes or a pickup is delayed, replan the remaining stops while preserving completed actions and accepted work.
 
-- **Solver timeout:** Orders with feasible assignments from the partial solution get those assignments; remaining orders fall back to greedy scoring.
-- **Cold-start for new drivers:** The ML model imputes a population mean for acceptance likelihood with a cold-start penalty that decays over the first 20 offers.
-- **Restaurant marks order ready early:** Dispatch re-runs the MIP for any driver still en route.
+**Insert stops while preserving precedence**
 
-> [!TIP]
-> The dispatch loop runs on a fixed cadence — every 5 seconds — not per order. All orders that arrived since the last cycle enter the MIP together. This batching is what makes global optimization tractable.
+A new order adds a pickup and a drop-off. Enumerate a bounded set of insertion positions in the driver's remaining route, requiring pickup before its drop-off and retaining already accepted commitments. Recalculate affected leg times and time-window slack.
 
+Reject candidates exceeding capacity, food waiting or lateness limits. Keep the lowest-cost feasible route as the search evaluates local swaps or different insertions.
 
-> [!WARNING]
-> The MIP solver is a single point of congestion per metro area. If it crashes, that area falls back to greedy assignment until restart. Running a hot standby solver minimizes the degradation window.
+```text
+Existing: pickup A → drop A
+Candidate: pickup A → pickup B → drop B → drop A
+Checks: capacity, pickup readiness, precedence, both delivery windows
+```
 
-### DD4: ETA prediction and demand balancing
-
-**Problem.** When a customer places an order, the app shows a promised delivery time. Quote too high and they bail; quote too low and they complain. Late deliveries are roughly 3× worse than early ones. The system must produce accurate ETAs across millions of orders with wildly different characteristics.
-
-**Approach 1: Distance-based heuristic**
-
-ETA = fixed prep time per cuisine + distance / average speed.
-
-- **Pro:** Trivial to compute.
-- **Con:** Ignores restaurant load, traffic, parking difficulty, and driver availability. Performs acceptably on the median — terribly on the tail.
-
-**Approach 2: ML regression with point estimates**
-
-Train a gradient-boosted tree model on historical order data.
-
-- **Pro:** Captures non-linear interactions (Friday 7 PM + rain + sushi place = 52 minutes).
-- **Con:** Point estimates have no confidence interval. The asymmetric loss (late is 3× worse than early) is hard to tune into a single-point model.
-
-**Approach 3: Multi-task deep learning with probabilistic output**
-
-A neural network with a shared foundation and per-task heads, each outputting a log-normal distribution. The loss function uses asymmetric MSE: early errors weight 1, late errors weight 3.
-
-- **Pro:** Distribution output lets dispatch reason probabilistically. Multi-task architecture shares representations across tasks. Asymmetric loss directly encodes the business cost function.
-- **Con:** Training pipeline complexity, higher inference latency requiring dedicated GPU serving.
-
-**Decision:** Approach 3 — multi-task probabilistic model with asymmetric loss.
-
-**Rationale:** At 2.5 billion orders per year, each percentage point of ETA accuracy is worth tens of millions. The probabilistic model explicitly optimizes for tail accuracy by penalizing late predictions 3× harder. Rolling real-time features capture emergent conditions without needing explicit data feeds.
-
-**Edge cases:**
-
-- **New restaurant with no history:** The model imputes prep time from cuisine-level priors with wide variance. The first 20 orders get a "learning" flag that suppresses the promised-time display.
-- **Model drift during demand shocks:** Rolling features capture the shift within one window cycle. A drift monitor triggers a model refresh if the gap exceeds a threshold for 15 consecutive minutes.
-- **Long-tail event handling:** For orders where the predicted 95th percentile exceeds the quoted window by 5+ minutes, the system proactively sends a push notification.
-
-> [!TIP]
-> Why not use the map provider's ETA API? Map ETAs are drive-time only — they don't include prep time, parking, or the time a Dasher spends walking to a 14th-floor apartment. A delivery ETA is a composition of 6+ sub-events, each with its own distribution.
-
-
-> [!TIP]
-> Why not a single end-to-end model instead of multi-task? Breaking out prep time, drive time, and total time as separate heads lets the dispatch optimizer use each component independently. A single total-time model can't surface a driver who is 2 minutes away but food won't be ready for 12 minutes.
-
-## 7. References
-
-1. [Building a More Reliable Checkout Service at Scale with Kotlin](https://doordash.engineering/2021/02/02/building-a-more-reliable-checkout-service-with-kotlin/) — DoorDash Engineering Blog (Feb 2021)
-1. [Using ML and Optimization to Solve DoorDash's Dispatch Problem](https://doordash.engineering/2021/08/17/using-ml-and-optimization-to-solve-doordashs-dispatch-problem/) — DoorDash Engineering Blog (Aug 2021)
-1. [Improving ETAs with Multi-Task Models, Deep Learning, and Probabilistic Forecasts](https://careersatdoordash.com/blog/improving-etas-with-multi-task-models-deep-learning-and-probabilistic-forecasts/) — DoorDash Engineering Blog (Mar 2024)
-1. [Precision in Motion: Deep Learning for Smarter ETA Predictions](https://careersatdoordash.com/blog/deep-learning-for-smarter-eta-predictions/) — DoorDash Engineering Blog (Oct 2024)
-1. [Scaling a Routing Algorithm Using Multithreading and Ruin-and-Recreate](https://doordash.engineering/2021/11/30/scaling-a-routing-algorithm-using-multithreading-and-ruin-and-recreate/) — DoorDash Engineering Blog (Nov 2021)
-1. [Managing Supply and Demand Balance Through Machine Learning](https://doordash.engineering/2021/06/29/managing-supply-and-demand-balance-through-machine-learning/) — DoorDash Engineering Blog (Jun 2021)
-1. [Building a Gigascale ML Feature Store with Redis](https://doordash.engineering/2020/11/19/building-a-gigascale-ml-feature-store-with-redis/) — DoorDash Engineering Blog (Nov 2020)
-1. [Building a Declarative Real-Time Feature Engineering Framework](https://doordash.engineering/2021/03/04/building-a-declarative-real-time-feature-engineering-framework/) — DoorDash Engineering Blog (Mar 2021)
-1. [How DoorDash Transitioned from a Monolith to a Microservice Architecture](https://doordash.engineering/2020/12/02/how-doordash-transitioned-from-a-monolith-to-microservices/) — DoorDash Engineering Blog (Dec 2020)
+Version the route proposal. Driver acceptance checks that the current route/assignment version still matches; otherwise recalculate. Replanning after a delay considers only remaining stops and preserves completed actions. A bounded search may not find the mathematical optimum, but its deadline and feasible-so-far result make its operational behavior predictable.

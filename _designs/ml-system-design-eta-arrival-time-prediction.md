@@ -4,323 +4,353 @@ title: "ML: ETA / Arrival Time Prediction"
 category: system-design-ml
 date: 2026-07-15
 tags: [Machine-Learning, Regression, Forecasting]
-description: "A rider opens the app and enters a destination."
 thumbnail: /images/posts/ml-system-design-eta-arrival-time-prediction.svg
+last_modified_at: 2026-10-06
+description: "An arrival-time prediction service that combines a routing estimate with a learned correction for traffic, location and trip context."
+notion_source: https://app.notion.com/p/398d865005a88168a09de3888ef3ff20
 ---
 
-A rider opens the app and enters a destination.
+An arrival-time prediction service that combines a routing estimate with a learned correction for traffic, location and trip context.
 
 <!--more-->
 
-## 1. Problem & ML framing
+## Problem
 
-A rider opens the app and enters a destination. Before they request, while they wait, and while they ride, one question dominates: *when?* Inaccurate ETAs are the fastest way to burn trust — the user cancels when the prediction feels too long, or worse, waits past the predicted arrival and never comes back. At Uber's scale, a single-digit percentage ETA improvement unlocks tens of millions of dollars annually through retained rides and efficient dispatching. The same dynamics hold for food delivery, logistics, and turn-by-turn navigation.
+Users rely on an arrival estimate to decide when to leave, whether to request a ride and how long they will wait. The same route can take different amounts of time as traffic, weather and pickup conditions change.
 
-The ML task is **regression over multi-modal inputs**: predict a continuous positive number (travel time in seconds) given a route between an origin and destination. The input is a feature vector capturing route geometry, road-network attributes, real-time traffic conditions, historical travel patterns, and temporal context (hour, day, weather). The output is a point estimate `ETA ∈ ℝ⁺` plus, at staff level, a **prediction interval** ("8–12 minutes") so the user calibrates their expectation.
+We start with the duration calculated by a routing engine, then predict a correction from recent conditions and historical trips. The response includes a central estimate and a time range so the application can communicate uncertainty.
 
-**Business objective**: maximize user trust and ride completion rate through reliable, calibrated ETAs. **ML objective**: minimize mean absolute error (MAE) between the predicted and actual arrival time, with asymmetric cost — underpredicting by 5 minutes ("I'm 3 minutes away" → actually 8) damages trust far more than overpredicting.
+## Requirements
+
+### Functional requirements
+
+- **Predict an arrival time.** Accept an origin, destination and departure time.
+- **Update an active trip.** Refresh the estimate as the vehicle moves and new traffic observations arrive.
+- **Handle different trip types.** Support pickup, driving and multi-stop routes, including expected stop duration.
+- **Return an interval.** Provide P10, P50 and P90 travel-time estimates.
+- **Use recent conditions.** Include traffic updates within one minute of publication.
+- **Support new regions.** Return a routing-based estimate while regional training data is collected.
+
+### Non-functional requirements
+
+- **Scale:** support 100M predictions/day; size the peak from the regional traffic distribution.
+- **Latency:** target p99 below 100ms for the prediction API and below 15ms for model inference.
+- **Availability:** target 99.95%, with a routing-based fallback when ML serving is unavailable.
+- **Freshness:** keep online traffic features within 60 seconds of their publication deadline.
+- **Quality:** measure absolute error, signed bias and interval coverage by region, trip type and duration.
+- **Privacy:** restrict access to precise location data and apply explicit retention limits.
+
+## Back-of-the-envelope calculations
+
+- 100M predictions/day is about **1,160 requests/s on average**. An assumed 10× peak gives roughly **12K requests/s** before regional skew and failure headroom.
+- A planning budget of 20ms for transport, 5ms for routing, 2ms for feature retrieval and 15ms for inference totals 42ms. End-to-end load tests establish the p99 target; individual stage estimates are inputs to that test.
+- A feature pipeline handling 160K location updates/s must aggregate updates before serving. Online requests fetch one compact route-feature vector rather than querying raw GPS observations.
+- Versioned road graphs and model artifacts are loaded into memory. Their replication and update cost is sized separately from request metadata and historical trip storage.
+
+## Core entities
+
+- **Route** contains the ordered road segments and the routing engine's baseline duration.
+- **TrafficFeature** records both observation time and availability time.
+- **ETAPrediction** identifies the estimate, uncertainty and serving versions.
+- **CompletedTrip** supplies the actual duration used as a training label.
+- **ETABundle** keeps the model compatible with its feature definitions and routing inputs.
+
+```protobuf
+message Route {
+  string route_id;
+  repeated string segment_ids;
+  double baseline_seconds;
+  string map_version;
+}
+
+message TrafficFeature {
+  string segment_id;
+  double speed_mps;
+  double congestion;
+  google.protobuf.Timestamp observed_at;
+  google.protobuf.Timestamp available_at; // When serving could first read it
+}
+
+message ETAPrediction {
+  string prediction_id;
+  optional double p10_seconds; // Included when the interval is calibrated
+  double p50_seconds;
+  optional double p90_seconds;
+  string serving_mode;       // Learned correction or routing fallback
+  string model_bundle;
+  string route_id;
+}
+
+message CompletedTrip {
+  string trip_id;
+  string prediction_id;
+  double actual_seconds;     // Measured for the same trip phase
+  string region;
+  string trip_type;
+}
+
+message ETABundle {
+  string bundle_id;
+  string model_uri;
+  string feature_schema;
+  string training_snapshot;
+  string evaluation_report_uri;
+}
+```
+
+## API
+
+```yaml
+predict_eta:
+  method: POST
+  path: /v1/eta
+  body:
+    origin: {latitude: 37.78, longitude: -122.42}
+    destination: {latitude: 37.79, longitude: -122.39}
+    departure_time: "2026-10-05T17:00:00Z"
+    trip_type: driving
+    stops: []
+  response:
+    prediction_id: eta_123
+    route_id: route_456
+    p10_seconds: 480
+    p50_seconds: 600
+    p90_seconds: 780
+    serving_mode: learned_correction
+    model_bundle: eta_v12
+  errors:
+    400: invalid coordinates or unsupported departure horizon
+    404: no route available
+    503: routing and prediction are unavailable
+```
+
+## High-level design
+
+The routing engine chooses the route and calculates a baseline duration. The feature service adds recent traffic and trip context, and the ETA model predicts a correction and travel-time quantiles.
+
+Completed trips and the features recorded at prediction time feed the training pipeline. A passing model bundle is loaded before new requests are routed to it.
 
 ```mermaid
-graph LR
-    A["GPS Traces<br/>+ Map Data"] --> B["Feature<br/>Engineering"]
-    B --> C["Model<br/>Training"]
-    C --> D["Model<br/>Registry"]
-    D --> E["Online<br/>Serving"]
-    E --> F["Calibrated<br/>ETA"]
-
-    classDef light fill:#f5f5f5,stroke:#333,color:#1A1A1A
-    class A,B,C,D,E,F light
+flowchart TB
+  U["User / application"] --> API["ETA API"]
+  API -->|"Origin + destination"| ROUTE["Routing engine"]
+  ROUTE -->|"Route + baseline"| MODEL["ETA model"]
+  ROUTE -->|"Segments"| FEATURES[("Online traffic features")]
+  FEATURES -->|"Route features"| MODEL
+  MODEL --> RESULT["Estimate + interval"]
+  GPS["Location observations"] --> AGG["Traffic aggregation"]
+  AGG --> FEATURES
+  TRIPS[("Trips + feature history")] --> TRAIN["Training + evaluation"]
+  TRAIN --> REG[("Model registry")]
+  REG -.->|"Model + feature contract"| MODEL
 ```
 
-## 2. Requirements
+## Storage
 
-**Functional**
+- **Road graph:** use a versioned routing artifact in object storage, loaded by routing workers. The route response includes its map version.
+- **Redis:** serve compact current traffic features with timestamps and freshness limits. Publish each feature vector atomically so a request reads a consistent version of that vector.
+- **Kafka and stream processing:** ingest location observations and compute rolling traffic statistics. Start with two-minute windows published every 15 seconds; retain event IDs and late-arrival handling.
+- **Object storage / Parquet:** store trip labels, served prediction snapshots and historical features for reproducible training.
+- **PostgreSQL:** store prediction references, trip completion records and model-release metadata. A unique trip-phase key prevents a retried completion event from creating another label.
 
-- FR1: Predict travel time in seconds for any origin–destination pair in served regions.
-- FR2: Return a confidence interval alongside the point estimate.
-- FR3: Adapt predictions to real-time traffic conditions within one minute of change.
-- FR4: Fuse route-geometry, map attributes, live traffic, and temporal context into one prediction.
-- FR5: Support multi-stop routes without compounding error across legs.
-- FR6: Serve predictions at <100ms p99 for interactive user sessions.
+Offline training needs the feature values that were available when the estimate was requested. Retaining only the latest Redis value would lose that history.
 
-**Non-functional**
+## From request to response
 
-- NFR1: Throughput: 100M+ predictions/day globally, millions per minute at peak.
-- NFR2: Inference latency: p99 < 100ms end-to-end; ML step alone < 15ms.
-- NFR3: Freshness: traffic data stale by ≤1 minute; model retrained at least weekly.
-- NFR4: Availability: 99.95% uptime; graceful degradation to routing-engine-only ETA on ML failure.
+### Predicting a trip
 
-*Out of scope: turn-by-turn rerouting during a trip; multi-modal transit (walking + bus + train); in-ride dynamic surging logic; accident/construction detection from raw camera feeds.*
+- **Calculate the route.** Validate the requested departure horizon, choose a route and obtain its baseline duration.
+- **Fetch features in a batch.** Read traffic summaries for the route, time of day, region and trip type. Include feature age and missing-data indicators.
+- **Predict a correction.** Apply the active residual model to the baseline. A signed correction can increase or decrease the duration.
+- **Return the estimate.** Produce positive, ordered P10, P50 and P90 values, with the bundle ID and serving mode.
+- **Record the prediction.** Log the route, feature versions and request time for later comparison with the completed trip.
 
-## 3. Metrics
+A route may contain many segments. Batched feature retrieval and route-level summaries keep storage round trips bounded; long-horizon trips need traffic forecasts rather than only current speeds.
 
-**Offline (model quality on held-out data)**
+### Updating an active trip
 
-- **MAE (primary):** interpretable in minutes/seconds, maps directly to user-perceived error. The industry standard across Uber, Lyft, and Google Maps.
-- **p50 / p95 absolute error:** captures tail degradation — the worst 5% of predictions are what users remember.
-- **MAPE:** normalizes error by trip duration, enabling comparison across short and long trips. Becomes unstable for trips under ~2 minutes; used as a secondary metric.
-- **Asymmetric Huber loss (training):** parameterized by δ (robustness to outliers) and ω (under/over-prediction asymmetry). For ride-hailing, ω > 1 penalizes underpredictions — telling a user "3 minutes" when the actual wait is 15 hurts more than saying "12 minutes" for an 8-minute ride.
-- **Pinball loss (quantile):** evaluates P10/P50/P90 calibration for the confidence-interval output.
+Calculate the remaining route from the latest accepted vehicle position. Keep location timestamps visible so a delayed GPS message cannot move the vehicle backward in the trip.
 
-**Online (real-world impact)**
+Use the expected arrival time at each route segment to select the appropriate traffic forecast. Refresh the estimate when movement or new conditions materially change the remaining duration.
 
-- **Pickup ETA accuracy:** MAE between predicted and actual pickup time — the metric that drives rider satisfaction most directly.
-- **Negative ETA outcome rate:** percentage of trips where the error exceeds a business-defined threshold (e.g., >3 minutes late for a 15-minute trip). Google Maps tracks this; a 40% reduction drove their GNN deployment.
-- **Ride completion rate:** percentage of requested rides that complete without cancellation. ETA accuracy directly shapes the decision to wait or cancel.
-- **User retention (28-day):** repeat usage. Guardrail: an ETA model that overpredicts to be "safe" might depress new-request conversion.
+For a multi-stop trip, include driving time and expected dwell time at each stop. Produce route-level uncertainty from examples of similar complete trips; correlations between congested segments make independently summed interval bounds unreliable.
 
-Every offline metric maps to a business outcome: MAE → pickup accuracy → ride completion; p95 → worst-case user experience → retention; asymmetric loss → trust calibration.
+### Learning from a completed trip
 
-## 4. Data
+Match the actual start and arrival events to the same phase the prediction covered. Pickup waiting time and driving time are separate labels. Remove trips with broken GPS traces, incorrect timestamps or incomplete phase boundaries.
 
-- **GPS trace history:** tens of billions of pings/day from driver and rider devices, sampled every ~4 seconds during active trips. Each completed trip yields a ground-truth travel time label — the actual time from pickup to dropoff (or origin to destination for navigation).
-- **Map data (OSM / proprietary road graph):** ~100M road segments globally, each with attributes: length, speed limit, road class (highway/arterial/local), turn restrictions, traffic-light positions.
-- **Real-time traffic feeds:** segment-level current speeds from probe data (devices on the road), aggregated into 2-minute rolling windows. Coverage varies by region density.
-- **Historical travel times:** per-segment median travel time sliced by hour-of-day and day-of-week, aggregated over the trailing 17 weeks (Google Maps approach) with exponential decay to deprioritize stale patterns.
-- **Labeling:** ground-truth arrival times come from completed-trip GPS — the timestamp when the driver's device reached the dropoff coordinates. No human annotation needed; this is a naturally supervised problem at scale.
-- **Train/val/test split:** strictly time-based — train on all data before date *T*, validate on the two weeks after *T*, test on the two weeks after validation. Random splitting would leak future traffic patterns into training and inflate metrics.
-- **Data scale:** billions of completed trips for training; millions of road segments with active real-time probes; 100K+ feature rows/second ingested for real-time traffic features.
+Join each label to the features available at its prediction time, then train the next candidate. Evaluate on later trips, including regional and trip-type slices.
 
-## 5. Features
+### Falling back
 
-All features fall into five groups, unified through a **feature store** that computes each feature identically offline (for training) and online (for serving):
+If the learned model fails, return the routing estimate with `serving_mode: routing_fallback`. If live traffic is stale, use historical traffic for that route and time of day and mark the degraded feature state.
 
-**Route features** (computed by the routing engine at request time)
+The application can still display an estimate, while monitoring records which path produced it. A fallback interval is returned only if it has a separately calibrated baseline model.
 
-- Route distance, segment count, number of turns, traffic-light count
-- Road-class composition (percentage of highway vs. arterial vs. local)
-- Routing engine's own baseline ETA (the "physics" estimate used as input, not as final output)
+## Deep dives
 
-**Temporal features** (precomputed, keyed by timestamp)
+### Should the model predict the entire duration or a correction?
 
-- Hour of day, day of week, holiday flag, season
-- Minute-of-day bucketed into 15-min quantile bins → embedded
+A routing engine already accounts for road topology and route length. Training a model to relearn those relationships requires substantial data and makes new-region behavior harder to control.
 
-**Real-time traffic features** (fetched from feature store at serve time, stale tolerance ≤60s)
+| Approach | Strength | Trade-off |
+| --- | --- | --- |
+| Routing estimate only | Works with little trip history | Misses recurring local and trip-specific bias |
+| Predict duration directly | Flexible learned representation | Greater dependence on coverage and route features |
+| Routing plus learned residual | Uses the baseline and learns its errors | Requires compatible routing and model versions |
 
-- Current segment speed for each segment on the route, averaged over 2-min windows
-- Incident flags (accidents, road closures) within 500m of the route
-- Weather: precipitation intensity, visibility (from external API, cached per city)
+**Use a residual model.** Start with a gradient-boosted tree model over compact route and context features. Consider a neural model when embedding interactions and traffic volume justify its serving cost. [Uber's DeepETA](https://www.uber.com/us/en/blog/deepeta-how-uber-predicts-arrival-times/) describes this routing-plus-residual architecture.
 
-**Historical features** (precomputed offline, refreshed weekly)
-
-- Per-segment median travel time by hour-of-week, aggregated over 17 weeks
-- Per-segment 15th/85th percentile speed spread (as a congestion-volatility proxy)
-- Origin/destination geohash embeddings at 4 spatial resolutions (H3 levels 6–9), trained jointly with the model
-- Multi-resolution feature hashing: each lat/lon maps to multiple hash bins using independent hash functions, increasing collision robustness without blowing up vocabulary size
-
-**Trip-context features** (known at request time)
-
-- Trip type (ride vs. delivery vs. freight), pickup vs. dropoff leg
-- Driver historical speed profile (optional, only for registered drivers with ≥50 completed trips — falls back to regional average)
-
-**Feature store + online/offline parity:** The feature store is the arbiter. Offline, a Spark pipeline precomputes historical and temporal features and writes them to the store. Online, a low-latency key-value lookup (Redis or equivalent) serves the same features. Traffic features update continuously via a Flink streaming pipeline. The model registry pins a feature-config version alongside each model version, so a serving container always fetches the features the model was trained on.
-
-## 6. Model
-
-### Baseline: XGBoost on engineered features
-
-A gradient-boosted tree ensemble trained on the ~40 tabular features from §5, with max_depth=15, 250 trees, and L2 regularization. Uber ran this in production for years — one ensemble per mega-region. It handles tabular data well, requires no GPU for serving, and produces interpretable feature-importance scores.
-
-The limit: XGBoost cannot easily scale to billions of training examples, does not inherently capture sequential structure (the route as a sequence of segments), and maxes out on feature interactions that a transformer can learn from raw embeddings.
-
-### Advanced: deep residual network with linear transformer
-
-The canonical production architecture follows a **physics-first hybrid pattern**: the routing engine produces a base ETA using graph algorithms and real-time segment speeds; the ML model predicts the *residual* — the systematic deviation between the routing engine's estimate and the ground truth. The final output is `ETA = RE_ETA + residual`. This respects the routing engine's hard-won knowledge of road-network physics (speed limits, turn costs, road hierarchy) and lets the model focus on patterns the engine misses: driver route choices, pickup/dropoff slowdowns, future traffic evolution.
-
-**Encoder:** Every continuous feature is discretized into quantile bins (e.g., speed → 256 bins) and mapped to learned embeddings (dim=8). Categorical features (trip type, region) get direct embeddings. Spatial features (origin/destination lat/lon) are quantized into multi-resolution geohash grids (H3 levels 6–9), with multiple feature hashing to reduce collision artifacts. This produces ~40 embedding vectors → concatenated into the model input.
-
-**Interaction layer:** A linear transformer applies self-attention using the kernel trick `φ(x) = elu(x) + 1`, reducing complexity from O(K²d) to O(Kd²). For K=40 features × d=8 embedding dims, this is ~5× faster than standard self-attention — critical when the inference budget is 3–15ms. Only 2 transformer layers are used; nearly all model parameters live in the embedding lookup tables, and only ~0.25% are touched per prediction.
-
-**Decoder:** A shallow fully-connected network with a segment bias-adjustment layer — learned per-segment offsets for different trip types (ride vs. delivery), trip lengths (short vs. long), and mega-regions. ReLU on the output clamps the residual to be non-negative (the routing engine already gives a positive ETA).
-
-**Loss function — asymmetric Huber:**
-
-```javascript
-L(y, ŷ) = ω·h(y−ŷ)  if y−ŷ > 0   (underprediction)
-          (2−ω)·h(y−ŷ) otherwise (overprediction)
-where h(r) = 0.5·r²      for |r| ≤ δ   (quadratic region, small errors)
-           = δ·(|r|−δ/2)  for |r| > δ   (linear region, large errors)
+```python
+residual_target = actual_seconds - baseline_seconds
+predicted_seconds = max(1.0, baseline_seconds + predicted_residual)
 ```
 
-With δ = 1.0 and ω = 1.2, the model is robust to outliers (linear tail for large residuals) and penalizes underpredictions 20% more heavily than overpredictions. For use cases that need a median ETA (delivery dispatch), ω = 1.0; for rider-facing pickup ETA, ω > 1.0.
+The residual stays signed. If a 600-second baseline is consistently 90 seconds too short, the corrected estimate is 690 seconds. If it is 30 seconds too long, the corrected estimate is 570 seconds.
 
-**Quantile estimation:** The same architecture is trained with pinball loss to produce P10, P50, and P90 estimates. At serving, these three quantiles are fetched in parallel and packaged as "arrives in 8–12 minutes" (P10–P90) with a central point estimate (P50).
+Underestimation and overestimation can have different business costs. Tune an asymmetric loss using the relevant trip type; evaluate the resulting signed bias alongside absolute error. A lower average error is useful only when the application's wait-time and reliability requirements also improve.
 
-**Training:** Distributed training on GPU clusters, one model per mega-region (North America, EMEA, APAC, LATAM) with shared embedding tables pre-trained globally. Weekly auto-retraining pipeline validates on the most recent two weeks of data and promotes through staging → shadow → A/B → full traffic.
+**Build one residual training row**
 
-**Multi-stage funnel:**
+At request time, record the selected route, its baseline duration, map version and every feature used by the scorer. After the trip phase ends, join its actual duration to that prediction. The model learns the baseline's signed error, not the total trip duration.
 
-```javascript
-Route Request → Routing Engine (RE-ETA) → Feature Retrieval → ML Residual → Calibrated ETA
-```
-
-The routing engine runs first — A* or contraction hierarchies over the road graph, consuming precomputed edge weights from the traffic forecasting layer. It produces the route polyline, per-segment estimates, and a summed RE-ETA in single-digit milliseconds. The ML step then corrects the residual in 3–15ms. If the ML service times out or errors, the system falls back to the raw routing-engine ETA — the physics-first design makes graceful degradation trivial.
-
-## 7. Architecture
+A 10-minute route that takes 12 minutes supplies a +120-second residual. Features might include road-class mix, remaining distance, departure-time bucket, current traffic age and trip phase. Keep waiting for pickup separate from in-vehicle travel unless the output explicitly represents both.
 
 ```mermaid
-graph TB
-    subgraph OFFLINE["Offline Training (Weekly)"]
-        A1["GPS Traces<br/>(billions/day)"] --> A2["Spark: Feature<br/>Engineering"]
-        A2 --> A3["Feature Store<br/>(historical + temporal)"]
-        A3 --> A4["Distributed Training<br/>(GPU cluster)"]
-        A4 --> A5["Model Validation<br/>(holdout period)"]
-        A5 --> A6["Model Registry<br/>(staging → shadow → prod)"]
-    end
-
-    subgraph ONLINE["Online Serving (<100ms p99)"]
-        B1["Route Request<br/>(origin, dest, time)"] --> B2["Routing Engine<br/>(A*/CH, <5ms)"]
-        B2 --> B3["Feature Retrieval<br/>(feature-store lookup)"]
-        B3 --> B4["ML Inference<br/>(residual, 3-15ms)"]
-        B4 --> B5["Calibrated ETA<br/>(point + interval)"]
-    end
-
-    A3 -.-> B3
-    A6 -.-> B4
-
-    B5 --> C1["Feedback Loop"]
-    C1 --> A1
-
-    classDef light fill:#f5f5f5,stroke:#333,color:#1A1A1A
-    classDef store fill:#e8f0fe,stroke:#333,color:#1A1A1A
-    class A1,A2,A4,A5,B1,B2,B4,B5,C1 light
-    class A3,A6,B3 store
+flowchart TB
+    R["Route and baseline duration"] --> F["Request-time feature snapshot"]
+    F --> M["Residual model"]
+    M --> P["Baseline plus correction"]
+    F --> T["Completed trip phase"]
+    T --> L["Signed residual label"]
+    L --> V["Train and validate next bundle"]
 ```
 
-### Offline training pipeline
+The serving bundle pins the routing-feature schema and permitted map versions. A feature-contract mismatch or stale traffic vector selects a validated routing-only fallback. Log the fallback mode so its errors can be evaluated separately. Compare absolute error and signed bias across short/long trips; an apparently good average can still systematically underestimate busy-region trips.
 
-**Components:** Spark cluster for batch feature engineering, a feature store (Redis/Valkey for online, Parquet/S3 for offline), GPU training cluster, model registry, and an orchestration layer (Airflow or equivalent).
+### How do we prevent future information from entering training?
 
-**Flow:**
+A GPS observation may describe conditions at 10:00 but arrive at the feature pipeline at 10:03. A prediction made at 10:01 could not have used it, even though its observation timestamp is earlier.
 
-1. Raw GPS pings (tens of billions/day) land in a data lake. Map-matching HMM snaps each ping to a road segment.
-1. A weekly Spark job computes per-segment historical travel times, aggregates temporal profiles (hour-of-week medians, 17-week windows), and materializes geohash embeddings into the feature store.
-1. Training examples are constructed from completed trips: for each trip, join the routing-engine ETA at request time with the actual arrival time at completion. The label is `actual − RE_ETA` (the residual).
-1. Distributed training runs on GPU clusters — one model per mega-region, with shared embedding tables. Training uses the asymmetric Huber loss and takes ~6–12 hours on 8× A100 GPUs.
-1. Validation evaluates MAE, p50, and p95 on a held-out two-week period. If the candidate model beats the production model on all metrics and shows no regressions on any mega-region, it passes.
+- **Join by observation time** for temporal alignment, with a risk of including late-arriving information.
+- **Use archived serving snapshots** to reproduce the exact values used online.
+- **Use availability-aware historical joins** when rebuilding features from their full history.
 
-**Design consideration:** The validation set must be temporally *after* the training set — random splitting leaks future traffic patterns. A rolling-window evaluation (train on weeks 1–4, validate on week 5, test on week 6, retrain on weeks 2–5) provides a more honest estimate of how the model will perform after deployment.
+**Log the served feature snapshot and use availability-aware joins for reconstruction.** An eligible historical feature satisfies both its event-time window and `available_at <= prediction_time`.
 
-### Online serving pipeline
+```mermaid
+flowchart TB
+  O["Observation: 10:00"] --> A["Feature available: 10:03"]
+  P["Prediction: 10:01"] --> SNAP["Use features available<br/>by 10:01"]
+  A -->|"Eligible for later predictions"| L["Prediction after 10:03"]
+```
 
-**Components:** Load balancer, routing-engine service (A*/CH, sub-5ms), feature-store client (Redis/Valkey, sub-2ms), ML inference container (Triton or TorchServe, 3–15ms), and a post-processing layer for interval formatting.
+A feature store's [point-in-time joins](https://docs.feast.dev/getting-started/concepts/point-in-time-joins) help construct historical training rows. Configure arrival-time filtering explicitly where backfills or late data are possible.
 
-**Flow:**
+Share feature calculations, normalization and missing-value definitions between training and serving. The bundle manifest pins those definitions; a feature-schema change is released with its corresponding model.
 
-1. A route request arrives with `(origin_lat, origin_lon, dest_lat, dest_lon, timestamp, trip_type)`.
-1. The routing engine computes the optimal path and a base RE-ETA. Edge weights come from the real-time traffic-forecasting layer, which ingests 160K+ feature rows/second via Flink and updates segment speeds every 2 minutes.
-1. The feature-retrieval layer fetches temporal, historical, geospatial, and traffic features from the feature store in a single batched call.
-1. The ML inference container runs the linear transformer in 3–15ms (p50: ~3.25ms, p95: ~4ms). Quantile models (P10, P50, P90) run in parallel.
-1. Post-processing combines `RE_ETA + residual`, clamps to positive values, formats the interval, and returns `{"eta_seconds": 540, "interval": [480, 660], "confidence": 0.8}`.
+**An availability-aware join**
 
-**Design consideration:** The routing engine is the fallback. If the ML container times out (budget: 15ms), the feature store is unreachable, or any downstream service fails, the system returns the raw RE-ETA — still a reasonable estimate because the engine already incorporates real-time segment speeds. This is the core advantage of the physics-first hybrid architecture.
+Store each historical feature with both observation time and the time it became queryable. For a 10:01 request, select only revisions published by 10:01, then apply that feature's event-window/expiry rule. A later backfill must not overwrite the archived view used for training that request.
 
-### Serving scale
+```sql
+-- Logical reconstruction; indexed by feature identity and availability time.
+SELECT value, observed_at, available_at
+FROM feature_history
+WHERE feature_key = :key
+  AND available_at <= :prediction_time
+  AND observed_at >= :oldest_eligible_observation
+ORDER BY available_at DESC
+LIMIT 1;
+```
 
-- **Throughput:** 100M+ predictions/day. At peak, millions of predictions/minute — ETA is called for every fare estimate, every driver-rider matching decision, and every in-ride ETA update.
-- **Latency budget:** p99 < 100ms end-to-end. Budget split: routing engine < 5ms, feature retrieval < 2ms, ML inference < 15ms, network + serialization < 20ms. The remaining ~60ms is headroom for retries and traffic spikes.
-- **Infrastructure:** The ML step runs on CPU-only containers (4 cores per host) with sparse embedding tables — only ~0.25% of parameters are touched per prediction. No GPU needed at serving; the linear transformer's O(Kd²) complexity fits comfortably on CPU.
+The joined row also records feature age and missingness. Defaulting an unavailable traffic speed to zero would imply stopped traffic; use an explicit missing flag plus the approved baseline value.
 
-### Retraining feedback loop
+Split examples chronologically and keep related predictions from the same trip together. Later updates from that trip provide labels only after they become available, never serving features for an earlier prediction. Test reconstruction by comparing historical joins against logged serving snapshots; discrepancies identify late-data or feature-version leakage.
 
-Completed trips feed back into the data lake: the actual arrival time is joined with the prediction that was served. A monitoring dashboard tracks MAE drift by region, hour, and trip type. When drift exceeds a threshold (or weekly, whichever comes first), the training pipeline fires. The new model enters the registry as `staging` → deployed to 1% of traffic (`shadow` — predictions logged but not served) → A/B test at 5% → gradual ramp to 100%. This automated loop keeps the model calibrated against evolving traffic patterns, new road construction, and seasonal shifts.
+### Which traffic estimate should a long route use?
 
-## 8. Deep dives
+Current traffic is relevant to the first road segment. A segment reached 30 minutes later needs a forecast for that time.
 
-### DD1: Real-time traffic incorporation
+- **Current speeds everywhere** are simple, but can misrepresent conditions later in the route.
+- **Historical time-of-day speeds** provide a useful baseline when live observations are sparse.
+- **Horizon-specific forecasts** combine recent traffic with expected future conditions.
 
-**Problem.** Traffic conditions change minute-to-minute: an accident blocks a lane, rain slows everyone down, a sports game ends and floods the streets. A route that takes 20 minutes at 2:00 PM might take 45 at 5:15 PM. The model must distinguish between *current* conditions (what the first few segments look like now) and *future* conditions (what the later segments will look like when the driver reaches them in 25 minutes). Using only current traffic for the whole route systematically underestimates travel time during the onset of rush hour; using only historical averages misses the accident that just happened.
+**Use current traffic for the near term and horizon-specific forecasts farther along the route.** Start with forecast buckets such as 0, 10, 20, 30 and 60 minutes, and select a bucket using the estimated time each segment will be reached.
 
-**Approach 1: Streaming features only.** Send live segment speeds for every segment on the route. The model learns to project these forward. Weakness: probe data is sparse — many segments have zero active probes at any moment. The model receives a noisy, incomplete snapshot.
+Long routes may need another pass because revised segment times change later arrival horizons. Bound the number of passes and include that cost in the routing budget. Regions with limited observations fall back to historical speeds and wider, separately evaluated intervals.
 
-**Approach 2: Periodic full retraining only.** Retrain the model frequently (daily or weekly) on the latest data. The model captures systematic shifts (a new highway opened, a neighborhood densified) but cannot react to a weather event or accident that happened 10 minutes ago.
+A graph-based traffic model is a later alternative when congestion propagation matters. [Google Maps' traffic-prediction work](https://deepmind.google/blog/traffic-prediction-with-advanced-graph-neural-networks/) illustrates how neighboring road segments can contribute to such forecasts.
 
-**Approach 3: Multi-horizon prediction (Google Maps approach).** Train separate models for each time horizon into the future (0s, 600s, 1200s, 1800s, 3600s). At serving time, query each segment-use successive horizons: the first segment uses the 0s model (current traffic dominates), the fifth segment — which the driver reaches ~8 minutes in — uses the 600s model, and so on. This explicitly models *when* each segment will be traversed. The temporal gap between models' predictions provides a natural uncertainty signal.
+**Select traffic by the expected arrival horizon**
 
-**Decision:** Blended approach — multi-horizon for the ML residual model, fed by a streaming traffic-forecasting layer (Uber's DeepETT pattern) that continuously ingests probe data and outputs calibrated per-segment speeds. The forecasting layer itself runs as a separate model (graph-aware transformer) with a Flink-based real-time calibration pipeline that detects drift and corrects systematic bias within minutes.
+Walk the route from departure time. For each segment, use the elapsed predicted time to choose its forecast bucket, calculate that segment's duration, and advance the elapsed time. A segment 25 minutes into the journey needs the 20/30-minute forecast range rather than the speed observed at departure.
 
-**Rationale:** Multi-horizon models explicitly solve the "future traffic on later segments" problem, which is the core difficulty. The traffic forecasting layer decouples raw probe ingestion from the ETA model — the ETA model receives clean, calibrated segment speeds rather than raw noisy pings. This separation also makes each component independently improvable.
+```python
+elapsed = 0
+for segment in route:
+    horizon = elapsed
+    speed = forecast_speed(segment, horizon, pinned_forecast_version)
+    elapsed += segment.length / bounded_positive_speed(speed)
+```
 
-> [!TIP]
-> The real-time calibration pipeline is the unsung hero. Uber's DeepETT team found that segment-level resolution improvements (explaining more variance) could *worsen* trip-level accuracy if calibration drifted — small per-segment biases compound into large trip-level errors. A Flink pipeline that buckets predictions by city and time-of-day, joins with observed travel times, and applies a continuous correction factor drives this error to near zero — even during extreme events like New Year's Eve in Manhattan.
+Interpolation must be defined for adjacent buckets; missing forecasts use historical road/time-of-day estimates. Keep one forecast snapshot for the pass so a mid-request update does not combine inconsistent values.
 
-**Edge cases:** When probe data is entirely absent for a segment (rural area, 3 AM), fall back to the historical median for that hour-of-week. When a sudden event (accident) changes a segment's speed by >50% within 2 minutes, the calibration layer flags the segment as anomalous and the ETA model receives a special "disruption" feature flag.
+A revised residual or traffic pass may shift downstream horizons. Limit iterations and stop when the change is below a configured threshold, with a hard deadline fallback to the last valid estimate. Benchmark intersections, incidents and long routes separately. A spatial traffic model may improve propagation forecasts, but the request path still uses the same versioned horizon interface.
 
-### DD2: Uncertainty estimation
+### How do we return an interval users can trust?
 
-**Problem.** A point estimate ("arrives in 12 minutes") is a lie the model tells with confidence. Users calibrate their expectations around a range. A rider told "12 minutes" who waits 18 feels much worse than one told "10–18 minutes" who waits 14. The business needs calibrated uncertainty to set user expectations, to decide dispatch (a driver 8–12 minutes away might be preferred over one 6–14 minutes away — same mean, very different worst case), and to detect when the model itself is uncertain (triggering a fallback to a safer estimate).
+A point estimate hides how variable a trip can be. Repeated model sampling can estimate uncertainty, but adds serving work and may still need calibration.
 
-**Approach 1: Quantile regression.** Train three separate output heads on the same encoder — one each for P10, P50, and P90 — using pinball loss. At serving, run all three and return the interval. The pinball loss for quantile τ is `L(y, ŷ) = max(τ·(y−ŷ), (τ−1)·(y−ŷ))`. Simple, interpretable, production-proven at Uber (asymmetric Huber approximates arbitrary quantiles via varying ω). Limitation: the intervals are pointwise — they don't capture correlation between segments (if one segment is congested, adjacent ones likely are too).
+- **Separate quantile predictions** directly estimate travel-time percentiles.
+- **Model ensembles** provide multiple predictions, at higher inference cost.
+- **Held-out calibration** adjusts an existing interval using recent prediction errors.
 
-**Approach 2: Monte Carlo dropout.** Apply dropout at inference time (not just training), run the forward pass B=100 times with different dropout masks, and compute the empirical mean and variance of the predictions. Decomposes uncertainty into **model uncertainty** (the model is unsure because this input pattern is rare — high dropout variance) and **inherent noise** (the label is noisy even with a perfect model — the residual variance across passes). Uber's time-series team achieved ~95% empirical coverage with B=100 passes and p=0.05 dropout. Overhead: <10ms per forward pass × 100 passes is too slow for the 3–15ms ETA budget; used for offline analysis and training-time diagnostics only.
+**Train P10, P50 and P90 quantile outputs, then calibrate them on held-out trips.** Quantile loss penalizes errors differently above and below the requested percentile.
 
-**Approach 3: Conformal prediction.** A distribution-free post-hoc method: hold out a calibration set, compute the empirical distribution of residuals, and at serving time return an interval that covers the true value with probability ≥ 1−α. No model changes needed — it wraps any point predictor. The interval width adapts to model confidence: regions with sparse data get wider intervals.
+```python
+error = actual_seconds - predicted_quantile
+loss = max(quantile * error, (quantile - 1.0) * error)
+```
 
-**Decision:** Quantile regression (P10/P50/P90) as the online serving approach. Conformal prediction as an offline validation guardrail — it provides coverage guarantees the quantile model might violate after distribution shift.
+Constrain the outputs to remain ordered and positive. Measure how often actual trips fall inside the P10–P90 interval; the target is 80% coverage over comparable trips, rather than a guaranteed probability for a particular journey.
 
-**Rationale:** Quantile regression adds negligible serving overhead (3 parallel forward passes through the same encoder, no MC sampling) and maps cleanly to the user-facing UX ("8–12 minutes"). The asymmetric Huber loss already used for the point estimate is a natural quantile approximator — the same architecture serves both. Conformal prediction runs offline on the validation set each training cycle; if the quantile model's empirical coverage falls below 80%, the training pipeline is blocked from promoting.
+Check coverage and interval width by region, duration, weather and trip type. During unusual conditions, widen intervals only through a validated calibration rule and report stale or missing features.
 
-> [!NOTE]
-> Quantile-crossing — the model might predict P10 > P50 for some inputs, producing a nonsensical interval. Fix with a monotonicity penalty in the loss or a post-hoc sort of the three quantile outputs. In practice, training on the same encoder with shared representations makes crossing rare.
+**Calibration with an explicit example**
 
-### DD3: Training-serving skew & calibration drift
+Suppose held-out trips fall inside the nominal P10–P90 interval only 65% of the time. The raw quantile heads are under-covering their evaluation population. Use a separate calibration set to estimate the extra width needed for the desired coverage, then evaluate that adjustment on an untouched later period.
 
-**Problem.** The model trained on last month's data serves predictions on today's traffic patterns, which changed last week when a bridge closed for construction. This is the core ML rot problem for any temporal prediction system, and ETA systems have several distinct skew sources:
+Track interval width as well as coverage: widening every estimate dramatically could reach coverage while becoming unhelpful. Small region/weather slices may need pooled calibration with uncertainty rather than an unstable independently fitted correction.
 
-1. **Feature-distribution skew:** The distribution of segment speeds shifts — a highway that averaged 55 mph at 8 AM in training data now averages 25 mph due to ongoing construction.
-1. **Calibration drift:** The model's residuals develop systematic bias — it consistently underpredicts trips in a specific neighborhood because a new traffic light was installed. Small per-segment biases compound across a 30-segment route into large trip-level errors.
-1. **Feedback-loop skew:** The model's own predictions influence dispatch — which driver is assigned to which rider — which changes actual traffic patterns, which changes the true distribution the next model will be trained on. Naive retraining on logged data causes the model to learn its own distortions.
-1. **Temporal leakage:** Using features computed at *trip completion time* during training that are unavailable at *request time* during serving. Example: if the model receives the actual average speed along the route during training (computed after the trip ended), it cannot access that feature at serving time.
+```text
+Actual trip duration:       760s
+Predicted P10/P50/P90:       600 / 700 / 800s
+Covered:                    yes
+Signed median error:        +60s
+Interval width:             200s
+```
 
-**Approach 1: Weekly retraining with shadow deployment.** Retrain the full model weekly on the most recent data. Deploy to shadow (1% traffic, logging only), compare against production, and promote if all metrics improve. Weakness: cannot react to events faster than the retraining cadence.
+Constrain quantile order during training or apply a validated ordering step. Evaluate any clipping against very short trips and sparse-data regions. Log map/model/calibration versions with the output so a coverage regression can be traced to the actual serving combination.
 
-**Approach 2: Continuous real-time calibration (Uber DeepETT).** Separate the problem into **resolution** (how much variance the model explains — the model's capacity) and **calibration** (how much systematic bias remains). A Flink streaming pipeline independently corrects calibration drift: it buckets predictions by city and 10-min travel-time bins, joins with recently observed traversal times, and applies a continuous multiplicative correction factor. The model itself does not retrain mid-flight — only the calibration layer updates. This drove calibration error to near zero even during extreme events (NYE in NYC) while preserving the model's resolution gains.
+### How do we adapt to new regions and changing conditions?
 
-**Approach 3: Online learning.** Update model weights continuously from the stream of completed trips. Weakness: feedback-loop risk is acute — the model rapidly learns its own dispatch distortions. Requires careful counterfactual logging or inverse-propensity weighting to debias. Also operationally complex — a bad update poisons all future predictions with no rollback.
+A new region has a road graph before it has enough completed trips to train a reliable local model. Traffic shifts also happen faster than a full training cycle.
 
-**Decision:** Weekly model retraining (Approach 1) with a real-time calibration layer (Approach 2). Online learning is deferred — the operational risk and feedback-loop hazard outweigh the freshness benefit at current scale.
+- **Regional models** allow focused tuning but fragment data and serving capacity.
+- **A shared model with region features** transfers learning, with the risk of region-specific bias.
+- **Routing plus local calibration** provides a simple baseline while data accumulates.
 
-**Rationale:** The calibration layer handles fast-changing patterns (accidents, construction) within minutes without touching the model weights. The weekly retraining handles slow-changing patterns (seasonal shifts, new road topology, changes in driver behavior). This decoupling is the pattern that earned Uber $100M in annualized revenue impact — resolution gains from the model compound over time, while calibration corrections keep the predictions honest in the moment.
+**Use a shared residual model with an explicit routing fallback, then add regional calibration from measured errors.** Keep the initial correction small where coverage is weak. Evaluate new regions separately before enabling a larger learned correction.
 
-> [!TIP]
-> The counterintuitive finding from Uber DeepETT: improving segment-level MSE (better resolution — explaining more variance in per-segment travel times) can *increase* trip-level MAE if calibration drifts. A segment-level resolution improvement of 30% compounds to ~85% at the trip level — but a 2% calibration error per segment compounds to a 45% error over 30 segments. The real-time calibration layer prevents the compounding by driving per-segment bias to zero independently.
+Traffic features update continuously. Calibration refreshes use recent completed trips; full model candidates follow a slower release cycle. Keep recent trips out of training when they are used for release evaluation.
 
-**Edge cases — data leakage:** The train/val/test split must be strictly time-based with a gap between train and val periods. Features must be computed using only information available *at or before* the time the prediction would have been made. The feature store enforces this by versioning feature definitions alongside model versions — a serving container fetches features computed exactly as they were during training.
+Shadow a candidate to inspect errors and latency, then run a controlled rollout to measure its effect on the application. Rollback restores the previous model and feature contract; live traffic ingestion continues independently.
 
-### DD4: Cold start for new routes, regions, and trip types
+**Adaptation operates at several time scales**
 
-**Problem.** A new city launches. The historical-feature tables are empty — no per-segment median travel times, no geohash embeddings trained on local data, no trip-completion labels for the new driver fleet. The model must produce reasonable ETAs from day one, and improve rapidly as data accumulates. Similarly, a new trip type (e.g., motorcycle delivery) or a new route through a recently opened highway faces the same sparse-data problem.
+Current traffic changes through the stream pipeline; regional calibration changes after enough completed trips arrive; model weights change after training and validation. Keeping these clocks separate allows a traffic incident to affect serving immediately without retraining the model in response to every spike.
 
-**Approach 1: Routing-engine-only fallback.** Without ML correction, the raw routing-engine ETA is still reasonable — the engine uses map attributes (speed limits, road class) and real-time traffic feeds that are available from probe data regardless of historical depth. The physics-first architecture makes cold start survivable: the ML residual model adds zero correction until it has enough data, and the baseline RE-ETA is the initial estimate.
+A new region initially uses routing with a small, validated correction. As reviewed trip coverage grows, compare local residual distributions with the shared model and enable a region-specific calibration only when enough evidence supports it.
 
-**Approach 2: Geographic embedding regularization.** Use H3 hexagonal binning at resolutions 6–9 as embedding IDs. A new region's embeddings are initialized as the weighted average of adjacent known regions' embeddings. As trips accumulate, the embedding adapts. This shares statistical strength across nearby areas — a suburb of an established city gets a reasonable starting point from the city center's embeddings.
-
-**Approach 3: Transfer learning from source cities.** Pre-train the model on a large established city (e.g., São Paulo for a new Brazilian city) with similar road topology. Freeze the encoder layers and fine-tune only the decoder and bias-adjustment layers on the new city's limited data. This transfers road-network reasoning and temporal patterns while allowing city-specific calibration.
-
-**Approach 4: Segment-level similarity.** For new road segments (new highway), identify the 5 most similar existing segments by road class, lane count, speed limit, and surrounding density. Use the average of their historical travel-time profiles as the initial estimate, with a wide uncertainty interval that narrows as data accumulates.
-
-**Decision:** Routing-engine fallback (Approach 1) as the zero-data floor, geographic embedding regularization (Approach 2) as the 1–100 trip bootstrap, and transfer learning (Approach 3) for major new-city launches. Segment similarity (Approach 4) for individual new roads.
-
-**Rationale:** The routing-engine fallback means cold start is never catastrophic — the user still gets a reasonable ETA. Embedding regularization works automatically as part of the normal training process; no special cold-start pipeline is needed. Transfer learning is reserved for launches where the business needs high accuracy from day one (a competitive new market) and engineering effort is justified.
-
-> [!TIP]
-> The single most important cold-start defense is the physics-first design itself. A pure-ML model (no routing engine) with zero training data for a new city outputs random noise. The hybrid architecture outputs the routing engine's best estimate — which already accounts for speed limits, road hierarchy, and current traffic — and the ML correction gracefully ramps from zero to its full contribution over ~2 weeks of accumulating trips.
-
-**Monitoring:** For any new region, track the ratio of ML-residual to RE-ETA over time. In an established region, the residual is 10–30% of the total ETA. In a brand-new region, it starts near 0% and should converge within ~10K completed trips. If it never converges (residual stays near 0 or oscillates), the embeddings may have collapsed — the region is too different from any trained area. Trigger manual review.
-
-## 9. References
-
-1. [DeepETA: How Uber Predicts Arrival Times Using Deep Learning](https://www.uber.com/us/en/blog/deepeta-how-uber-predicts-arrival-times/)
-1. [DeeprETA: An ETA Post-processing System at Scale](https://arxiv.org/pdf/2206.02127)
-1. [Scaling Real-Time Traffic Forecasting with a Graph-Aware Transformer (DeepETT)](https://www.uber.com/us/en/blog/scaling-real-time-traffic/)
-1. [Scaling ML at Uber with Michelangelo](https://www.uber.com/us/en/blog/scaling-michelangelo/)
-1. [Traffic Prediction with Advanced Graph Neural Networks](https://deepmind.google/blog/traffic-prediction-with-advanced-graph-neural-networks/)
-1. [ETA Prediction with Graph Neural Networks in Google Maps](https://kandluis.github.io/files/eta-prediction.pdf)
-1. [Engineering Uncertainty Estimation in Neural Networks for Time Series](https://www.uber.com/us/en/blog/neural-networks-uncertainty-estimation/)
-1. [ETA Reliability at Lyft](https://eng.lyft.com/eta-estimated-time-of-arrival-reliability-at-lyft-d4ca2720bda8)
-1. [How Science Inspires Our ETA Models](https://eng.lyft.com/how-science-inspires-our-eta-models-bf229e3148e8)
-1. [Real-Time Spatial Temporal Forecasting @ Lyft](https://eng.lyft.com/real-time-spatial-temporal-forecasting-lyft-fa90b3f3ec24)
-1. [Lyft's Feature Store: Architecture, Optimization, and Evolution](https://eng.lyft.com/lyfts-feature-store-architecture-optimization-and-evolution-7835f8962b99)
-1. [DuETA: Congestion Propagation Pattern Modeling via Efficient Graph Learning](https://export.arxiv.org/pdf/2208.06979v1.pdf)
-1. [How Waze Uses TFX to Scale Production-Ready ML](https://blog.tensorflow.org/2021/09/how-waze-uses-tfx-to-scale-production-ready-ml.html)
+Maintain cohorts for previously seen and genuinely new roads/trip patterns. Shadow candidates reproduce the exact request-time features and compare later mature trip outcomes. A canary measures serving errors and latency immediately, but quality conclusions wait for completed trips. Rollback pins the prior bundle while allowing compatible live traffic features to continue; incompatible feature-schema updates require a coordinated pointer change.

@@ -4,351 +4,257 @@ title: "SD: Post Search"
 category: system-design
 date: 2026-07-02
 tags: [Search, Indexing, Social]
-description: "Post Search lets users find social media posts by keyword, phrase, or semantic meaning across billions of posts, returning ranked results in under 200ms. The system ingests millions of new posts per minute, indexes them in near real-time, and serves search traffic from a global user base."
 thumbnail: /images/posts/2026-07-02-system-design-post-search.svg
 redirect_from:
   - /2026/07/02/system-design-post-search.html
-mvp_repo: https://github.com/iliazlobin/sd-post-search-backend-mvp
+last_modified_at: 2026-10-06
+description: "Search for social posts by keyword, phrase or meaning, with language/date filters and current visibility checks."
+notion_source: https://app.notion.com/p/390d865005a8817096c7cc0ca690aebf
 ---
 
-Post Search lets users find social media posts by keyword, phrase, or semantic meaning across billions of posts, returning ranked results in under 200ms. The system ingests millions of new posts per minute, indexes them in near real-time, and serves search traffic from a global user base.
+Search for social posts by keyword, phrase or meaning, with language/date filters and current visibility checks.
 
 <!--more-->
 
-## 1. Problem
+## Problem
 
-Post Search lets users find social media posts by keyword, phrase, or semantic meaning across billions of posts, returning ranked results in under 200ms. The system ingests millions of new posts per minute, indexes them in near real-time, and serves search traffic from a global user base. Three tensions shape the architecture: (1) the inverted index must absorb writes at line rate without blocking reads — every millisecond of indexing lag is a post the user cannot find; (2) relevance ranking must fuse lexical match signals (BM25) with semantic similarity (embeddings) without blowing the latency budget; and (3) storage spans hot in-memory posting lists, warm SSD-resident segments, and cold archival shards — the index footprint grows ~3× the raw text size.
+Users need to find a post even when they remember only a phrase or the subject it discussed. Keyword search handles exact terms; semantic retrieval finds related wording. Both need to return relevant, visible posts while new posts and edits continue arriving.
+
+This design keeps the durable post record separate from rebuildable search indexes. Lexical indexing can become searchable before embedding generation completes.
+
+## Requirements
+
+### Functional requirements
+
+- **Search posts:** keyword, phrase and semantic matching, combined in a hybrid mode.
+- **Refine results:** filter by author, language and date; enforce post visibility for the requesting user.
+- **Read results:** return ranked snippets, safe highlighting and cursor-based pagination.
+- **Update search:** ingest creates, edits, deletions and privacy changes from the post service.
+
+### Non-functional requirements
+
+- **Scale:** assume 10B retained posts, 100M new posts/day and 145K peak searches/s.
+- **Latency:** top-50 search P99 below 200ms within the serving region, with bounded shard fan-out.
+- **Freshness:** lexical indexing P99 within 2s of a committed post; semantic indexing P99 within 10s.
+- **Availability:** target 99.99%; mark partial results when a nonessential search shard misses its deadline.
+- **Security:** current authorization gates every returned post, including cached and semantic candidates.
+- **Quality:** evaluate lexical/hybrid relevance, phrase accuracy and ANN recall on representative queries.
+
+Personalized social-graph ranking and cross-language semantic retrieval are outside this design. These values are targets, not measured results.
+
+## Back-of-the-envelope calculations
+
+- **Ingest:** 100M/day ≈ 1.16K posts/s average, or 11.6K/s at an assumed 10× burst.
+- **Queries:** 500M users × 5 searches/day ≈ 29K/s average, or 145K/s at 5× peak.
+- **Text:** 10B × 2KB = 20TB raw. A planning factor of 3× gives 60TB lexical storage; measure analyzers, positions and compression.
+- **Vectors:** 10B × 256 dimensions × 4 bytes = 10.24TB before ANN overhead and replication. Vector storage is additional to the lexical estimate.
+- **Fan-out:** 145K queries/s × 20 selected shards = 2.9M shard requests/s before retries; routing and query scope materially affect capacity.
+
+## Core entities
+
+- **Post** is the durable content and visibility record.
+- **IndexEvent** carries a versioned change so retries and late events preserve the latest state.
+- **SearchDocument** contains searchable text, filters and an embedding tied to one model version.
+
+```protobuf
+message Post {
+  string post_id;
+  string author_id;
+  string text;
+  string language;
+  Timestamp created_at;
+  string visibility;
+  int64 version;
+}
+message IndexEvent {
+  string event_id;
+  string post_id;
+  int64 version;                 // Ignore older changes.
+  string operation;              // Upsert or deletion.
+}
+message SearchDocument {
+  string post_id;
+  repeated string terms;
+  repeated float embedding;      // Produced by embedding_model.
+  string embedding_model;
+  int64 source_version;
+}
+message SearchHit {
+  string post_id;
+  string snippet;
+  repeated HighlightRange highlights;
+  float score;
+}
+message HighlightRange {
+  int32 start;
+  int32 end;                      // Offsets in returned snippet.
+}
+```
+
+Term positions for phrase search are an index implementation detail, not a separate application record.
+
+## API
+
+```yaml
+POST /search:
+  body:
+    query: text
+    mode: lexical-or-semantic-or-hybrid
+    filters: {author_id: optional, language: optional, from: optional, to: optional}
+    page_size: 50
+    page_token: optional-opaque-token
+  result: {results: [], next_page_token: token, partial: false}
+GET /index/status/{post_id}:
+  access: internal-authorized-service
+  result: {lexical_version: integer, semantic_version: integer}
+```
+
+The post service publishes indexing events after commit. Public clients cannot write directly to the index.
+
+## High-level design
+
+Post creation enters through the authenticated API. Committed events update the lexical and vector indexes. Search retrieves candidates, combines rankings and checks current content/permissions before returning snippets.
 
 ```mermaid
-graph LR
-    Client[Client<br/>Web / Mobile] --> Gateway[API Gateway<br/>auth, routing,<br/>rate limiting]
-    Gateway --> Search[Search Service<br/>query parsing, ranking,<br/>scatter-gather]
-    Search --> IndexTier[(Index Tier<br/>inverted index<br/>+ embedding store)]
-    Search --> DocStore[(Post Store<br/>raw post data<br/>+ metadata)]
-    Client --> Ingest[Write Path<br/>event pipeline<br/>indexer workers]
-    Ingest --> IndexTier
-
-    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a
-    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
-    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
-    class Gateway,Search,Ingest svc
-    class IndexTier,DocStore store
-    class Client edge
+flowchart TB
+  U["User"] --> API["API gateway"]
+  API --> POST["Post creation service"]
+  POST --> DB[("Post records and outbox")]
+  DB --> EVENTS["Committed changes"]
+  EVENTS --> IDX["Index workers"]
+  IDX --> SEARCH[("Text and vector indexes")]
+  API --> QUERY["Query service"]
+  QUERY --> SEARCH
+  QUERY --> VERIFY["Ranking and<br/>visibility checks"]
+  VERIFY --> DB
 ```
 
-## 2. Requirements
+## Storage
 
-**Functional**
+- **PostgreSQL shards:** authoritative posts, versions, visibility and outbox events. Commit the post change and event on the same shard. The search system can hydrate by post ID using the post service's batch interface.
+- **Elasticsearch/Lucene:** compressed term postings, term positions, filter fields and ANN vector indexes on SSD, with a memory/filesystem cache. Use time partitions plus fixed logical shards; avoid application-managed Redis posting lists.
+- **Kafka:** ordered changes by post ID, with consumer checkpoints and sufficient retention for replay.
+- **Object storage:** index snapshots and versioned embedding artifacts. An embedding model rollout builds a compatible vector index before query traffic switches.
+- **Redis:** bounded query/session caches. Cache keys include query, filters, index/model generation and authorization scope; permission checks still occur on response.
 
-- FR1: Search posts by keyword or phrase with ranked results
-- FR2: Search by semantic meaning when exact keywords miss
-- FR3: Filter results by author, date range, or language
-- FR4: See new posts in search results within 2 seconds of creation
-- FR5: Paginate through result pages beyond the top 50
-- FR6: Highlight matching terms in returned post snippets
+Compression ratios, refresh cost and vector recall need measurement on the actual corpus. [Unicorn](https://vldb.org/pvldb/vol6/p1150-curtiss.pdf) is useful background on distributed social search; this design chooses a Lucene-based index rather than recreating its internals.
 
-**Non-functional**
+## From request to response
 
-- NFR1: p99 search latency under 200ms for top-50 results
-- NFR2: 99.99% availability; no single shard takes down search
-- NFR3: Ingest and index 100M new posts per day without backpressure
-- NFR4: Storage cost linear in post count; index footprint under 3× raw text
+### Keyword and phrase search
 
-*Out of scope: Social graph-aware ranking (friend-of-friend boosting), personalized relevance models per user, multi-language cross-lingual search, post deletion from the index within the latency SLO (eventual consistency acceptable).*
+The query service validates length and filters and chooses a language-compatible analyzer. Date/author/language filters are pushed into retrieval, so the top candidates satisfy them before ranking. Phrase queries use indexed token positions, preserving terms needed by the phrase.
 
-## 3. Back of the envelope
+Relevant shards return their top candidates within a deadline. The coordinator merges scores, batch-loads posts and checks current visibility/deletion state. Removing most candidates after retrieval would waste work and reduce recall; filter-aware retrieval limits that problem.
 
-- **Index storage:** 10B posts × 2KB raw text × 3× index overhead (posting lists + embeddings) → 60TB total index footprint; warm SSD at $0.08/GB-month = ~$5K/month in storage.
-- **Write throughput:** 100M new posts/day ÷ 86,400 seconds → ~1,200 writes/sec steady-state; with 10× peak-to-average on social platforms → 12K writes/sec peak the ingest pipeline must absorb.
-- **Read QPS:** 500M daily active users × 5 searches/day ÷ 86,400 → ~29K QPS average; peak 5× higher → ~145K QPS across the search tier.
+### Semantic and hybrid search
 
-## 4. Entities
+The service encodes the query with the model generation used by the selected vector index. ANN retrieval returns candidates; hybrid mode also runs lexical retrieval. Reciprocal rank fusion combines the lists without assuming BM25 and cosine scores share a scale.
 
+The service deduplicates IDs, verifies source versions and applies visibility checks. It can request additional candidates when filtering leaves too few results. A semantic timeout may fall back to lexical results when the requested mode permits it, with that fallback disclosed in the response.
+
+### New posts, edits and deletions
+
+Post commit emits a versioned event. Lexical workers update text and filter fields; embedding workers produce vectors asynchronously. A worker checkpoints only after its index write is durable under the configured replication policy. Status tracks lexical and semantic progress separately.
+
+A deletion or privacy restriction is enforced by the post service immediately; index workers remove or update candidates in the background. Tombstones and version comparisons prevent an older replayed event from restoring deleted content.
+
+### Pagination and snippets
+
+The first search establishes a short-lived index snapshot and deterministic sort with post ID as the tie-breaker. The token binds query, filters, authorization scope, index/model generation and last sort values. Expired snapshots require a fresh search.
+
+The service creates snippets only for final hits and returns highlight offsets over escaped text. The client renders those spans safely. Semantic-only matches can have useful snippets without inventing exact matching terms.
+
+## Deep dives
+
+### How should lexical and semantic rankings be combined?
+
+**Problem:** BM25 and vector similarity use different score distributions.
+
+- **Raw weighted scores:** inexpensive, but normalization and weights vary by query.
+- **Reciprocal rank fusion:** combines rank positions and needs no training pipeline.
+- **Learned reranker:** can improve relevance with labeled data, at extra inference cost.
+
+**Recommendation:** use reciprocal rank fusion, then evaluate whether a bounded reranker improves relevance enough to justify latency and compute. A candidate absent from one list contributes only from the other.
+
+```python
+def rrf(lexical, semantic, k=60):
+    scores = {}
+    for ranking in (lexical, semantic):
+        for rank, post_id in enumerate(ranking, start=1):
+            scores[post_id] = scores.get(post_id, 0) + 1 / (k + rank)
+    return sorted(scores, key=lambda p: (-scores[p], p))
 ```
-Post {
-  post_id:      uuid        PK
-  author_id:    uuid        ← indexed for author-filtered queries
-  text:         text        ← raw post body; tokenized into index
-  language:     string(5)   ← en, es, ja; gates language-specific analyzers
-  created_at:   timestamp   ← tiered index key (hot: last 30d, warm: 30d-1y, cold: 1y+)
-  privacy:      enum        ← public, followers-only (gates index visibility)
-  like_count:   integer     ← denormalized; updated async, used in ranking
-}
 
-TermPosting {
-  term:         string      PK  ← n-gram token (word, bigram for CJK)
-  post_id:      uuid        PK  ← compound key with term
-  position:     smallint[]      ← term offsets in post; enables phrase queries
-  tier:         enum           ← hot (Redis), warm (SSD segment), cold (object store)
-}
+Candidate breadth bounds attainable recall; reranking cannot recover a post omitted by both retrievers. Measure NDCG, recall, empty-result rate and query latency by language and query type.
 
-PostEmbedding {
-  post_id:      uuid        PK
-  vector:       float[256]  ← distilled sentence embedding; 256d, 1KB per post
-  model_version string      ← tracks which encoder produced this vector
-}
-```
+**Retrieval and fusion.** Run BM25 over text and the embedding query over a compatible vector-index generation in parallel. Each returns a bounded list of post IDs, ranks and index versions. Deduplicate by post ID before fusion; one post appearing twice in a retriever still gets only one contribution from that list.
 
-### API
-
-- `POST /search` — keyword or semantic search, returns ranked posts. Body: `{query, mode: "lexical"|"semantic"|"hybrid", filters: {author_id?, date_from?, date_to?, language?}, page_size, page_token}`. Response: `{results: [{post_id, author_id, text_snippet, highlights, score, created_at}], next_page_token}`.
-- `POST /index` — ingest a new post into the search index. Called by the write pipeline. Body: `{post_id, author_id, text, language, created_at, privacy}`. Returns 202 Accepted.
-- `GET /index/status/{post_id}` — check whether a post is searchable yet. Returns `{indexed: bool, indexed_at: timestamp?}`.
-- `DELETE /index/{post_id}` — remove a post from the index (eventual). Returns 202 Accepted.
-
-## 5. High-Level Design
+For a small example, post A ranks first lexically and third semantically, while B ranks tenth lexically and first semantically. With `k=60`, A scores `1/61 + 1/63 ≈ 0.0323`; B scores `1/70 + 1/61 ≈ 0.0307`. A wins because it ranks strongly in both lists. A post returned only by semantic search remains eligible with that contribution alone.
 
 ```mermaid
-graph TB
-    subgraph WritePath["Write Path"]
-        App[Post Creation<br/>app server] -->|publish| Kafka[Event Bus<br/>Kafka / Pulsar<br/>partitioned by post_id]
-        Kafka --> Indexer[Indexer Workers<br/>tokenize, embed,<br/>write posting lists]
-        Indexer --> Redis[(Hot Index<br/>Redis<br/>last 30 days)]
-        Indexer -->|segment flush| SSD[(Warm Index<br/>SSD segments<br/>30d–1yr)]
-        Indexer --> Embedder[Embedding Service<br/>sentence transformer<br/>256d vectors]
-        Embedder --> Faiss[(ANN Index<br/>Faiss / ScaNN<br/>sharded by post_id)]
-    end
-
-    subgraph ReadPath["Read Path"]
-        Client2[Client] --> Gateway2[API Gateway]
-        Gateway2 --> Aggregator[Aggregator<br/>scatter to shards<br/>merge top-K]
-        Aggregator -->|lexical| Redis
-        Aggregator -->|lexical| SSD
-        Aggregator -->|semantic| Faiss
-        Aggregator --> Ranker[Ranker<br/>BM25 + cosine fusion<br/>re-rank top 200]
-    end
-
-    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a
-    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
-    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
-    classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a
-    class Kafka async
-    class App,Gateway2,Aggregator,Indexer,Embedder,Ranker svc
-    class Redis,SSD,Faiss store
-    class Client2 edge
+flowchart TB
+  Q["Query and filters"] --> L["BM25 candidates"]
+  Q --> V["Vector candidates"]
+  L --> F["Deduplicate and fuse ranks"]
+  V --> F
+  F --> A["Hydrate and authorize"]
+  A --> R["Rerank bounded candidates"]
+  R --> O["Results"]
 ```
 
-#### FR1: Keyword search
+Reserve a fixed part of the deadline for hydration and optional reranking. If vector retrieval times out, return the lexical result with a degraded-retrieval indicator. Measure the union's recall separately from final ranking quality: an excellent reranker can still produce poor results when its candidate set misses relevant posts.
 
-- **Components:** Gateway → Aggregator → Lexical Index (Redis + SSD segments) → Ranker → Client.
-- **Flow:**
-  1. Gateway receives `POST /search` with `mode: "lexical"` and query string.
-  1. Query parser tokenizes the query using the same analyzer that built the index (lowercase, stem, stop-word removal; bigram for CJK languages).
-  1. Aggregator scatters the tokenized query terms to all index shards (shard by `hash(post_id) % N`).
-  1. Each shard intersects posting lists for multi-term queries, computes BM25 score per post, returns top 200 per shard.
-  1. Aggregator merges shard results into a global top 200 and forwards to the Ranker.
-  1. Ranker applies author/date filters, sorts by score, returns top 50 with highlighted snippets.
-- **Design consideration:** Posting lists are stored as delta-encoded, varint-compressed integer arrays — a 10M-document posting list for a common term like "the" compresses from ~40MB to ~4MB. Hot terms (appearing in >1% of posts) are marked as "stop words" and excluded from the index to avoid dominating query latency.
+### How do we meet the indexing freshness target?
 
-#### FR2: Semantic search
+**Problem:** embedding generation can lag while lexical indexing is ready.
 
-- **Components:** Gateway → Aggregator → Faiss ANN Index → Ranker → Client.
-- **Flow:**
-  1. Gateway receives `POST /search` with `mode: "semantic"`.
-  1. The Embedding Service encodes the query string into a 256d float vector using the same model that indexed the posts.
-  1. Aggregator fans out the vector to all ANN shards (same shard key as lexical index; embedding and posting list co-located per shard).
-  1. Each Faiss shard performs approximate nearest-neighbor search (IVF+PQ, nprobe=32) and returns the top 200 posts by cosine similarity.
-  1. Aggregator merges shard results into a global top 200.
-  1. Ranker re-ranks using a lightweight cross-encoder for the final top 50, and returns snippets.
-- **Design consideration:** Embedding generation is the write-path bottleneck — a 256d sentence transformer encodes ~500 posts/sec per GPU. At 1,200 writes/sec steady-state, 3 GPUs cover the load. Vectors are stored in Faiss with IVF+PQ compression (256d × 1KB raw → ~64 bytes compressed), keeping the full ANN index for 10B posts at ~640GB.
+- **One blocking worker:** simple progress tracking, but the slower path delays both indexes.
+- **Independent consumers:** lexical and semantic progress can advance separately.
+- **Synchronous indexing during post creation:** immediate search visibility, with posting coupled to index availability.
 
-#### FR3: Filter by author, date, language
+**Recommendation:** use independent versioned consumers. The [Elasticsearch refresh mechanism](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search) makes new segments searchable; tune refresh intervals under realistic write/query load.
 
-- **Components:** Aggregator applies filters during post-fetch from DocStore before ranking.
-- **Flow:**
-  1. Query executes against the index (lexical or semantic), returning candidate post_ids with scores.
-  1. Aggregator batch-fetches post metadata (author_id, created_at, language, privacy) from the Post Store for the top 200 candidate IDs.
-  1. Filters are applied in-memory: privacy check (public-only for unauthenticated users), author_id match, date range clamp, language match.
-  1. Filtered candidates proceed to the Ranker for final scoring.
-- **Design consideration:** Pushing filter logic after index retrieval keeps the posting-list intersection fast (no per-document metadata lookups during the hot path). At 145K peak QPS, batch-fetching 200 post metadata records per query from a key-value store adds ~2ms — acceptable within the 200ms budget.
+Track commit-to-searchable latency separately for text and vectors, including queue lag and retries. During an embedding backlog, lexical retrieval remains available. Rebuild from a snapshot and replay offset, retaining deletion/version information throughout recovery.
 
-#### FR4: Real-time indexing
+**Versioned indexing.** A post update commits version 18 and an outbox entry in PostgreSQL. The lexical consumer indexes version 18 immediately; the vector consumer computes its embedding later. Both write only when their incoming version is newer than the stored document version. A retried version 17 therefore leaves version 18 intact.
 
-- **Components:** App Server → Kafka → Indexer Workers → Redis (hot tier).
-- **Flow:**
-  1. When a user creates a post, the app server publishes `{post_id, author_id, text, language, created_at, privacy}` to Kafka topic `post-created`, partitioned by `post_id`.
-  1. Indexer Worker consumes the event and tokenizes the post text using the language-appropriate analyzer.
-  1. For each term in the post, the worker atomically appends `(post_id, [positions])` to the term's posting list in Redis (using `ZADD` with the post timestamp as score for time-sorted lists).
-  1. The worker also calls the Embedding Service to generate the 256d vector and writes it to the Faiss shard.
-  1. The indexer acknowledges the Kafka offset after both lexical and semantic writes succeed.
-  1. A separate Segment Compactor periodically flushes Redis posting lists that are >30 days old into immutable SSD segments (SSTable-like format), freeing Redis memory.
-- **Design consideration:** Redis `ZADD` gives us O(log N) insert into time-sorted posting lists, which is fast enough at 12K peak writes/sec. The trade-off is Redis memory cost — keeping 30 days of the hot index in memory for 10B posts (~300M posts/day × 30 days = 9B post entries in posting lists) requires roughly 200GB of Redis cluster memory. Posts older than 30 days live in SSD segments where reads are slower (~5ms vs ~0.5ms) but acceptable for infrequently searched tail content.
+Track the last fully applied source offset and searchable time separately. A consumer acknowledging an event does not necessarily mean a query can see it: Lucene's refresh boundary adds another step. Publish freshness measurements from a probe that creates or updates a post and searches for that exact version.
 
-#### FR5: Pagination
+Deletes travel through both paths as versioned tombstones. Keep them long enough to cover replay and rebuild; an old embedding job must not restore a deleted post. A rebuild starts from a consistent source snapshot and its replay offset, consumes later changes, and passes completeness checks before the query alias switches. During the switch, a request uses one index generation throughout its pagination session.
 
-- **Components:** Aggregator uses cursor-based pagination tokens.
-- **Flow:**
-  1. First request: Aggregator executes the query and returns `next_page_token` encoding `(query_hash, last_score, last_post_id, page_number)`.
-  1. Subsequent request with `page_token`: Aggregator re-executes the same query with the `last_score` and `last_post_id` as tiebreakers, requesting the next 50 results.
-  1. The token is a base64-encoded, HMAC-signed blob to prevent tampering and avoid server-side cursor state.
-- **Design consideration:** Stateless pagination avoids storing result-set cursors server-side (which would balloon at 29K QPS). The trade-off is re-executing the query, but with the same shard-scatter as the initial request, it adds negligible overhead. Search results are not deeply paginated in practice — 99% of users never go past page 3.
+### How do shards control latency and partial results?
 
-#### FR6: Result highlighting
+**Problem:** every additional shard adds work and another opportunity for a slow response.
 
-- **Components:** Ranker generates highlighted snippets using term positions stored in the posting lists.
-- **Flow:**
-  1. After ranking the top 50 posts, the Ranker fetches full term positions from the posting list for each winning post_id.
-  1. For each post, it identifies the densest window of matching terms (a snippet ~200 characters long that maximizes term hits).
-  1. Matching terms are wrapped in `<mark>` tags and included in the response.
-- **Design consideration:** Term positions are stored but only fetched for the final top 50, not the full 200 candidates — this avoids a 4× fetch amplification. Storing positions doubles the posting list size (from ~4 bytes per post_id to ~8 bytes), but the user experience of seeing highlighted matches justifies the storage cost.
+- **Term partitioning:** routes by query term but concentrates hot-term traffic and complicates intersections.
+- **Document partitioning:** each shard evaluates a complete query over its own documents; broad queries still fan out.
+- **Time partitioning with document shards:** prunes time-filtered queries and keeps recent indexes hot.
 
-## 6. Deep dives
+**Recommendation:** use time partitions and fixed logical document shards, with replicated readers and bounded concurrency. Query recent partitions by default; an explicit older date range expands the search scope. A replica adds read capacity, not another logical slice of results.
 
-### DD1: Inverted index structure and compression
+Return a partial flag if an eligible shard misses the deadline, and retain authorization checks for all hits. Capacity planning includes internal requests/query, tail latency, index size and refresh/merge pressure; hashing alone does not guarantee equal query cost.
 
-How do we store posting lists so that 10B posts × 5,000 unique terms average = 50T post-term pairs fit in 60TB without making intersection too slow?
+**Bounded shard work.** Suppose a seven-day query selects seven daily partitions, each with four document shards. The planner creates 28 logical tasks and chooses one healthy replica for each. A concurrency limit of eight means tasks run in waves; the planner accounts for this queue time when setting the request deadline.
 
-**Approach 1: Uncompressed integer arrays**
+Each shard returns its best candidates and an execution status. The coordinator merges lexical candidates by their comparable ranking policy and fuses vector/lexical lists at the planned retrieval stage. Shard-local top-K is sufficient for a globally ordered score list only when scores are comparable; distributed term statistics and reranking can require a wider candidate set.
 
-Store each posting list as a sorted array of 64-bit post IDs. For a common term appearing in 100M posts: 100M × 8 bytes = 800MB per list. Intersection is fast (merge join of sorted arrays), but storage explodes — 50T pairs × 8 bytes = 400TB, 6× over budget.
+Track a completion bitmap alongside hits. If task 23 misses its deadline, a partial result identifies the missing partition rather than presenting a complete search. Cancel outstanding work when the request ends. A cursor pins the query, index generation and stable tie-breaker; using a new snapshot for every page can repeat or omit posts as refreshes change the ordering.
 
-**Pro:** Fastest intersection, simplest code.
+### How do we preserve filters and permissions?
 
-**Con:** Storage cost is 6× the budget; common-term posting lists don't fit in memory.
+**Problem:** ANN top-K may contain mostly excluded posts, and cached index visibility may be stale.
 
-**Approach 2: Delta encoding + varint compression**
+- **Post-filter only:** easy, but selective filters reduce recall.
+- **Filter-aware retrieval:** narrows the candidate population before scoring.
+- **Separate indexes for every permission group:** precise but expensive to maintain.
 
-Store posting lists as delta-encoded gaps between consecutive post IDs, compressed with varint (variable-length integer) encoding. Gap between post IDs 7 and 103 is 96, encoded in 1–2 bytes instead of 8. Intersection requires decoding the gaps on the fly, but decoding is CPU-cheap (~2 cycles per varint on modern hardware).
+**Recommendation:** push stable author/date/language filters into retrieval and use supported filter-aware ANN queries. Treat index visibility as a candidate filter; the current post authority makes the final permission decision. If that decision cannot be verified, return fewer results or an availability error.
 
-**Pro:** 10× compression on sorted post IDs (common terms: 800MB → ~80MB). Entire index fits in the storage budget.
+Keep cache scopes explicit, prevent unauthorized snippets from entering responses and audit deletion/permission propagation. [TAO's social-graph storage paper](https://www.usenix.org/system/files/conference/atc13/atc13-bronson.pdf) provides context for graph access patterns without implying that search indexes are the permission authority.
 
-**Con:** Intersection requires decompressing both lists simultaneously; adds ~5% CPU overhead vs raw arrays.
+**Authorization at response time.** Consider a private post that was public when indexed. Its search hit may still contain text and an old public flag. Before returning anything derived from the post—including a snippet—the result service batch-loads current visibility and checks the requesting user's access. An inaccessible hit is removed before response assembly.
 
-**Decision:** Delta encoding + varint compression.
+Selective filters also affect candidate breadth. If a global ANN search returns 100 candidates and only two belong to the requested author, post-filtering cannot invent the author's other relevant posts. Push supported filters into the ANN query or switch to an exact scan of the small filtered population. Overfetch only within a resource budget.
 
-**Rationale:** This is what every production search engine uses — Lucene, Unicorn, and Google's indexing stack all apply gap-compressed posting lists. The CPU overhead is negligible because intersection is memory-bandwidth-bound, not compute-bound. Incremental decoding also means we never materialize the full decompressed list — we stream through both posting lists one gap at a time during intersection, keeping working-set memory constant regardless of list length. For extremely common terms (>10% hit rate), we store a bloom filter instead of a posting list and fall back to a full scan of the hot index segment.
-
-**Edge cases:**
-
-- **Very rare terms** (appearing in <100 posts): posting list is tiny; no compression needed. Store inline in the term dictionary.
-- **Document deletions:** post deletion sets a tombstone bit in the posting list entry. The segment compactor drops tombstones during merges.
-- **Concurrent writes:** The Redis hot index handles atomic appends. SSD segments are immutable once flushed; a new segment is written for deletes, and the compactor merges segments periodically.
-
-> [!TIP]
-> **Why delta encoding works so well for post IDs:** Post IDs are assigned in roughly increasing order (UUIDv7 or similar), so the gap between consecutive IDs is small — typically 1–100. Varint encodes numbers under 128 in a single byte, so most gaps are 1-byte. For a 10M-post posting list, the average gap is ~100 (1 byte each) vs 8 bytes raw — that's 8× compression. For a 100K-post list, the average gap might be ~1,000 (2 bytes each) — still 4× compression.
-
-### DD2: Hybrid ranking — fusing BM25 and semantic similarity
-
-How do we combine lexical relevance (BM25) with semantic relevance (cosine similarity) into a single ranked list without running two separate searches and merging blindly?
-
-**Approach 1: Reciprocal rank fusion (RRF)**
-
-Run lexical and semantic searches independently, each returning a ranked list of 200 candidates. For each candidate, compute `RRF_score = 1 / (k + rank_lexical) + 1 / (k + rank_semantic)` with k=60. Sort by RRF score, return top 50. Simple, no model training needed, widely used.
-
-**Pro:** Zero training cost; easy to implement and debug; k parameter tunes the fusion curve.
-
-**Con:** Ignores the magnitude of scores — a post ranked #1 lexically and #200 semantically beats one ranked #10 in both. Does not learn which mode to trust per query type.
-
-**Approach 2: Learned linear combination**
-
-Collect candidates from both indexes (union of top 200 from each, typically ~300 unique posts). For each candidate, compute `final_score = α × BM25_norm(post) + (1-α) × cosine_norm(post)`, where both scores are min-max normalized to [0,1]. Train α per query type using click-through data.
-
-**Pro:** Accounts for score magnitude; can learn query-type-specific weights (e.g., α=0.8 for navigational queries, α=0.3 for exploratory).
-
-**Con:** Requires normalized scores (BM25 is unbounded; needs log-scaling). Training data pipeline adds complexity.
-
-**Approach 3: Two-stage re-rank with cross-encoder**
-
-Use RRF (Approach 1) to produce a top 200 candidate pool. Feed each candidate pair (query, post_text) through a lightweight cross-encoder transformer (e.g., MiniLM, 33M params) that outputs a single relevance score. Sort by cross-encoder score.
-
-**Pro:** Highest relevance quality; cross-encoder sees query and post together and can model term interactions BM25 and embeddings miss.
-
-**Con:** 200 cross-encoder inferences per query at 145K QPS peak = 29M inferences/sec — requires a GPU cluster.
-
-**Decision:** Approach 1 (RRF) for the MVP; Approach 2 (learned linear) as the optimization path.
-
-**Rationale:** RRF works well enough to ship and requires zero training infrastructure. At launch, there is no click-through data to train Approach 2 — it's a cold-start problem. The RRF rank-merge is a single-pass O(N) sort over at most 400 candidates and adds <1ms to the latency budget. As click data accumulates, we can train the α weight offline and A/B test it against RRF. Approach 3 (cross-encoder) is reserved for when the business can justify the GPU cost — it's the asymptote of relevance quality but overkill for a general post search where users primarily want to find posts they remember seeing, not discover new content.
-
-**Edge cases:**
-
-- **One index returns empty:** If the semantic index finds nothing (e.g., very rare query terms the encoder hasn't seen), RRF gracefully degrades to lexical-only ranking.
-- **Query-type detection:** Short queries (1–2 words) are usually navigational; long queries (5+ words) are usually exploratory. This heuristic can seed the initial α until learned weights are available.
-- **Language mismatch:** If the user searches in English but the post is in Spanish, BM25 will score low (no term overlap) but the multilingual embedding model may still find it — RRF gives the embedding path a chance to surface cross-lingual matches.
-
-> [!TIP]
-> **Why RRF works better than it sounds:** In practice, a post that ranks highly in BOTH indices is almost certainly relevant. RRF's `1/(k+rank)` formula boosts items that appear in both lists (receiving two RRF contributions) over items that dominate one list but don't appear in the other. This is exactly the behavior we want — it's a soft AND over the two retrieval paths.
-
-### DD3: Real-time indexing pipeline — from post creation to searchable
-
-How do we make a just-created post discoverable in under 2 seconds without allowing the write path to block or destabilize the read path?
-
-```mermaid
-sequenceDiagram
-    participant App as App Server
-    participant Kafka as Event Bus
-    participant Idx as Indexer Worker
-    participant Redis as Hot Index (Redis)
-    participant Emb as Embedding Service
-    participant Faiss as ANN Index
-
-    App->>Kafka: publish post-created event (post_id=37)
-    Kafka->>Idx: consume event (offset 1042)
-    Idx->>Idx: tokenize text → [hello, world, ...]
-    par lexical index
-        Idx->>Redis: ZADD term:hello 37 [pos:0]
-        Idx->>Redis: ZADD term:world 37 [pos:1]
-    and semantic index
-        Idx->>Emb: encode(text) → vector
-        Emb-->>Idx: float[256]
-        Idx->>Faiss: add(37, vector)
-    end
-    Idx->>Kafka: commit offset 1042
-    Note over App,Faiss: Post is now searchable (~500ms from creation)
-```
-
-**Decision:** Event-sourced indexing with Kafka as the durable buffer, Redis for the hot tier, and asynchronous embedding generation.
-
-**Rationale:** The event bus decouples post creation from indexing — the app server writes to Kafka in <1ms and returns to the user, while indexer workers process at their own pace. Kafka's partitioning by `post_id` guarantees that all events for a given post arrive in order at the same indexer, avoiding race conditions where a post-update event overtakes post-created. Redis is the hot index because `ZADD` is O(log N) and Redis handles 100K+ ops/sec on modest hardware — at 1,200 writes/sec, a single Redis shard is barely breathing. The embedding generation is the slowest step (~2ms per post on GPU), so it runs in parallel with lexical indexing — the post is lexically searchable before its embedding lands, which is acceptable because most users search by keywords, not semantic meaning. The embedding eventually catches up (typically within 500ms of the lexical index).
-
-**Edge cases:**
-
-- **Kafka consumer lag:** If indexer workers fall behind (e.g., during a traffic spike), the end-to-end indexing latency grows. We monitor consumer lag and auto-scale indexer workers when lag exceeds 30 seconds.
-- **Duplicate events:** Kafka's at-least-once delivery means an indexer may process the same post twice. The indexer uses `post_id` as the Redis sorted set member — `ZADD` is idempotent (same member + same score = no-op).
-- **Post deletion:** A `post-deleted` event triggers `ZREM` on all term posting lists. Faiss doesn't support efficient single-vector deletion; we use a bitmap filter that the Aggregator checks before returning results (the segment compactor eventually rebuilds the ANN index without deleted posts).
-- **Embedding model upgrade:** When the embedding model is retrained (new `model_version`), existing vectors become stale. The indexer writes new vectors alongside old ones with a version tag; the Aggregator queries the latest version. A backfill job re-encodes old posts against the new model in the background.
-
-> [!TIP]
-> **Why Kafka and not direct Redis writes from the app server:** Direct writes couple the app server to Redis availability — if Redis is briefly unhealthy, post creation fails or silently loses index entries. Kafka buffers writes durably on disk; even if all indexer workers crash, events are replayed from the log when they restart. This is the same pattern that powers Facebook's Wormhole pipeline (1T+ messages/day, tailing MySQL binlogs) and every serious search infrastructure — the index is a materialized view over the event log, not a system of record.
-
-### DD4: Sharding and scatter-gather at scale
-
-How do we partition 60TB of index data across a cluster so that a single query touches every relevant shard without any one shard becoming a hotspot?
-
-**Approach 1: Term-based partitioning**
-
-Shard by term — each shard owns a subset of the term dictionary and their full posting lists. A query for "hello world" hits exactly two shards: the shard that owns "hello" and the shard that owns "world."
-
-**Pro:** Query touches only the shards that own the query terms — O(query_terms) shards instead of O(total_shards). Less network fan-out.
-
-**Con:** Hot terms ("breaking news", trending hashtags) concentrate all traffic onto a single shard. Shard imbalance is severe — the shard owning "the" handles 100× the QPS of the shard owning "platypus."
-
-**Approach 2: Document-based partitioning**
-
-Shard by `hash(post_id) % N`. Every shard owns a slice of every term's posting list — the term "hello" appears in all N shards with the post IDs that hashed to each shard.
-
-**Pro:** Perfectly uniform load distribution — every shard handles the same proportion of every query. No hotspot terms. Adding shards is a pure repartition by hash.
-
-**Con:** Every query fans out to all N shards. At N=100 shards, a single query generates 100 internal RPCs.
-
-**Decision:** Document-based partitioning (Approach 2) with a two-level scatter-gather: shard → replica.
-
-**Rationale:** Term-based partitioning creates brittle hotspots that are hard to fix — you can't just "split the 'breaking' shard" without rebuilding the entire term-to-shard mapping. Document-based partitioning gives uniform load by construction. The fan-out to N shards is mitigated by two techniques: (1) the Aggregator sends requests to all shards in parallel (not sequentially), so latency = max(shard_latency), not sum(shard_latency); (2) each logical shard has 3 replicas, and the Aggregator routes to the least-loaded replica per shard. At N=100, 100 parallel gRPC calls to in-memory posting lists complete in <10ms (network round-trip dominates compute). The scatter-gather pattern is the standard architecture for distributed search — Elasticsearch, Unicorn, and Google's web search all use document-based sharding.
-
-**Edge cases:**
-
-- **Shard failure:** If shard 17 goes down, results from shards 1–16 and 18–100 are returned with degraded recall (missing ~1% of posts). The response includes a `degraded: true` flag. This is preferable to failing the entire query.
-- **Rebalancing:** Adding a new shard (N → N+1) changes `hash(post_id) % N` for every post. We use consistent hashing instead of modulo — only K/N posts move to the new shard, not all posts.
-- **Replica consistency:** Redis replicas are eventually consistent (async replication). A just-indexed post may not appear on the replica the Aggregator hits for a few milliseconds. For the 2-second freshness SLO, this is acceptable.
-
-## 7. References
-
-1. Curtiss et al., "Unicorn: A System for Searching the Social Graph," VLDB 2013: [https://vldb.org/pvldb/vol6/p1150-curtiss.pdf](https://vldb.org/pvldb/vol6/p1150-curtiss.pdf)
-1. Bronson et al., "TAO: Facebook's Distributed Data Store for the Social Graph," USENIX ATC 2013: [https://www.usenix.org/system/files/conference/atc13/atc13-bronson.pdf](https://www.usenix.org/system/files/conference/atc13/atc13-bronson.pdf)
-1. Facebook Engineering — Under the Hood: Building Out the Infrastructure for Graph Search (2013): [https://engineering.fb.com/2013/03/06/core-infra/under-the-hood-building-out-the-infrastructure-for-graph-search/](https://engineering.fb.com/2013/03/06/core-infra/under-the-hood-building-out-the-infrastructure-for-graph-search/)
-1. Facebook Engineering — Under the Hood: Indexing and Ranking in Graph Search (2013): [https://engineering.fb.com/2013/03/14/core-infra/under-the-hood-indexing-and-ranking-in-graph-search/](https://engineering.fb.com/2013/03/14/core-infra/under-the-hood-indexing-and-ranking-in-graph-search/)
-1. Facebook Engineering — Under the Hood: Building Posts Search (2013): [https://engineering.fb.com/2013/10/24/core-infra/under-the-hood-building-posts-search/](https://engineering.fb.com/2013/10/24/core-infra/under-the-hood-building-posts-search/)
-1. Facebook Engineering — Wormhole: Pub/Sub System Moving Data Through Space and Time (2013): [https://engineering.fb.com/2013/06/13/core-infra/wormhole-pub-sub-system-moving-data-through-space-and-time/](https://engineering.fb.com/2013/06/13/core-infra/wormhole-pub-sub-system-moving-data-through-space-and-time/)
-1. Facebook Engineering — Modernizing the Facebook Groups Search (2026): [https://engineering.fb.com/2026/04/21/ml-applications/modernizing-the-facebook-groups-search-to-unlock-the-power-of-community-knowledge/](https://engineering.fb.com/2026/04/21/ml-applications/modernizing-the-facebook-groups-search-to-unlock-the-power-of-community-knowledge/)
-1. Li et al., "Embedding-based Retrieval in Facebook Search," KDD 2020: [https://doi.org/10.1145/3394486.3403305](https://doi.org/10.1145/3394486.3403305)
-1. Lin et al., "Content Search at Facebook," SIGMOD 2023: [https://doi.org/10.1145/3539618.3591840](https://doi.org/10.1145/3539618.3591840)
-1. Huang et al., "A Case for Hybrid Search: Combining Lexical and Semantic Retrieval," arXiv 2025: [https://arxiv.org/html/2509.13603](https://arxiv.org/html/2509.13603)
+Cache a search result under the authorization scope and index generation, but recheck mutable permissions when reading it. A permission change triggers invalidation and a new authority version. If the permission service is unavailable, the endpoint follows its documented fail-closed policy; lexical relevance and cache freshness never substitute for access verification.
