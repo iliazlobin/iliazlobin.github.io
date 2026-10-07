@@ -92,3 +92,11 @@ test("data models stay compact and use Protobuf highlighting", () => {
     }
   }
 });
+
+test("deep-dive recommendations are separate paragraphs after option lists", () => {
+  for (const {name, text} of articles) {
+    const deepDives = text.split("\n## Deep dives\n")[1] || "";
+    assert.doesNotMatch(deepDives, /^- [^\n]+\n\*\*(?:Recommendation|Use |Start |Train |Publish |Cache |Release |Begin |Combine |Promote )/m,
+      `${name}: recommendation would render inside the final option`);
+  }
+});

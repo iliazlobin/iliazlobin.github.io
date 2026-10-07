@@ -17,6 +17,7 @@ A product-recommendation service that retrieves relevant catalog items, ranks th
 ## Problem
 
 A large catalog gives users many choices, but finding useful products takes effort. Recommendations help users discover items that match their interests and the page they are viewing.
+
 The service combines longer-term preferences with recent actions such as viewing a product or adding it to a cart. It retrieves a manageable candidate set, ranks those products and checks availability before returning the recommendations.
 
 ## Requirements
@@ -146,6 +147,7 @@ record_event:
 ## High-level design
 
 Retrieval finds products that might be relevant. A lightweight ranker removes weak candidates, a deeper ranker scores the remaining set and a final stage applies eligibility and diversity rules.
+
 The offline pipeline learns from displayed recommendations and their outcomes. It publishes the retrieval models, item index and rankers as a compatible bundle.
 
 ```mermaid
@@ -234,16 +236,19 @@ Ranking every product for every request would be prohibitively expensive. Retrie
 ### Responding to a cart change
 
 Publish the cart event with its event ID and timestamp. The feature pipeline deduplicates it and updates the session's product set.
+
 A cart-page request includes its current cart snapshot, allowing the service to use the latest submitted context even while the event pipeline catches up. Complementary-product retrieval and ranking then use that snapshot.
 
 ### Adding a new product
 
 Generate an embedding from the product's content using the active item encoder. Insert it into a recent-item index and apply the same eligibility checks as existing products.
+
 Compact recent items into the next base index. Publish the compacted index with the corresponding encoder version; the cutover watermark determines which overlay records remain necessary.
 
 ### Handling a dependency failure
 
 If personal features are unavailable, rank from page context and regional popularity. If learned serving is unavailable, return a precomputed popularity or co-purchase list through the same eligibility check.
+
 An inventory outage has a different consequence: serve only entries covered by an approved freshness policy, or return a smaller set. Record the fallback mode and dependency failure separately.
 
 ## Deep dives
@@ -271,12 +276,19 @@ class A data;
 - **One ranker over a large candidate set:** Apply the same detailed scorer to every retrieved product. The path is simple and avoids a light-stage cutoff, but feature reads and inference scale with thousands of candidates per request.
 
 - **Embedding retrieval with staged ranking — recommended:** Use a shared vector space for coverage, then inexpensive shortlisting and bounded deep scoring. Compute is controlled; recall can be lost in retrieval or shortlisting and all encoders, indexes and rankers must remain compatible.
+
 **Use two-tower retrieval followed by lightweight and deep ranking.** The user tower and item tower map context and products into a shared vector space. Item vectors are precomputed; a request computes only its context vector and retrieves nearby products. A 100M-item catalog cannot be deeply scored on each request. We accept staged recall loss and multiple serving artifacts, then measure useful-candidate retention at each cutoff alongside conversion and peak inference cost.
+
 [ScaNN](https://arxiv.org/abs/1908.10396) offers approximate retrieval with a memory/recall trade-off. Measure candidate recall against a higher-quality retrieval baseline before tuning the downstream ranker.
+
 Start with a tree-based lightweight ranker. Use a [DCN V2](https://arxiv.org/abs/2008.13535) deep ranker when explicit feature interactions improve held-out ranking and business outcomes enough to justify its cost.
+
 Choose candidate counts from recall and latency curves. Profile every stage with the same workload and reserve time for eligibility checks. If deep ranking misses its deadline, the service can return the eligible lightweight-ranked set and record that mode.
+
 **A single recommendation request through the funnel**
+
 Build the user vector from the current cart/page and eligible historical activity, then query the compatible product index. Merge embedding candidates with co-purchase, popularity and recent-product sources by product ID. Keep source tags so recall loss can be traced to retrieval rather than blamed on the ranker.
+
 The light stage batch-fetches inexpensive features for the candidate set. The deep stage receives only its shortlist plus richer cross-features: for example, whether a product's category matches recent purchases or whether its price lies near the user's observed range.
 
 ```text
@@ -299,10 +311,15 @@ A user's current-session vector changes frequently, while an index containing th
 - **Update artifacts independently:** Refresh each encoder, ranker and index on its own schedule. Data appears quickly, but vectors from different encoder versions can become incomparable and regress retrieval.
 
 - **Immutable bundles with compatible overlays — recommended:** Coordinate model-space releases while encoding new products with the active bundle. This separates catalog freshness from model changes; overlays, watermarks and warm rollback bundles add storage and cutover work.
+
 **Publish a bundle containing both towers, the base index, rankers and feature definitions.** A new product is encoded using the bundle currently serving requests, and its overlay carries that version. Catalog updates are frequent, while a model-space change affects the entire index. We accept overlay reconciliation and duplicate warm artifacts so requests always use compatible user/item towers and fresh eligible product data.
+
 Online session features update within one minute. Training features are joined by their availability at the recommendation time, including delayed events. Shared feature definitions and recorded serving snapshots keep offline evaluation comparable to the live path.
+
 Warm the replacement index and models before switching traffic. Rollback restores the previous complete bundle; recent-item overlays are rebuilt or routed to the matching encoder version.
+
 **Versioned artifacts during a catalog update**
+
 The base index contains vectors generated by item encoder E1. A new product enters a small overlay after E1 encodes its content. When E2 is ready, build a new base plus overlay using E2, load query encoder U2 and its rankers, then switch the bundle pointer only after the matching artifacts are healthy.
 
 ```mermaid
@@ -321,6 +338,7 @@ class R control;
 ```
 
 Store each product's content version in the index record. A replayed older catalog update cannot replace a newer vector or undo a deletion. A request pins its bundle ID, while the final catalog check applies current eligibility.
+
 For historical training, reconstruct item availability and inventory signals at impression time. Today's inventory is not a valid feature for last week's displayed product. Missing features carry masks; feature-schema or embedding-dimension mismatches block release instead of producing a superficially valid vector.
 
 ### How do we recommend new users and products?
@@ -332,13 +350,21 @@ A new user has no reliable interaction history. A new product has content but li
 - **Content-based retrieval:** Represent products from approved attributes and users from current context. New products are searchable immediately; content similarity has limited evidence about purchase intent.
 
 - **Context baseline with controlled exploration — recommended:** Combine page/cart context and content vectors with a bounded eligible-item exploration allocation. Learning can reach less-exposed products; some slots have lower expected relevance and require exposure-probability logging.
+
 **Combine context-based popularity with content embeddings, then reserve a bounded exploration budget.** For a new user, use the current page, cart, language and region. For a new product, use its title, category and other approved attributes. The service must work before reliable user or product histories exist. We accept a measured exploration cost and keep eligibility checks authoritative, while purchase outcomes establish whether broader exposure is actually useful.
+
 Keep missing behavioral features explicit. A product with no purchase history differs from a product that received many impressions and converted poorly.
+
 Evaluate cold-start cohorts separately. Exploration assignments are logged so later training can account for how an item became visible; eligibility rules apply to explored products as well.
+
 **Make cold-start behavior explicit**
+
 For a first-time shopper on a running-shoes page, retrieve category/region popularity and content-similar shoes without inventing a long-term preference vector. As clicks and cart actions arrive, update the session representation and gradually increase its influence.
+
 A new shoe can enter content retrieval after encoding its title, category and attributes. Its purchase-count feature is missing, not evidence of poor conversion. Exploration draws from eligible new items and logs the probability of their actual slot assignment. A slot cap prevents exploration from replacing most of a strong established slate.
+
 Evaluate new users and products separately using time-based “first seen” definitions. Randomly withholding history from established products can test mechanics, but it is not a complete substitute for genuinely new-product behavior.
+
 An exploration purchase becomes an attributed outcome only after joining the request ID, item ID and label window. Record whether a product was later unavailable so zero conversion can be distinguished from a failed purchase opportunity.
 
 ### What outcome should the model learn?
@@ -350,10 +376,15 @@ Clicks arrive quickly, but a product that attracts clicks may produce few purcha
 - **Purchase-only training:** Optimize the transaction outcome directly. Business alignment is clearer, but labels are sparse and delayed, and exposed non-purchases must wait for the attribution window to mature.
 
 - **Purchase-oriented learning with auxiliary outcomes — recommended:** Use mature purchase evidence and supporting click/cart signals, adding shared heads only when they improve the purchase objective. This shares information; loss-weight competition and target leakage require per-head and purchase-quality checks.
+
 **Begin with a purchase-oriented ranking objective supported by click and cart features.** Wait for the attribution window before marking an impression as a non-purchase; start with 48 hours and validate that window against the product's actual purchase delay. Conversion is the primary outcome, while clicks and carts provide earlier supporting evidence. We accept delayed purchase labels and evaluate multi-task interference before maintaining additional heads; auxiliary click gains alone do not justify promotion.
+
 Deduplicate outcomes and group train/test splits chronologically. Join features as they existed at impression time, excluding future cart changes and purchases. Negative sampling and class weights are recorded in the training manifest.
+
 Use ranking metrics such as NDCG and recall for offline comparisons. Calibrate probability outputs separately if they are used for expected-value scoring. Controlled experiments measure conversion, revenue, returns and latency before wider rollout.
+
 **Construct an impression label**
+
 An impression log records which item occupied which slot, the serving bundle, request-time features and the exposure policy. Purchase events carry stable order/item identities. Join them within the attribution window and deduplicate repeated order notifications before producing labels.
 
 ```text
@@ -363,6 +394,7 @@ An impression log records which item occupied which slot, the serving bundle, re
 ```
 
 The proposed purchase-oriented ranker scores relevance using calibrated purchase probability; cart and click signals improve representation and diagnose the funnel. Sample negatives only from actual eligible impressions, recording their sampling rate. A product never shown has no observed purchase opportunity for that request.
+
 Fit calibration on natural-prevalence held-out data. If serving multiplies probability by expected value, separately validate order value and returns; a click-trained score is not automatically a purchase probability. Keep a protected chronological test period and allow the label window to mature before comparing candidates.
 
 ### How do we improve the set without distorting relevance?
@@ -376,6 +408,7 @@ Repeatedly showing near-identical products limits discovery. Business constraint
 - **Eligibility followed by a bounded diversity reranker — recommended:** Select products using relevance with a small redundancy penalty among already chosen items. Variety becomes explicit; penalty tuning can trade conversion for diversity and adds slate-level evaluation work.
 
 Users need a useful set of available products rather than many copies of the same choice. We accept a bounded relevance tradeoff, measuring conversion and discovery together instead of treating variety as a universal improvement.
+
 **Apply eligibility first, then a small, explicit diversity penalty.** Maximum marginal relevance is one option: score each next item using its relevance and similarity to products already selected.
 
 ```python
@@ -384,8 +417,11 @@ slate_score = relevance_score - diversity_weight * max_similarity_to_selected
 ```
 
 Tune the diversity weight using relevance, conversion and duplicate-category exposure. Margin or freshness boosts have their own bounded weights and experiments, making their effect on the ranking visible.
+
 Past rankings influence the training data. Use controlled exploration with logged assignment probabilities for exposure correction; a predicted click probability is a different quantity. Apply weighting only where the logging policy gives adequate support, and cap extreme weights.
+
 **The reranker's actual selection loop**
+
 Start with an empty slate. On each step, remove candidates that violate a hard constraint, calculate relevance minus similarity to already selected items, and choose the highest remaining score. Repeat until the slate is full or eligible candidates run out.
 
 ```python
@@ -402,4 +438,5 @@ while candidates and len(selected) < limit:
 ```
 
 Keep relevance and similarity on compatible scales; an arbitrary similarity penalty can dominate an uncalibrated ranking score. Use content/category similarity to reduce near-duplicate products, then evaluate whether variety improves discovery without hurting the intended shopping task.
+
 Hard stock/region/safety checks precede this optimization. Record the original model order and the final slate so business boosts and diversity changes are auditable. When too few products qualify, return a shorter slate or a declared fallback rather than weakening eligibility.

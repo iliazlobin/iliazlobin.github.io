@@ -17,6 +17,7 @@ Design of a meeting service with live audio, video, screen sharing, chat and opt
 ## Problem
 
 Users need to join a meeting quickly, hear each other clearly and share content across home, mobile and corporate networks. Each participant has a different connection and device, so the service must adapt the streams delivered to each receiver.
+
 Meeting setup and host controls use a reliable application connection. Audio and video use a separate real-time transport, where late packets can be less useful than a lower-quality frame delivered on time.
 
 ## Requirements
@@ -211,27 +212,33 @@ Control-plane authorization and transport negotiation precede media publishing. 
 ### Joining a meeting
 
 The client authenticates and submits the meeting ID. The meeting service checks access and capacity, creates a participant session and returns a short-lived signaling token and forwarding assignment.
+
 The client exchanges its media capabilities and session description through signaling, gathers ICE candidates and checks connectivity. [ICE](https://www.rfc-editor.org/rfc/rfc8445) selects a working candidate pair; TURN provides a relay path where direct connectivity fails. Once transport security is established, the client publishes its tracks and subscribes to others.
+
 A reconnect reuses the participant identity with a newer session epoch. Commands from the old session are rejected.
 
 ### Sending and receiving audio and video
 
 The client encodes media into negotiated layers. The SFU tracks subscriptions, feedback and available bitrate, then forwards the selected layers to each receiver. Receivers buffer briefly, decode and render.
+
 Audio receives priority during congestion. Forwarding all camera streams at full quality grows downstream bandwidth rapidly; selective subscriptions and layer selection address that cost.
 
 ### Sharing a screen
 
 A user with permission publishes a screen track alongside the camera. The client selects encoding settings appropriate to text or motion, and the SFU adjusts subscribers' layouts and layer choices.
+
 Stopping sharing unpublishes that track. Host controls request a permitted action; device permissions and the user's microphone/camera controls remain enforced by the client.
 
 ### Sending chat and reactions
 
 The signaling service validates membership and assigns a sequence to a retained chat message before acknowledging it. Repeated message IDs return the existing result. Reconnecting clients request messages after their last sequence.
+
 Reactions are short-lived events and can tolerate loss. Separating their retention prevents high reaction rates from expanding the durable chat log.
 
 ### Recording a meeting
 
 The host starts an authorized recording and participants see its state and consent requirements. A recording subscriber receives permitted tracks, writes segments and records progress in a manifest. Finalization assembles the output and updates the recording status.
+
 Transport-encrypted meetings can support a trusted cloud recorder. End-to-end encrypted meetings require an explicitly authorized key-holding recorder or client-side recording, according to the meeting policy.
 
 ## Deep dives
@@ -247,10 +254,15 @@ A group call creates many subscriptions, and users have limited uplink and decod
 - **Selective forwarding — recommended:** Forward existing encoded streams and select subscriptions/layers per receiver. Server encoding work is avoided; receiver bandwidth and decode limits still require bounded visible tiles and layer choices.
 
 Group meetings need efficient publisher uplink without server re-encoding every layout. We accept SFU bandwidth and per-receiver subscription state, with mixing reserved for a separately authorized recording or constrained-client mode.
+
 The [RTP topology specification](https://www.rfc-editor.org/rfc/rfc7667.html) distinguishes these forwarding and mixing approaches. Use simulcast or scalable video coding supported by the clients, and bound the number of visible video subscriptions.
+
 Switch to a decodable layer at an appropriate keyframe or codec-defined switching point. RTP sequence handling alone does not make every layer switch seamless. Forwarders keep bounded retransmission buffers and request keyframes when required.
+
 **What the SFU forwards**
+
 A publisher encodes several layers or simulcast streams and sends them once to its assigned SFU. The SFU maintains receiver subscriptions: active-speaker high quality for one user, a low-resolution tile for another. It forwards encoded packets from the selected decodable stream instead of decoding and recompositing every frame.
+
 For a mesh of N participants, each publisher sends up to N-1 copies. With forwarding, the publisher sends a bounded set of encoded layers; server egress still scales with subscriptions and must be budgeted.
 
 ```mermaid
@@ -280,9 +292,13 @@ A direct UDP path gives useful latency, but firewalls and NAT behavior vary.
 - **ICE with relay fallback — recommended:** Check candidate pairs and use a working direct or TURN path. Most sessions can avoid unnecessary relay; candidate setup, relay capacity and connectivity metrics remain required.
 
 Participants use heterogeneous enterprise and mobile networks. We accept connectivity-check setup and provision measured TURN capacity so reachability does not depend on one assumed UDP path.
+
 Deploy TURN near users, require short-lived credentials and monitor allocations, relay bandwidth and transport mix. TCP or TLS fallback can help restrictive networks, with head-of-line blocking affecting media latency.
+
 An ICE restart establishes a replacement path after a network change. Retrying signaling alone does not repair a failed media transport.
+
 **Connection establishment and network change**
+
 Signaling exchanges transport credentials and candidate addresses. ICE connectivity checks test candidate pairs and nominate a working path; TURN supplies relay candidates when direct transport cannot connect.
 
 ```text
@@ -292,6 +308,7 @@ Network changes    → ICE restart with new credentials/candidates
 ```
 
 The media path carries authenticated encrypted transport independently of signaling. A healthy WebSocket does not imply healthy audio/video. Keep metrics for candidate type, RTT, loss and relay use so connectivity failures can be localized.
+
 TURN allocations require bounded lifetimes and short-lived credentials, with per-user abuse limits. A TCP/TLS fallback improves reachability but can delay newer media behind a lost packet. Test enterprise firewalls and Wi-Fi-to-mobile handoff with real clients. After a path changes, adapt congestion estimates instead of immediately sending the old high bitrate over the new link.
 
 ### How do we keep quality consistent across receivers?
@@ -305,9 +322,13 @@ A fast connection and a congested mobile connection can subscribe to the same pu
 - **Encoded layers with receiver feedback — recommended:** Select a simulcast or scalable-codec layer per subscription and adjust sender bitrate as needed. Heterogeneous receivers share published layers; publishers spend extra encoding/uplink and transitions need congestion control.
 
 A meeting contains different devices and bandwidth conditions. We accept layer-management and publisher overhead to preserve audio and useful visible video without individualized server transcoding.
+
 Use receiver feedback, queue delay and packet loss to estimate available capacity. Allocate audio first, then screen content or the active speaker, then other tiles. Bound the jitter buffer and retransmission deadline so old packets do not prolong congestion.
+
 Load tests cover loss, bursty delay, mobile handoff and changing subscription layouts. Measure frozen-frame time and audio interruptions alongside bitrate.
+
 **Allocate bandwidth per receiver**
+
 Estimate a receiver's available budget from transport feedback and queue delay. Reserve audio first, then screen content/active speaker, then selected secondary tiles. Choose existing encoded layers that fit that budget and request sender adaptation when none is feasible.
 
 ```text
@@ -319,6 +340,7 @@ Receiver budget
 ```
 
 Use hysteresis for upgrades so small fluctuations do not repeatedly switch layers. Downgrade sooner when loss or queue delay rises, and bound retransmission against playout deadlines. The jitter buffer absorbs limited variation at the cost of added delay; growing it without limit preserves old packets while ruining conversation latency.
+
 Feedback is per subscription, so a slow receiver does not automatically force all participants to the same quality. Sender CPU/uplink limits still constrain the available layers. Test the full interaction under loss and bursts, reporting audio gaps and frozen-frame time in addition to average bitrate.
 
 ### How do we route a meeting across regions?
@@ -332,9 +354,13 @@ One region is operationally simple, but users far from that region pay extra pro
 - **Regional SFU groups — recommended:** Group nearby participants and relay only subscribed streams between regions. Access latency and relay work are balanced; meeting routing and SFU recovery must preserve subscription epochs.
 
 Large meetings can span regions while only selected tracks are visible. We accept cross-region routing state and measured relay bandwidth, keeping small local meetings on the simpler one-region path.
+
 Meeting placement accounts for geography, capacity and data-residency requirements. A controller assigns sessions; media nodes retain enough current state to continue forwarding during a controller restart.
+
 On SFU failure, clients receive a new assignment, establish a new transport and republish or resubscribe. Capacity reserves and regional admission limits keep failover from overloading healthy nodes. The recovery target remains a measured objective, rather than a guarantee for every network.
+
 **A cross-region subscription**
+
 Assign each participant to a nearby capacity-qualified SFU. If users in another region subscribe to a publisher, relay the required encoded layers once between regional nodes and fan them out locally.
 
 ```text
@@ -343,6 +369,7 @@ Publisher → local SFU → regional relay → remote SFU → remote subscribers
 ```
 
 The controller owns versioned assignments; media nodes own active packet forwarding. If the controller restarts, established media can continue from retained session state. If a media node fails, its clients need new transport credentials, publication/subscription setup and fresh decodable frames.
+
 Reserve failover capacity before accepting meetings at the advertised target. A new assignment epoch fences stale control decisions so a delayed controller response cannot send a client back to a failed owner. Data-residency constraints can override nearest-region placement; expose that policy instead of presenting geographic locality as an unconditional guarantee.
 
 ### How does end-to-end encryption change recording and trust?
@@ -356,9 +383,13 @@ Transport encryption secures each client/server leg. End-to-end encryption addit
 - **Explicit meeting trust modes — recommended:** Choose and disclose a compatible encryption/recording mode before joining. Capabilities have a clear trust contract; mode negotiation and participant-visible changes add product and key-management work.
 
 A server recording feature and a server-blind media mode have different trust requirements. We accept explicit mode limits and audited key handling rather than presenting incompatible features as available under one opaque setting.
+
 Use a reviewed group-key protocol and rotate keys as membership changes. The SFU retains only the routing metadata required for forwarding. [Zoom's cryptography whitepaper](https://github.com/zoom/zoom-e2e-whitepaper) provides a concrete group-call design; its protocol details should be treated as a versioned reference.
+
 A member who receives media keys can access that meeting's media. Membership verification, consent and client security therefore remain part of the trust model.
+
 **Trust boundaries and recording**
+
 In transport-encrypted mode, the SFU terminates the transport and trusted server recording can process payloads. In client-managed media encryption mode, forwarding uses routing metadata while payload decryption belongs to authorized meeting members.
 
 ```text
@@ -369,4 +400,5 @@ End-to-end:     authorized clients share media keys;
 ```
 
 Membership changes trigger the protocol's group-key update. A removed member should not receive future keys; previously received keys or decoded media remain part of the prior trust exposure. Authenticate the roster and host actions so signaling manipulation cannot silently add a receiver.
+
 If E2EE recording is required, use an explicitly authorized recording participant/client under the chosen trust policy, rather than claiming the SFU can decrypt transparently. Display the mode and consent before joining. Verify key-rotation and late-join behavior against the reviewed protocol version; a generic “encrypted” label does not explain who can access the content.

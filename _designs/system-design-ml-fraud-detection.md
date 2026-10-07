@@ -19,6 +19,7 @@ Design of a real-time fraud scorer that evaluates a payment request and returns 
 ## Problem
 
 At checkout, the service has a short time to distinguish a legitimate purchase from stolen-card use, account takeover or coordinated fraud. A missed fraudulent payment creates a financial loss; declining a legitimate payment interrupts the customer's purchase.
+
 The scorer combines the transaction with recent activity, merchant policy and known relationships between users, devices and payment tokens. It estimates risk, then applies an explicit decision policy. [Stripe Radar](https://docs.stripe.com/radar/how-radar-works) separates model risk from the rules that determine the payment outcome.
 
 ## Requirements
@@ -213,6 +214,7 @@ The payment service receives one durable decision for its idempotency key. The r
 4. LightGBM predicts risk from the prepared feature vector. The policy maps the calibrated score to approve, review or decline.
 
 5. The service commits the decision and the feature/model/policy versions, then returns the result. The event enters the historical pipeline for later evaluation.
+
 A full graph traversal during checkout would add unpredictable latency. The model uses materialized relationship features instead.
 
 ### Recording a delayed outcome
@@ -234,9 +236,13 @@ Fraud inputs mix amounts, categorical identifiers, missing values and nonlinear 
 - **Gradient-boosted trees — recommended:** Apply LightGBM to a prepared tabular feature vector, including evaluated graph-derived inputs. Heterogeneous interactions fit a bounded CPU path; feature materialization, calibration and versioning remain dependencies.
 
 - **Graph or transformer inference per transaction:** Process relational neighborhoods or event sequences directly at checkout. Richer evidence can help difficult cases, but traversal and inference add variable latency and larger recovery complexity.
+
 **Use a fast baseline plus LightGBM, with graph representations as prepared inputs.** [LightGBM](https://papers.nips.cc/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html) handles tabular interactions; the graph encoder is trained and published separately. Compare graph-feature lift against the tabular baseline before keeping that dependency. Checkout needs a reproducible low-latency decision on mixed tabular inputs. We accept feature-preparation work and a tested fast fallback, adding graph representations only when their measured quality gain justifies that dependency.
+
 Fast-path thresholds require their own calibration and quality gates. Evaluate them on representative mature labels; confidence from a small model is not automatically equivalent to confidence from the full scorer.
+
 **One transaction's synchronous decision**
+
 Fetch the versioned account/device velocity snapshot, transaction attributes and prepared graph features in bounded batches. The fast scorer handles only cases whose exit thresholds passed an independent quality gate. Ambiguous cases use the full tree model; missing features carry explicit masks and feature age.
 
 ```mermaid
@@ -259,6 +265,7 @@ class D control;
 ```
 
 Log raw/calibrated scores, exit mode, feature/model versions and selected policy. Repeating the same transaction key returns that recorded decision; a changed amount under the same key is a conflict. The decision service assesses risk, while the payment authority separately owns money movement.
+
 Measure cascade recall as a whole. A graph model that performs well on reviewed cases cannot repair fraud wrongly approved by an earlier fast exit. Deadline failure selects the merchant's explicit fallback action and records the reason.
 
 ### How do we learn when fraud is rare?
@@ -272,7 +279,9 @@ A model that approves almost everything can have high accuracy while missing mos
 - **Tuned weighting with representative calibration — recommended:** Emphasize reviewed positives or difficult examples using one controlled loss policy. Rare-event learning improves; weight tuning can overfit or damage legitimate-user precision, so calibration and release evaluation use untouched population data.
 
 The service needs fraud recall at an explicit decline precision, not high overall accuracy. We accept careful sampling/weight tracking and independent calibration rather than stacking adjustments whose combined effect is hard to interpret.
+
 **Record sampling rates, tune one weighting policy and calibrate on untouched representative data.** Avoid stacking large positive weights with heavily oversampled positives by default. Evaluate PR-AUC and recall at the required decline precision; report uncertainty for small cohorts.
+
 For a simplified approve/decline policy, calibrated risk `p` and costs give:
 
 ```python
@@ -283,8 +292,11 @@ decline_threshold = false_decline_cost / (
 ```
 
 Manual review, transaction amount and merchant constraints extend that cost model. Production thresholds are versioned decisions, evaluated separately from the ranking metric.
+
 **Thresholds need denominators and costs**
+
 For 100K transactions with 100 confirmed fraud cases, a model approving everything has 99.9% accuracy and zero fraud recall. Use mature representative labels to measure false declines among legitimate transactions, precision among declines, and missed monetary loss separately.
+
 If legitimate-decline cost is 1 unit and missed-fraud cost is 99 units, the simplified threshold is 0.01. That calculation assumes calibrated risk, fixed costs and two actions. Larger amounts, review cost and merchant constraints change the policy.
 
 ```text
@@ -304,6 +316,7 @@ Confirmed outcomes may arrive weeks after checkout. Reviews and rules arrive soo
 - **Mature confirmed labels:** Wait for reviewed outcomes and dispute maturity. Evidence is stronger, but model updates trail new attacks and some legitimate examples remain unlabeled.
 
 - **Separate mature and provisional datasets — recommended:** Use mature evidence for the stable scorer and clearly weighted provisional records for candidate adaptation. This preserves provenance; multiple label states and observation windows require careful data and evaluation management.
+
 **Train the stable scorer on mature evidence and use weighted provisional data for candidate adaptation.** Start with a 90-day observation window, then measure maturity by payment channel and dispute type. An undisputed transaction is not automatically a verified negative. Fraud outcomes mature well after checkout. We accept slower stable-model conclusions and keep provisional evidence visibly distinct, so a short rollout cannot be mistaken for a confirmed fraud-quality result.
 
 ```mermaid
@@ -321,7 +334,9 @@ class B,C,D data;
 ```
 
 Historical features must have been available at checkout; labels must have been available by the training cutoff. Use chronological training, validation and final-test windows, with label-maturity gaps. Declined payments have different observable outcomes from approvals, so report coverage and selection bias rather than extrapolating results to unobserved populations.
+
 **A label arrives after the decision**
+
 Store the original decision and feature snapshot at checkout. A later dispute or investigator result appends a label revision with source, effective time and availability time. Training at cutoff T uses only revisions available by T and only examples whose maturity policy is satisfied.
 
 ```text
@@ -333,6 +348,7 @@ Day 90   maturity check for the selected dataset
 ```
 
 Treat this schedule as the proposed observation policy, not a universal payment-channel deadline. Measure actual delay distributions. A transaction with no dispute can remain weakly labeled rather than being silently upgraded to a reviewed legitimate example.
+
 Declined attempts lack the same counterfactual chargeback outcome as approvals. Independent reviews can improve coverage, but do not reveal exactly what would have happened if every decline had been approved. Report evaluated population and selection method with quality estimates. Split by time and group repeated linked activity so a coordinated attack is not leaked across train and test.
 
 ### How do relationships help with cold starts?
@@ -344,10 +360,15 @@ A new user has little history but may share a device or payment token with known
 - **Relationship features:** Transfer context through shared device, token or graph neighborhoods. Cold-start coverage improves; legitimate shared devices and networks can create misleading associations.
 
 - **Coverage-aware relationships with cohort priors — recommended:** Combine bounded relationship features with age/missingness and a calibrated cohort baseline. This supports sparse entities; priors can conceal small-group bias and need independent cold-start evaluation.
+
 **Use relationship features with age, coverage and missing-value masks, then blend in observed history.** Device reuse is a signal interpreted with other evidence. Evaluate new-user, new-card and new-merchant cohorts independently; shared IP addresses alone do not establish fraud. Cold-start decisions begin with weaker evidence; age and measured coverage control the influence of relationship and cohort estimates.
+
 Merchant priors use relevant business characteristics and are replaced gradually by measured history. Sensitive attributes and invasive fingerprinting require explicit privacy and fairness controls.
+
 **Use a graph feature without a synchronous graph traversal**
+
 Offline jobs construct permitted account/device/payment-token relationships and publish bounded embeddings or aggregate features. Online scoring reads the current snapshot by identity, alongside real-time velocity counters.
+
 For a new card linked to an established device, the model can observe device age, number of recent distinct cards and whether reviewed abusive neighbors exist. A shared household device can produce a similar relationship, so the model needs the surrounding context and a missing/age mask.
 
 ```text
@@ -369,9 +390,15 @@ Attack patterns evolve, but noisy feedback can also move the decision boundary i
 - **Frequent provisional candidates:** Accelerate reviewed candidate builds with newer evidence. Response improves, but immature labels increase uncertainty and still require mature follow-up evaluation.
 
 - **Direct live parameter updates:** Change the deployed boundary as feedback arrives. Delay is small, but individual changes are harder to reproduce and delayed or poisoned feedback can produce harmful enforcement.
+
 **Promote versioned candidates through offline evaluation, shadow traffic and a bounded rollout.** Mature labels establish model quality; shadow traffic checks latency, feature parity and disagreements. A short shadow window cannot establish fraud outcomes that mature weeks later. The release delay is justified by the customer and financial cost of checkout errors; frequent provisional candidates accelerate response while mature outcomes remain the quality anchor.
+
 Monitor loss rates, legitimate declines, review volume, calibration, stale features and fallback use by merchant/channel. Rollback restores a compatible model, feature encoding and threshold policy together. Velocity ingestion continues independently, and every historic decision remains reproducible.
+
 **Separate drift response from production mutation**
+
 Monitor feature missingness and score/action distributions immediately, but evaluate confirmed fraud quality only after labels mature. A sudden score increase can be a feature-pipeline error, a changed merchant mix or a real attack.
+
 Shadow a candidate using the same request-time snapshots and compare decision disagreements. Review a sampled disagreement set before canarying high-impact actions. Warm its feature encoding, calibrator and threshold policy as one compatible release.
+
 A circuit breaker can route scoring to the approved fast/fallback policy if the full model times out; every fallback decision is persisted. Rollback changes future scoring, while historical decisions and human corrections remain immutable. Track pending labels and reviewed-cohort coverage so a recent candidate is not reported as fraud-validated after only a short operational canary.

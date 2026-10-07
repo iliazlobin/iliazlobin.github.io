@@ -19,6 +19,7 @@ Design of a ride-hailing service that matches ride requests with available drive
 ## Problem
 
 A user requests a ride and expects a nearby driver with a reasonable pickup time. Drivers are moving continuously, so the matching service must work from fresh location data and reserve a driver before sending an offer.
+
 The trip service owns assignment and trip state. Location indexes find candidates, ETA estimates rank them, and background events update tracking, pricing and history. A retry must return the same ride request or offer outcome rather than create a second assignment.
 
 ## Requirements
@@ -237,23 +238,29 @@ Location search proposes candidates, while the regional transaction owns assignm
 ### Quoting and requesting a ride
 
 The quote service combines product rules, route estimates and a versioned local pricing signal. It saves the quote with an expiry. On confirmation, the ride service validates it and atomically creates the trip, idempotency record and matching outbox event.
+
 The confirmed fare reference is durable for the trip; it is not a short-lived cache entry. Changes permitted by the fare policy are recorded as explicit adjustments.
 
 ### Selecting and reserving a driver
 
 The matcher gathers nearby, eligible drivers, filters stale locations and computes pickup ETA for a bounded candidate set. Dense regions use a short matching batch; sparse regions can issue an offer immediately.
+
 The trip service transaction checks that the trip is still waiting and the driver is available. It reserves both using an offer ID and assignment version, then commits an offer notification. Competing matchers cannot reserve the same driver.
+
 Acceptance checks that exact offer and its deadline. Declines and timeouts release the reservation only if its version still matches, then return the trip to matching. Human response time is outside the first-offer latency target.
+
 Location search and optimization are advisory. The reservation transaction handles overlap between neighboring matching zones and stale availability.
 
 ### Tracking and completing the trip
 
 The location service accepts only newer updates from the driver's active session. It updates the current location and cell membership, then pushes authorized tracking updates. The client smooths display movement but shows freshness from the last received position.
+
 Pickup and completion transitions check the actor, expected trip version and allowed previous state. Completion commits the final fare and payment event. The payment worker creates or reads the existing charge intent, calls the provider using its stable key and records the result. An ambiguous response remains pending reconciliation.
 
 ### Updating history and pricing
 
 History projections consume versioned trip events and support cursor-based listing. They can lag the active trip API; a trip detail can be read from authoritative state when necessary.
+
 Pricing workers aggregate eligible supply and ride demand over local windows. They smooth zone boundaries, publish signal versions and enforce product pricing bounds. An expired signal falls back to the configured baseline or last acceptable quote policy rather than an arbitrary multiplier.
 
 ## Deep dives
@@ -267,11 +274,17 @@ Pricing workers aggregate eligible supply and ride demand over local windows. Th
 - **Geohash or S2 cell candidates:** Partition drivers into cells and expand neighboring cells for lookup. Mature spatial tools are available; boundary coverage and exact distance still require current-position filtering.
 
 - **H3 candidates with current-location validation — recommended:** Use cell neighborhoods for reusable geographic features, then recheck freshness, actual position and road pickup ETA. Neighborhood traversal is convenient; stale memberships, variable geometry and pentagons need explicit handling.
+
 **Recommendation:** use H3 for candidate indexing, then filter by current position and road-network ETA. [H3 grid traversal](https://h3geo.org/docs/api/traversal/#griddisk) returns nearby cells, not an exact distance radius. A regular grid disk has up to `1 + 3k(k+1)` cells; k=7 is up to 169, not 127. Cell shape varies and pentagon handling matters. Matching and pricing can share a bounded cell interface, while road ETA makes the final proximity decision. We accept approximate candidate geometry and validation work rather than treating an H3 disk as an exact radius.
+
 On movement, write the driver's new current-location version, add new membership and remove old membership asynchronously. Across Redis shards these writes may not be one atomic operation, so candidate queries deduplicate IDs and verify each latest record. Periodic pruning removes old member timestamps even in busy cell keys.
+
 Bound the expansion radius and candidate count, and batch cache requests. During index recovery, use conservative freshness filtering and show reduced matching availability. Monitor location age, duplicate membership, pruning backlog and candidate recall.
+
 **Cell expansion and validation.** Convert the pickup to a cell, query neighboring cells in bounded rings, and deduplicate returned driver IDs. Batch-load each driver's latest location, session sequence and availability. A driver listed in two cells contributes one candidate at their current position.
+
 Suppose a river separates two nearby coordinates. Straight-line distance may put a driver first, while the available bridge makes pickup take 15 minutes. Use geography for cheap candidate retrieval, then route-time estimation for the smaller verified set.
+
 Each location projection applies only a newer driver epoch/sequence. Movement adds the new membership and asynchronously removes the old; read validation covers that transition. Per-member timestamps and pruning handle disconnected drivers in busy cells whose keys never expire. Stop expansion after a radius/work budget and expose reduced coverage when the index is stale instead of assigning from unverified historical positions.
 
 ### When should matching use a batch?
@@ -283,9 +296,13 @@ Each location projection applies only a newer driver epoch/sequence. Movement ad
 - **Large global batch:** Optimize many riders and drivers together. More alternatives are visible, but waiting, cross-region coordination and solve time consume the matching deadline.
 
 - **Short regional batch with sparse immediate path — recommended:** Build a bounded dense-region rider/driver graph and retain an immediate path where arrivals are sparse. Local competition is handled; batching adds deliberate waiting and needs reservation checks after the advisory solve.
+
 **Recommendation:** start with a 100–250ms dense-region batch and a sparse-region immediate path. Build a sparse rider-driver graph using pickup ETA, eligibility and a calibrated marketplace-value term. Use minimum-cost matching with unmatched alternatives rather than forcing unsuitable assignments. Dense regions benefit from seeing competing riders, while sparse regions may gain little from waiting. We accept a short measured batch delay, preserving unmatched alternatives and transactional reservations instead of forcing every solver edge into an assignment.
+
 The batch optimizer proposes pairs; storage reserves them. If one reservation fails because another zone claimed the driver, remove that candidate and retry within the remaining request budget.
+
 Solver complexity depends on graph size and implementation. Benchmark end-to-end batch time rather than deriving microsecond latency from an asymptotic formula. Track pickup ETA, offer acceptance, cancellation, unmatched requests and waiting-time fairness.
+
 **A small assignment graph.** Rider A can use X in two minutes or Y in three. Rider B can use X in two minutes or Y in 20. Greedily giving X to A leaves a 22-minute total; matching A→Y and B→X gives five minutes total.
 
 | Pickup ETA | Driver X | Driver Y |
@@ -294,6 +311,7 @@ Solver complexity depends on graph size and implementation. Benchmark end-to-end
 | Rider B | 2 min | 20 min |
 
 Build the graph only from fresh eligible pairs and include an unmatched option for requests with no suitable driver. The optimizer is a proposal, not a reservation. Commit pairs under authoritative driver/trip constraints; if X was claimed elsewhere, remove that edge and replan within the remaining budget.
+
 The short batch's waiting cost is part of pickup latency. Use immediate matching in sparse markets where another arrival is unlikely to improve the result.
 
 ### How do ETA estimates improve without replacing routing?
@@ -305,6 +323,7 @@ The short batch's waiting cost is part of pickup latency. Use immediate matching
 - **End-to-end learned duration:** Predict the complete pickup time from features. Interactions are flexible, but route coverage and data shifts make unfamiliar-region behavior harder to control.
 
 - **Routing plus residual correction — recommended:** Learn the signed difference between observed arrival and a versioned route baseline. The road-aware fallback remains useful; routing, feature and model versions must align and corrections need held-out regional evaluation.
+
 **Recommendation:** use route ETA as the baseline and train a model to correct its error. This follows the hybrid approach described in [Uber's DeepETA article](https://www.uber.com/blog/deepeta-how-uber-predicts-arrival-times/). Keep model evaluation and rollout separate from the routing engine. The matcher needs plausible estimates even for sparsely labeled roads. We accept residual-model version coordination and bounded corrections to improve measured routing bias without replacing the topology-aware baseline.
 
 ```mermaid
@@ -324,8 +343,11 @@ class R,F data;
 ```
 
 Clip impossible predictions and measure error by city, product and trip type. A model timeout falls back to the routing estimate with its source recorded. Road data and incident freshness remain important even with an accurate model.
+
 **Residual prediction example.** A route engine estimates 600 seconds. The learned model predicts a +120-second residual for the current road/time/request features, so the final estimate is 720 seconds. Training labels are actual elapsed time minus the route estimate produced with information available at that request.
+
 Version route and feature inputs with the model. Using today's traffic or final route in a historical training example would leak information unavailable to the live predictor. Evaluate both corrected and baseline errors by market and trip phase; improvement averaged across all trips can hide a degraded city.
+
 Return routing ETA if the model misses its deadline, recording fallback source and prediction version. Calibrated intervals describe uncertainty separately from the point estimate. Once the trip changes state, a newer trip-version prediction supersedes the older one rather than mixing pickup and destination-arrival estimates.
 
 ### How can retries avoid double assignment or charging?
@@ -337,8 +359,11 @@ Return routing ETA if the model misses its deadline, recording fallback source a
 - **Post-action uniqueness checks:** Assign or charge first, then reject duplicate local records. Local conflicts become visible, but the external or assignment effect may already have occurred twice.
 
 - **Atomic reservations and durable payment intents — recommended:** Reserve trip/driver state together, version offers, and persist one charge intent before calling the provider with its stable key. Competing work is coordinated; ownership fencing and ambiguous-payment reconciliation add recovery state.
+
 **Recommendation:** commit driver and trip reservations together, enforce unique active assignments and version every offer. A region handoff drains active reservations or uses a coordinated ownership transfer; active-active writers must not independently assign the same driver. Assignment and payment cross different authorities. We accept versioned offers, fenced regional writers and pending payment states so retries recover the original operation instead of creating another side effect.
+
 For payment, store a charge intent first, use the same provider idempotency key on retry and query its status after uncertainty. Completion notifications can be delivered repeatedly without creating another intent. Monitor reservation conflicts, expired offers, unknown payment outcomes and reconciliation age.
+
 **Offer and charge lifecycle.** Persist offer ID, driver, trip, expiry and generation before delivery. Acceptance locks or conditionally updates driver capacity and trip assignment together. If two riders compete for one driver, one active-assignment constraint admits a winner; the other replans.
 
 ```mermaid

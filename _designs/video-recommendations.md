@@ -17,6 +17,7 @@ Design of a personalized “Up Next” service that recommends five videos after
 ## Problem
 
 A user finishes a video and wants something worthwhile to watch next. The recommendation service selects a small slate from a large catalog using the current video, recent viewing history and language preferences.
+
 The service needs to balance immediate relevance with discovery and user satisfaction. Optimizing clicks alone can favor appealing thumbnails with disappointing content; optimizing total watch time alone can overvalue long videos. Retrieval, ranking and slate selection address these concerns at different stages.
 
 ## Requirements
@@ -209,6 +210,7 @@ The request uses one compatible retrieval/ranking bundle and the current session
 5. Select five items while enforcing creator limits and topic diversity. Apply current eligibility again before responding.
 
 6. Log the request snapshot. Client display/watch events update session features and later join the training record.
+
 Candidate retrieval is cheap because item vectors are precomputed. Ranking incurs per-request feature and inference work; the cascade deep dive controls that cost.
 
 ### Applying feedback
@@ -232,10 +234,15 @@ Scoring every video per request requires too much feature retrieval and model co
 - **Retrieval with bounded richer ranking — recommended:** Merge ANN and fresh/popular candidates, then score a shortlist with cross-features and select five. Detailed inference is limited; relevant videos lost during retrieval or pruning remain unavailable to the ranker.
 
 The billion-video catalog needs cheap retrieval before per-request inference. We accept measured stage recall loss and compatible index/model artifacts, tuning budgets using relevance and p99 rather than assuming a larger candidate set is free.
+
 The user tower encodes recent watches and permitted context; the item tower encodes metadata and content. Train with sampled softmax and correct for the negative-sampling distribution. In-batch negatives are efficient, but frequent items appear more often and some sampled items may also be relevant.
+
 [ScaNN](https://arxiv.org/abs/1908.10396) supplies approximate vector search. Choose normalization, quantization and shard count using measured recall/latency on this catalog; normalization changes the scoring objective and is evaluated with the model.
+
 The ranker combines explicit feature interactions from [DCN V2](https://arxiv.org/abs/2008.13535) with task-specific heads. [MMoE](https://research.google/pubs/modeling-task-relationships-in-multi-task-learning-with-multi-gate-mixture-of-experts/) is an option when task sharing causes negative transfer. Start with a simpler shared-bottom model and add expert routing only when controlled comparisons justify its serving cost.
+
 **Prepare item work once, spend user work per request**
+
 Encode video content/metadata offline with the active item tower and publish its vector to the base/overlay index. A request encodes recent user watches and context, retrieves a bounded candidate set, merges it with eligible popular/followed/recent sources, then applies the richer ranker.
 
 ```mermaid
@@ -258,6 +265,7 @@ class D control;
 ```
 
 Evaluate candidate recall before adding ranker capacity. Approximate-search probes and quantization trade CPU/memory for recall; choose them against the catalog's relevant-video set rather than a synthetic benchmark alone.
+
 The final ranker needs batch hydration for video age, content and session features. Set a deadline for each source and keep a fallback order when richer scoring is unavailable. New item content is encoded with the serving bundle; a vector from another encoder version is rejected rather than silently inserted into the active index.
 
 ### What should the ranker optimize?
@@ -271,6 +279,7 @@ Clicks, watch duration and satisfaction capture different behavior. Long videos 
 - **Versioned multi-objective ranking — recommended:** Estimate bounded useful watch duration, engagement and negative outcomes, then apply explicit product weights. Several goals are visible; shared-task gradients can interfere and sparse negative labels require per-head calibration and quality checks.
 
 A useful session requires more than a click or raw duration. We accept loss-weight and product-policy tuning, checking satisfaction and negative outcomes separately so one headline engagement gain does not hide task interference.
+
 Clip extreme watch durations and evaluate by video length. A direct bounded-duration head is easier to interpret than treating a weighted logistic score as a calibrated number of seconds.
 
 ```python
@@ -284,9 +293,13 @@ score = (
 ```
 
 Tune weights through controlled experiments with explicit satisfaction and diversity guardrails. Offline recall/NDCG measures candidate ordering; online session outcomes establish whether a change helps users.
+
 **Define the useful-watch label**
+
 A watch event needs playback start/stop, duration, foreground/interaction context where permitted, and a stable impression identity. Deduplicate client retries and cap impossible durations. A bounded useful-watch target avoids treating a looping or idle playback as unlimited satisfaction.
+
 A long and short video differ in possible watch duration. Evaluate absolute useful seconds and completion-related features by length cohort; do not claim that one raw duration objective treats them equally.
+
 The scoring policy combines calibrated probabilities and the bounded duration estimate with recorded units/weights. Train heads only when their label windows are mature. Hides and explicit dissatisfaction remain guardrails even when watch time grows.
 
 ```text
@@ -311,12 +324,19 @@ New users have little history, and new videos have no interaction aggregates.
 - **Content representations with bounded exploration — recommended:** Encode approved content and current context, then allocate a limited eligible-item exposure budget. New items can compete; weaker behavioral evidence and exploratory slots can reduce immediate relevance.
 
 The feed needs fresh content before its interaction history exists. We accept a measured exploration cost and evaluate cold-start cohorts, keeping eligibility and creator-exposure controls active.
+
 Mix a small, configurable share of eligible exploration candidates into the slate and log their selection probabilities. Update the session representation as watches arrive. Creator-level priors help when content is sparse, but exploration quotas prevent established creators from occupying all discovery opportunities.
+
 A greedy diversity rule can use `score - similarity_penalty` against selected items, with a proposed cap of two videos per creator in a five-item slate. Evaluate the cap against user intent: a playlist continuation may need a distinct policy.
+
 **A cold-start path with bounded exposure**
+
 For a new user, use explicit language/interests and early session actions to build context. For a new video, content and creator features generate an indexable representation before watch aggregates exist. Their missingness is passed to the ranker.
+
 Allocate exploration after eligibility checks and log item/slot assignment probabilities. A small cap limits the immediate relevance cost while collecting evidence. Combine exploration with creator-diversity constraints so the same new creator cannot take every exploratory slot.
+
 A skip updates recent session features for the next request; it is interpreted with dwell, playback availability and exposure. A video that failed to load should not receive the same negative label as one deliberately rejected after viewing.
+
 Track quality and exposure by true item age and new-user cohort. Mature outcomes—not just initial clicks—determine whether to increase the exploration share or promote a content-based feature.
 
 ### How do we prevent biased or mismatched training data?
@@ -330,12 +350,19 @@ Only displayed videos can receive watch feedback. Position, UI layout and the pr
 - **Versioned serving snapshots with controlled exposure — recommended:** Log request-time evidence or reconstruct it with availability-aware histories and known exploration probabilities. Comparisons are better supported; storage, feature provenance and supported weighting add complexity.
 
 Ranking and exposure change which labels exist. We accept snapshot/history retention and a bounded randomized sample so training reproduces the served context rather than learning from future features or unobserved impressions.
+
 Inverse-propensity weighting uses exposure/examination estimates, with bounded weights. `P(click | position)` also includes relevance and is unsuitable as an exposure estimate by itself. Position-as-feature is a useful model input, but equalizing it at serving time still requires bias evaluation.
+
 Use chronological splits and mature labels. Video age is computed relative to the request timestamp in both training and serving; setting every video's age to zero would change the feature's meaning. Monitor feature missingness and skew by schema version and session activity.
+
 **Reproduce what the serving model knew**
+
 Store the request's bundle, user-history cutoff, feature timestamps and displayed video versions. Historical training joins only features available at that cutoff. Later popularity and the user's subsequent watches belong to labels or later examples.
+
 If only the final slate is logged, the training pipeline cannot distinguish retrieval omissions from ranker exclusions. Log bounded candidate/source evidence where needed for funnel analysis, separately from actual exposure labels.
+
 Sampling metadata records negative selection and randomized slot assignment. Weighting based on those probabilities needs adequate support and a cap; it cannot remove bias for videos the policy never considered.
+
 Run fixture tests that send the same historical request through offline feature extraction and serving encoding. Compare masks, age calculations and categorical mappings, then inspect drift by schema version. A user vector built with one tokenizer/encoder must query item vectors from its compatible bundle.
 
 ### How do releases and adaptation remain stable?
@@ -349,8 +376,13 @@ Daily retraining captures gradual changes; breaking-news or seasonal shifts can 
 - **Batch bundles with live session features — recommended:** Keep weights and index space stable while recent interactions update bounded features. Same-session adaptation is prompt; event lag remains visible and bundle releases need coordinated rebuilds and warm capacity.
 
 Immediate user context changes faster than stable model quality can be established. We accept separate feature and bundle clocks, including the storage and rebuild cost of compatible user/item encoders, index and ranker rollback artifacts.
+
 Block malformed-data and incompatible-index releases. Evaluate by video age, language, creator cohort and user activity; shadow checks validate operational behavior, while a controlled traffic experiment measures user impact. Roll back the whole compatible bundle and retain ingestion watermarks so new-video indexing can continue.
+
 **Adapt quickly through features, release weights deliberately**
+
 A session feature update reflects the latest watched/skipped videos without changing global weights. Stream consumers apply events idempotently and retain an event-time horizon; late actions update only the windows they still belong to.
+
 For a new weight candidate, publish the matched item embeddings/index as well as its user tower and heads. Run offline cohort gates, warm the bundle, then compare through shadow and controlled traffic.
+
 Existing feed sessions retain a cursor/snapshot contract where possible. Every continuation rechecks current removal state so a pinned older ranking cannot expose deleted content. Rollback restores the complete old bundle and reconciles its recent-item overlay watermark. Monitor feature lag, candidate-source failures and deep-ranker fallback rate independently so operational degradation is visible even if the API still returns five items.

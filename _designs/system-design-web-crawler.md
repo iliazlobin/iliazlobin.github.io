@@ -19,6 +19,7 @@ Crawl public web pages, extract text and links, and produce a recoverable datase
 ## Problem
 
 A user submits seed URLs and a crawl scope. The crawler fetches eligible pages, extracts their text and follows discovered links until it reaches the job's limits.
+
 The difficulty is coordinating that work across many websites. One site may respond quickly, another may be unavailable, and a calendar can generate an effectively unlimited set of URLs. Scheduling needs to keep workers busy while controlling requests to each origin.
 
 ## Requirements
@@ -208,23 +209,29 @@ The scheduler owns per-origin timing, and a worker fetches only while its lease 
 ### Discovering and admitting URLs
 
 Resolve relative links against the page's final URL. Lowercase the scheme and hostname, remove fragments and normalize default ports. Preserve path case, trailing slashes and query parameters unless a verified site-specific rule establishes equivalence.
+
 Check scheme, scope, depth and resource limits. Consult the Bloom filter, then use the URL index's conditional insert to admit new work. A positive filter result requires a durable lookup; a negative result still needs a conditional insert because discoveries can race.
+
 Broad normalization can merge different pages. Crawl-trap controls instead bound repeated path patterns, parameter combinations and per-origin discovery volume.
 
 ### Scheduling and fetching
 
 The origin owner selects a due URL, confirms a valid lease and reserves its concurrency budget. Before connecting, validate the resolved IP against allowed public ranges and recheck every redirect target. Pin the validated address for that connection to reduce DNS-rebinding risk.
+
 Evaluate robots rules before fetching content. Under [RFC 9309](https://www.rfc-editor.org/rfc/rfc9309), unreachable robots.txt requires a conservative disallow state; a missing file can permit access. Cache rules with bounded freshness. An optional Crawl-delay is a site-policy extension, not a standardized RFC directive.
+
 Fetch with connection/read deadlines, redirect and response-size limits. Parse HTML with script execution disabled. Record status and retry time; honor applicable Retry-After guidance and reduce origin load after throttling or errors.
 
 ### Committing a page
 
 Extract text, calculate an exact content digest and search the near-duplicate index when needed. Preserve URL provenance even when multiple URLs share stored content.
+
 Append the result to an output shard and commit its manifest before marking tasks complete. Replayed processing uses the same task/result identity. Discovered links enter durable admission independently, so a crash can resume without losing the next frontier.
 
 ### Pausing and recovering
 
 Stop issuing new leases, allow bounded in-flight work to finish, then checkpoint queues, origin delays and offsets. Resume restores those states before dispatch.
+
 A replacement owner waits out the old origin's lease and maximum fetch duration, or confirms that the old worker drained, before starting requests. Epoch checks prevent stale completion writes; the drain interval protects the website from overlapping fetches.
 
 ## Deep dives
@@ -238,7 +245,9 @@ A replacement owner waits out the old origin's lease and maximum fetch duration,
 - **Local dual queues:** Separate priority selection from per-origin due time in one scheduler. Politeness and useful work are explicit; one owner limits total dispatch capacity.
 
 - **Sharded origin schedulers — recommended:** Assign one fenced owner per origin and run priority/aging plus due-time queues on each shard. Scheduling scales across origins; ownership changes and checkpoint recovery must preserve delays and in-flight leases.
+
 **Local dual-queue scheduling**
+
 [The URL-frontier model](https://nlp.stanford.edu/IR-book/html/htmledition/the-url-frontier-1.html) separates URL priority from per-host timing. Priority selection feeds origin queues; a due-time heap selects an origin that can currently be fetched.
 
 ```mermaid
@@ -261,6 +270,7 @@ class S,H control;
 ```
 
 **Distributed frontier**
+
 **Recommendation:** shard by origin and run the dual-queue scheduler within each shard. Add aging so lower-priority URLs make progress. Discovery topics have a fixed partition count; ownership changes rebuild scheduler state from checkpoints and its changelog. The crawler needs parallel progress across many sites while honoring each site's limits. We accept durable scheduler ownership and recovery work so adding workers does not multiply permitted load on one origin.
 
 ```mermaid
@@ -282,9 +292,13 @@ class D,K,A,B,Q1,Q2 data;
 ```
 
 Origin ownership also includes a concurrency cap and delay policy. Sites sharing infrastructure may need an additional IP-level budget. Monitor queue age, active origins, fetch rate and throttling, rather than treating fast responses as evidence of spare server capacity.
+
 **Dispatching one origin safely.** Each origin queue has a next-eligible time, concurrency count and ownership epoch. The scheduler pops the earliest eligible origin, reserves one fetch slot durably and returns a URL with the current epoch. Completion releases that slot and updates the next due time according to robots policy, configured delay and any source throttling.
+
 If origin A has 10,000 queued URLs and origin B has ten, A's delay makes it temporarily ineligible while B can still progress. Priority chooses useful URLs within the eligible set; aging raises old work so low-priority origins are not indefinitely ignored.
+
 After owner failure, the successor restores queues, due times and outstanding reservations from the checkpoint/changelog and fences old dispatch state. Already-started HTTP requests cannot be recalled, so recovery preserves a conservative delay/concurrency grace period before issuing replacements. Avoid resetting every origin to immediately eligible on restart.
+
 Robots refreshes and IP-level limits are additional eligibility checks. Store the policy generation with the dispatch decision so an operator can explain why a URL was fetched or deferred.
 
 ### Which duplicate checks are safe?
@@ -296,10 +310,15 @@ Robots refreshes and IP-level limits are additional eligibility checks. Store th
 - **Exact content digests:** Hash the recorded raw or normalized content representation. Identical outputs can share storage; meaningful normalization must be specified and near-duplicates still differ.
 
 - **Exact checks plus near-duplicate retrieval — recommended:** Use exact URL/content identities first, then retrieve SimHash/MinHash candidates for verification. Similar pages can be grouped; thresholds can merge distinct meaning or miss variations and therefore require corpus evaluation.
+
 **Recommendation:** use exact URL/content checks first, then approximate retrieval for near-duplicates. Verify candidate distance and meaningful text differences before collapsing results. Preserve uncertain candidates and their source URLs. Scheduling identity and content identity answer different questions. We accept a separate approximate candidate stage and preserve URL provenance, verifying meaningful differences before collapsing near-duplicate results.
+
 A Bloom-filter false positive must not discard a unique page. Near-duplicate indexes also need bounded, measured candidate search: splitting a 64-bit signature into four 16-bit buckets can create large candidate lists at billions of pages. Partition and index those signatures deliberately; report recall when search is capped.
+
 **Admission and content deduplication.** Canonicalize a discovered URL under explicit rules, then conditionally insert its job/URL key. Lowercasing the hostname is generally safe; dropping arbitrary query parameters can change the resource, so only remove documented tracking parameters. Redirect destinations are discovered/admitted separately while retaining the redirect chain.
+
 After fetching, hash the recorded normalized text for exact duplicate content. Store raw/source identities too: two URLs with identical extracted text can have different attribution or crawl policies. A Bloom-filter positive triggers an exact lookup rather than automatic rejection.
+
 Near-duplicate candidates pass a bounded verification step. For example, two product pages differing only in boilerplate may be near-duplicates, but a changed price or safety notice can be meaningful. Record the normalization/signature version and decision so rebuilding the index reproduces it. Limit candidate work and preserve uncertain pages instead of silently equating a capped search with proof of uniqueness.
 
 ### How do we avoid crawl traps and retry storms?
@@ -311,8 +330,11 @@ Near-duplicate candidates pass a bounded verification step. For example, two pro
 - **Per-origin budgets and pattern controls — recommended:** Bound fetches, bytes, parameter combinations and repeated templates, with categorized retry budgets. Resource use is explicit; legitimate large sites can be truncated and exclusions must be reported.
 
 - **Novelty-based scheduling:** Prioritize URLs likely to produce new content. Useful-work yield can improve, but unusual low-frequency pages may receive insufficient exposure and the signal needs evaluation.
+
 **Recommendation:** enforce explicit budgets and pattern limits, then use measured novelty as a scheduling signal. Back off failures with jitter and a retry budget; separate DNS failures, throttling and permanent HTTP outcomes. A crawler must remain bounded even when a site generates endlessly changing URLs. We accept explicit coverage limits and recorded exclusions, using novelty to prioritize within those bounds rather than as the only safety control.
+
 Keep reasons for exclusions and failures in the job report. Fetch deadlines, parser memory limits and maximum extracted links bound the work caused by one hostile page. Recovery tests should include a failed owner, duplicated events, an interrupted shard upload and a robots-policy change.
+
 **A bounded crawl expansion.** A calendar page can expose a link to every future date. Track per-origin URL count, total bytes, depth, parameter cardinality and repeated templates. If dates advance indefinitely with little new content, apply the configured pattern budget and record why the remaining URLs were excluded.
 
 ```mermaid

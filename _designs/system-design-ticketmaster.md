@@ -19,6 +19,7 @@ Design of an event-ticketing service with searchable events, seat availability, 
 ## Problem
 
 Users browse an event, select seats and complete a purchase. During a popular onsale, many users may choose the same seats at almost the same time. A successful reservation must belong to one user, and checkout must preserve that ownership while the payment outcome is determined.
+
 The service separates cached event browsing from authoritative inventory updates. A waiting room controls how much purchase traffic reaches inventory, while durable reservation and order records coordinate checkout.
 
 ## Requirements
@@ -255,6 +256,7 @@ The waiting room registers one entry per permitted user/event and applies the di
 3. It creates the reservation and updates all seats with that owner, version and expiry. Any unavailable seat aborts the entire transaction.
 
 4. After commit, the service returns the reservation and publishes availability changes through the outbox.
+
 An expiry worker releases ordinary held reservations. A checkout reservation with an unresolved payment outcome follows the recovery workflow rather than ordinary TTL release.
 
 ### Completing checkout
@@ -268,6 +270,7 @@ An expiry worker releases ordinary held reservations. A checkout reservation wit
 4. The workflow captures the authorization. Confirmed capture advances the order and triggers ticket issuance.
 
 5. A definitive payment failure starts void/refund and inventory-release steps. An ambiguous timeout keeps the order in recovery until provider evidence resolves it.
+
 Tickets are issued only for a confirmed order. Recovery records remain durable through process restarts.
 
 ### Receiving tickets
@@ -285,6 +288,7 @@ An idempotent ticket worker creates one ticket per confirmed order-seat and reco
 - **Event-local database transactions — recommended:** Lock every requested seat in stable order and commit the complete reservation together. Overlapping sets serialize correctly; a popular event creates row contention and needs controlled admission.
 
 - **Single event sequencer:** Send all inventory commands through one ordered durable owner. Decisions have clear order, but owner failover, fencing and command replay become a separate correctness mechanism and throughput boundary.
+
 **Recommendation.** Use event-local database transactions behind controlled admission. Lock rows in a consistent order, check the entire set, then update and commit together. [PostgreSQL row locking](https://www.postgresql.org/docs/current/explicit-locking.html) provides the required conflicting-write serialization. Each reservation belongs to one event partition and needs all-or-nothing seat ownership. We accept database lock contention behind admission control, using the existing transactional authority rather than introducing another event owner.
 
 ```sql
@@ -301,7 +305,9 @@ COMMIT;
 ```
 
 The request key and input hash are recorded in the same transaction. Deadlock or serialization retries are bounded; a timeout prompts the client to query the existing reservation. Monitor lock wait, rejected holds, expiry backlog and attempts per successful reservation. If one event exceeds a partition's capacity, reduce admission before adding a more complex sequencer.
+
 **An overlapping-seat race.** User A requests seats 10 and 11; user B requests 11 and 12. Both transactions lock seat rows in ascending order. A obtains seat 11 first, verifies that both of its seats are available, writes reservation R1 and commits. B then reads seat 11 as held and rolls back its entire set. Seat 12 remains available.
+
 Store hold expiry and reservation ownership in the authoritative rows. The expiry worker releases seats only if the reservation ID and version still match the expired hold. A delayed expiry job cannot release seats that moved into checkout under a newer version.
 
 ```mermaid
@@ -332,10 +338,15 @@ A request retry with the same key returns R1. Reusing the key for different seat
 - **Fixed release rate:** Admit buyers at a preconfigured rate. Operation is predictable, but the rate can overload a degraded payment path or waste recovered capacity.
 
 - **Feedback-controlled admission — recommended:** Issue user-bound grants using inventory latency, errors and active checkout backlog. Release rate follows downstream capacity; delayed feedback needs conservative bounds to avoid oscillation and does not define fairness by itself.
+
 **Recommendation.** Use feedback-controlled admission with a disclosed queue policy. Pre-sale users may receive randomized positions; users arriving later are placed behind them. Partition queue entries for capacity while maintaining the chosen global order through an admission coordinator. A waiting room must protect checkout during a demand spike, while the disclosed lottery/arrival policy defines order. We accept a conservatively tuned feedback loop and durable queue outcomes so capacity adjustments do not silently change user positions.
+
 An admission grant is bound to the authenticated user and event. Its durable status supports refresh and reconnect; a nonce is not consumed on the first page request if later hold requests still need it. Queue and purchase tiers have separate resource budgets. Track wait time, fairness by arrival cohort, admission rate and downstream saturation.
+
 **Admission as a control loop.** Measure active checkouts, inventory lock waits, payment latency and error rate. Admit buyers only while those indicators stay within the operating envelope. Increase the release rate gradually after healthy intervals and reduce it promptly when lock waits or provider failures rise.
+
 The grant contains event ID, user ID, grant ID and expiry. Store its durable lifecycle so reloads and server failover preserve the user's admitted position. Validate the grant on hold and checkout requests; copying its URL to another user does not transfer admission.
+
 A simple capacity calculation helps tune the controller: if checkout capacity is 2,000 active sessions and the average session lasts 100 seconds, a steady release rate around 20 sessions/s fills that capacity before accounting for abandonment and variation. This is a planning input, not a fixed guarantee. Queue position follows the disclosed policy even while release rate changes. Expired grants return capacity through a durable state transition and allow a documented re-entry policy.
 
 ### How do payment retries preserve seat ownership?
@@ -347,6 +358,7 @@ A simple capacity calculation helps tune the controller: if checkout capacity is
 - **Authorize, assign, then capture:** Hold funds, durably verify seat ownership, then capture. The charge-before-inventory gap narrows; authorization expiry and a capture timeout still require recovery.
 
 - **Durable authorize/assign/capture workflow — recommended:** Persist operation identities and transitions before external calls, then reconcile ambiguous outcomes. Crashes can resume the same payment and reservation; unresolved operations temporarily retain inventory and add reconciliation load.
+
 **Recommendation.** Use authorization followed by durable assignment and capture, coordinated by a persistent workflow. Each provider operation has its own stable key; API request keys are user-scoped and input-checked. [Stripe's idempotency contract](https://docs.stripe.com/api/idempotent_requests) explains the provider boundary. A timeout cannot prove that a payment failed. We accept temporarily retained seats and a recovery queue so provider evidence resolves the payment before inventory is safely released or tickets are issued.
 
 ```text
@@ -359,8 +371,11 @@ Definitive failure → void or refund as needed → release inventory
 ```
 
 A saga supplies durable progress and compensation, not universal exactly-once external behavior. Retain operation IDs beyond provider retry-key windows; query provider status before retrying an old unknown operation. Compensation failures remain visible for reconciliation. Measure unknown-outcome age, capture lag and payment/inventory discrepancies.
+
 **Recovery after capture uncertainty.** Before calling the provider, save the capture operation ID, provider idempotency key and expected amount. If the provider accepts capture and the worker crashes before saving the response, the durable workflow resumes in an unknown-outcome state with the seats still assigned.
+
 Query the provider operation or consume its verified event before advancing. A confirmed capture commits the paid order and ticket-delivery outbox. A definitive capture failure invokes the agreed void/release compensation. A timeout alone leaves the workflow pending; releasing seats at that point could create a paid order with no ticket.
+
 Provider events are deduplicated by event ID and mapped to the existing operation, including out-of-order authorization/capture events. Ticket delivery uses its own stable order/ticket identity. If reconciliation later finds an unmatched charge, it creates a visible recovery case with the original reservation and operation evidence rather than fabricating a new successful checkout.
 
 ### How do browse views remain fast during an onsale?
@@ -372,8 +387,13 @@ Provider events are deduplicated by event ID and mapped to the existing operatio
 - **Primary-database seat reads:** Fetch authoritative seats for every viewer. Freshness is strong, but millions of browse requests compete with reservation transactions.
 
 - **Metadata search with compact versioned availability views — recommended:** Search stable event metadata and serve seat snapshots from caches. Browse work is isolated; snapshots are advisory and selecting seats still needs an authoritative hold.
+
 **Recommendation.** Index event metadata in Elasticsearch and publish versioned seat-state snapshots to Redis/CDN. The snapshot generation uses committed seat versions, so an older event cannot reverse a newer state. Use two bits if the UI distinguishes available, held and sold. Browse traffic is much larger than successful reservations and changes at a different rate. We accept explicitly aged availability views so the transactional database spends capacity on ownership decisions rather than every seat-map refresh.
+
 Clients apply deltas only to a known snapshot version and refetch after a gap. Event cancellation updates both search and delivery policy, while cached details are invalidated. Monitor view lag, edge hit rate and snapshot rebuild time; displayed availability remains advisory until the hold transaction succeeds.
+
 **Snapshot and delta protocol.** A browse response gives the event's immutable seating layout plus availability snapshot version V200. Each delta identifies the preceding version and the changed seat states. A client at V200 can apply V200 → V201; a client receiving V205 without V204 refetches a snapshot.
+
 The projection consumes only committed inventory changes. For each seat, reject a lower seat version so replay cannot turn sold inventory back into available. Publish snapshot generation and high-watermark together, then retain subsequent deltas for reconnects.
+
 Keep browse traffic at the edge and send hold requests to the authoritative event partition. A cached green seat is a candidate selection, not a reservation guarantee. Coalesce popular event updates and cap client refresh rates during an onsale. If the projection falls behind, expose its age and preserve checkout correctness through the hold transaction while the view rebuilds.

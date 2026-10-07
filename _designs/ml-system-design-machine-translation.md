@@ -17,6 +17,7 @@ A multilingual text-translation service that returns translated text through an 
 ## Problem
 
 Users need to translate messages, product descriptions and other text while preserving the original meaning. The service accepts text and a target language, then returns a translation that keeps names, numbers and formatting intact.
+
 Most requests are short, but language coverage and quality vary substantially by language pair. We use a shared multilingual model, evaluate each supported direction separately and keep the translation API independent of model releases.
 
 ## Requirements
@@ -140,6 +141,7 @@ feedback:
 ## High-level design
 
 The API validates the language pair and sends the request to a model pool. Each worker loads one complete bundle: weights, tokenizer and preprocessing configuration.
+
 A separate training pipeline prepares parallel text, trains candidates and evaluates them before publishing a bundle. Serving continues with the active version while the next version is prepared.
 
 ```mermaid
@@ -213,13 +215,17 @@ Autoregressive decoding performs repeated model steps. Its latency depends on ou
 ### Streaming a longer translation
 
 Use greedy decoding for the streaming path so each emitted token extends the selected output. Buffer incomplete subwords until they form valid text, then send ordered `text_delta` events.
+
 The client appends each event once using its sequence number. A disconnect cancels the generation and releases decoder memory. A worker failure produces a failed stream; the client can submit a new request rather than combining output from two independent generations.
+
 Beam search keeps several candidate translations alive and can revise the leading hypothesis. Use it for a non-streaming quality mode, where the service returns the completed result.
 
 ### Preparing a training candidate
 
 Group related documents and duplicates before creating chronological train, validation and test splits. Language identification, length-ratio checks and quality filters remove incorrect sentence pairs; near-duplicate filtering prevents the same passage from appearing in both training and evaluation.
+
 Training uses teacher forcing: the decoder receives the preceding reference tokens and predicts the next token. Length-based batches reduce padding. The published bundle includes the trained weights, shared tokenizer, language identifiers and preprocessing version.
+
 Synthetic examples from back-translation retain their provenance so evaluation can distinguish genuine parallel text from generated training data.
 
 ## Deep dives
@@ -233,12 +239,19 @@ Training data is uneven. A high-resource language pair can dominate a shared mod
 - **English pivot:** Translate first into English and then into the target language. Existing strong directions can be reused; two inference passes increase latency and an error in the first translation can propagate into the second.
 
 - **Shared multilingual model — recommended:** Condition one encoder-decoder on source and target languages. Representations and serving capacity are shared; dominant pairs can interfere with weaker ones, requiring balanced training and per-pair release gates.
+
 **Use a shared multilingual encoder-decoder for the initial service.** Include source and target language identifiers, and route only the directions that passed evaluation. [M2M-100](https://arxiv.org/abs/2010.11125) demonstrates direct multilingual translation, while [NLLB](https://arxiv.org/abs/2207.04672) develops broader coverage using multilingual training and conditional computation. The service supports several evaluated directions under one serving budget. We accept cross-pair interference and stricter sampling/evaluation work in exchange for fewer independently operated models; a weak direction remains excluded until it passes its own gates.
+
 For sampling, let `n_i` be the number of examples for pair `i` and choose `p_i ∝ n_i^α`, with `0 < α < 1`. This increases the relative exposure of smaller datasets while keeping their contribution bounded. Tune the exponent against low-resource improvements and high-resource regressions.
+
 Where parallel data is scarce, translate target-language monolingual text into the source language to create synthetic pairs. Filter these examples and mix them with genuine parallel text. Evaluate on human translations that were kept out of both training and synthetic-data generation.
+
 A mixture-of-experts model is a later option when its quality gain justifies expert routing, communication and deployment complexity. Measure performance per pair before changing the serving architecture.
+
 **Training and serving the shared model**
+
 The encoder turns the source token sequence into contextual representations. The decoder attends to those representations and generates target tokens autoregressively. Language identifiers tell the same weights which direction to produce; routing validates that the requested pair belongs to the evaluated serving set.
+
 For two datasets of 1M and 10K pairs, proportional sampling gives the smaller dataset about 1% of updates. With an illustrative exponent of 0.5, the relative weights become 1,000 and 100, giving it roughly 9%. That increases low-resource exposure, but repeatedly presenting the same small dataset can overfit it. Track validation loss separately for each pair.
 
 ```mermaid
@@ -268,10 +281,15 @@ The decoder performs one step per generated token. Longer outputs and larger bea
 - **Beam search:** Retain several candidate translations and select a completed sequence. Quality can improve for difficult inputs; more decoder state and repeated scoring raise queueing cost, and the leading hypothesis can change before completion.
 
 - **Greedy streaming with optional bounded-beam quality mode — recommended:** Use one stable decoding path for live deltas and a small beam for completed-text requests. Each mode has a clear latency contract; operating two modes requires separate admission budgets and quality evaluation.
+
 **Use greedy decoding for streaming and a small beam for the optional non-streaming quality mode.** Start with a maximum 5ms batching wait, then tune it from measured queueing and completion latency. Bound input length, output length and active decoder state per worker. Streaming users need appendable text while some callers value a better completed translation. We accept a separate quality-mode capacity budget rather than making every request pay beam-search cost. Distillation and quantization are complementary optimizations whose speed, memory and quality effects must be evaluated for both modes.
+
 The scheduler groups requests with similar lengths and compatible decoding settings. Long requests use a separate queue so they do not occupy every batch needed by short requests. Reject overload promptly with `429`; the client can retry with backoff.
+
 Benchmark the complete path at the expected length distribution. Quantization is promoted only when the same language-pair suite passes, including numbers, names and low-resource directions. Any speed improvement belongs to that tested hardware and bundle.
+
 **The decoder's work, step by step**
+
 Compute the encoder once, then keep decoder attention state for the generated prefix. Greedy decoding selects the next token from one hypothesis. A beam of width four retains up to four hypotheses at each step, scores their extensions and keeps the best surviving paths. Length normalization and stopping rules matter: raw summed log probability favors shorter sequences.
 
 ```text
@@ -282,6 +300,7 @@ Input queue → encoder → decode token 1 → decode token 2 → ... → end to
 ```
 
 Beam hypotheses can change order as later tokens arrive, so the optional quality mode returns its chosen sequence after completion. Streaming emits the greedy path and promises that already delivered tokens remain part of that generation.
+
 Batch only requests with compatible bundle and decoding settings. Apply length buckets to reduce padding, while keeping a maximum queue age so a rare bucket still runs. Count active hypotheses and total decoder tokens against memory capacity. Cancellation removes the request at an iteration boundary and reclaims its state. Compare quantized and baseline bundles on the same pair/length cohorts; a faster average can still hide worse tail latency on long outputs.
 
 ### How do we adapt to a new domain?
@@ -293,12 +312,19 @@ A general model may translate everyday text well but mishandle legal, medical or
 - **Domain adapters:** Train a small routed parameter set while retaining the base model. Domains can release independently; adapter selection, resident memory and compatible bundle versions add serving complexity.
 
 - **Mixed-data fine-tuning — recommended:** Train on reviewed domain pairs with representative general-data replay. This balances adaptation and retained quality; the mixture needs tuning and a shared release can still regress an unrelated pair.
+
 **Start with mixed-data fine-tuning.** Use approved domain translations and replay general examples during training; begin with a 20% general-data share and tune it using both domain and general evaluation. Use adapters when domains need independent release schedules or their requirements conflict. The initial service has one shared multilingual bundle, so replay offers a direct way to improve domain errors while checking general quality. We accept broader regression gates; adapters become preferable when domains require independent release ownership.
+
 Each release is tested for terminology, omitted phrases, incorrect numbers and changes in meaning. A domain-specific improvement is accepted only when the agreed general-language regression limits also pass.
+
 **A domain-training example**
+
 For a product-support domain, collect approved source/target pairs containing product names, error messages and support terminology. Keep some terminology-heavy cases out of training for evaluation, then mix domain and general batches using a recorded sampler configuration. The model should learn surrounding grammar as well as the preferred term.
+
 A terminology list can guide decoding or evaluation, but replacing translated substrings afterward can damage inflection or word order. The proposed first release improves the model with mixed-data training; a constrained-decoding extension would need its own grammatical and latency tests.
+
 Store dataset lineage and permitted uses in the manifest. Deduplicate pairs before splitting so paraphrases or repeated support templates do not appear on both sides of the evaluation boundary. Compare general-language and domain results, including examples with similar words but different meanings.
+
 Adapters become useful when two customers require incompatible terminology or independent rollout. Route an adapter by an explicit approved domain ID, load it with its base-model revision, and cap the number held on each worker. An adapter cache miss adds loading delay, so warm the expected active set rather than treating adapter routing as free.
 
 ### How do we decide whether a candidate is better?
@@ -312,10 +338,15 @@ Text similarity metrics provide useful feedback, but users care about accurate m
 - **Automated matrix plus targeted human review — recommended:** Use repeatable pair/domain/length comparisons and reviewed high-impact cases, followed by a canary. This combines broad regression coverage with semantic evidence; it requires scorer versions, reviewer criteria and protected evaluation data.
 
 Translation quality is about preserved meaning as well as serving performance. We accept review cost for sensitive errors and weaker pairs, using automated checks for coverage rather than as the sole promotion decision.
+
 Use [BLEU](https://aclanthology.org/P02-1040/) and [chrF](https://aclanthology.org/W15-3049/) for reproducible reference comparisons, and [COMET](https://aclanthology.org/2020.emnlp-main.213/) for a learned quality signal. Pin the scorer versions and evaluate the same held-out examples for each candidate.
+
 Group results by language pair, domain and input length. Human review covers low-resource pairs and high-impact errors: negation, numbers, names, gender, honorifics and harmful output. User corrections become training examples only after consent and review.
+
 Release a passing candidate to a small canary pool. Compare quality incidents, latency, errors and resource use against the active bundle, then increase traffic gradually. Rollback switches the routing pointer to workers already serving the previous complete bundle.
+
 **What the release gate checks**
+
 Use one fixed evaluation matrix covering pair, domain, length and error severity. Automated scorers provide repeatable comparisons; reviewed examples determine whether a candidate introduces meaning-changing errors. Store the normalized reference text and scorer versions so rerunning the same candidate produces a comparable report.
 
 ```text
@@ -328,4 +359,5 @@ Serving              queue, first-token and completion distributions
 ```
 
 Select candidates using validation data, then evaluate the chosen candidate once on the protected final test set. Repeatedly picking a model from that final set would turn it into another tuning set.
+
 A canary pins requests to the candidate or baseline bundle. Compare user corrections and incidents only with their sampling/consent context; operational logs do not replace reviewed quality labels. If a pair fails, exclude that direction or retain the previous pair-compatible bundle. Rollback changes new-request routing and lets active generations finish on their pinned version.

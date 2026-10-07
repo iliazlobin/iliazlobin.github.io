@@ -17,6 +17,7 @@ An arrival-time prediction service that combines a routing estimate with a learn
 ## Problem
 
 Users rely on an arrival estimate to decide when to leave, whether to request a ride and how long they will wait. The same route can take different amounts of time as traffic, weather and pickup conditions change.
+
 We start with the duration calculated by a routing engine, then predict a correction from recent conditions and historical trips. The response includes a central estimate and a time range so the application can communicate uncertainty.
 
 ## Requirements
@@ -143,6 +144,7 @@ predict_eta:
 ## High-level design
 
 The routing engine chooses the route and calculates a baseline duration. The feature service adds recent traffic and trip context, and the ETA model predicts a correction and travel-time quantiles.
+
 Completed trips and the features recorded at prediction time feed the training pipeline. A passing model bundle is loaded before new requests are routed to it.
 
 ```mermaid
@@ -227,17 +229,21 @@ A route may contain many segments. Batched feature retrieval and route-level sum
 ### Updating an active trip
 
 Calculate the remaining route from the latest accepted vehicle position. Keep location timestamps visible so a delayed GPS message cannot move the vehicle backward in the trip.
+
 Use the expected arrival time at each route segment to select the appropriate traffic forecast. Refresh the estimate when movement or new conditions materially change the remaining duration.
+
 For a multi-stop trip, include driving time and expected dwell time at each stop. Produce route-level uncertainty from examples of similar complete trips; correlations between congested segments make independently summed interval bounds unreliable.
 
 ### Learning from a completed trip
 
 Match the actual start and arrival events to the same phase the prediction covered. Pickup waiting time and driving time are separate labels. Remove trips with broken GPS traces, incorrect timestamps or incomplete phase boundaries.
+
 Join each label to the features available at its prediction time, then train the next candidate. Evaluate on later trips, including regional and trip-type slices.
 
 ### Falling back
 
 If the learned model fails, return the routing estimate with `serving_mode: routing_fallback`. If live traffic is stale, use historical traffic for that route and time of day and mark the degraded feature state.
+
 The application can still display an estimate, while monitoring records which path produced it. A fallback interval is returned only if it has a separately calibrated baseline model.
 
 ## Deep dives
@@ -251,6 +257,7 @@ A routing engine already accounts for road topology and route length. Training a
 - **Predict duration directly:** Learn duration from route and context features. The model can capture flexible interactions, but it depends more heavily on representative routes and can behave poorly on unseen roads or regions.
 
 - **Routing plus learned residual — recommended:** Predict the signed error of a road-aware baseline and add that correction to it. This reuses routing structure and gives a useful fallback; model labels and serving features must pin the same routing version.
+
 **Use a residual model.** Start with a gradient-boosted tree model over compact route and context features. Consider a neural model when embedding interactions and traffic volume justify its serving cost. [Uber's DeepETA](https://www.uber.com/us/en/blog/deepeta-how-uber-predicts-arrival-times/) describes this routing-plus-residual architecture. The routing engine already handles topology, and this design needs controlled behavior in new regions. We accept version coordination between routing and the residual model in exchange for preserving that baseline and learning only its remaining errors.
 
 ```python
@@ -260,9 +267,13 @@ predicted_seconds = max(1.0, baseline_seconds + predicted_residual)
 ```
 
 The residual stays signed. If a 600-second baseline is consistently 90 seconds too short, the corrected estimate is 690 seconds. If it is 30 seconds too long, the corrected estimate is 570 seconds.
+
 Underestimation and overestimation can have different business costs. Tune an asymmetric loss using the relevant trip type; evaluate the resulting signed bias alongside absolute error. A lower average error is useful only when the application's wait-time and reliability requirements also improve.
+
 **Build one residual training row**
+
 At request time, record the selected route, its baseline duration, map version and every feature used by the scorer. After the trip phase ends, join its actual duration to that prediction. The model learns the baseline's signed error, not the total trip duration.
+
 A 10-minute route that takes 12 minutes supplies a +120-second residual. Features might include road-class mix, remaining distance, departure-time bucket, current traffic age and trip phase. Keep waiting for pickup separate from in-vehicle travel unless the output explicitly represents both.
 
 ```mermaid
@@ -295,6 +306,7 @@ A GPS observation may describe conditions at 10:00 but arrive at the feature pip
 - **Availability-aware reconstruction with snapshot checks — recommended:** Require both a valid event-time window and a publication time preceding the request. This enables historical rebuilding; it depends on arrival/version history and is verified against logged serving snapshots.
 
 Traffic data arrives late, so observation timestamps alone cannot establish what the API knew. We accept dual-time history and sampled snapshot storage to make offline errors comparable with real request-time errors.
+
 **Log the served feature snapshot and use availability-aware joins for reconstruction.** An eligible historical feature satisfies both its event-time window and `available_at <= prediction_time`.
 
 ```mermaid
@@ -312,8 +324,11 @@ class O,A,SNAP data;
 ```
 
 A feature store's [point-in-time joins](https://docs.feast.dev/getting-started/concepts/point-in-time-joins) help construct historical training rows. Configure arrival-time filtering explicitly where backfills or late data are possible.
+
 Share feature calculations, normalization and missing-value definitions between training and serving. The bundle manifest pins those definitions; a feature-schema change is released with its corresponding model.
+
 **An availability-aware join**
+
 Store each historical feature with both observation time and the time it became queryable. For a 10:01 request, select only revisions published by 10:01, then apply that feature's event-window/expiry rule. A later backfill must not overwrite the archived view used for training that request.
 
 ```sql
@@ -329,6 +344,7 @@ LIMIT 1;
 ```
 
 The joined row also records feature age and missingness. Defaulting an unavailable traffic speed to zero would imply stopped traffic; use an explicit missing flag plus the approved baseline value.
+
 Split examples chronologically and keep related predictions from the same trip together. Later updates from that trip provide labels only after they become available, never serving features for an earlier prediction. Test reconstruction by comparing historical joins against logged serving snapshots; discrepancies identify late-data or feature-version leakage.
 
 ### Which traffic estimate should a long route use?
@@ -340,10 +356,15 @@ Current traffic is relevant to the first road segment. A segment reached 30 minu
 - **Historical time-of-day speeds:** Use past traffic for the expected traversal time. Sparse regions have a stable baseline, but unusual incidents and current congestion are underrepresented.
 
 - **Horizon-specific forecasts — recommended:** Walk the route using expected segment-arrival times to select forecast buckets. This aligns traffic with when it is relevant; forecast errors accumulate and a revised duration can require another bounded pass.
+
 **Use current traffic for the near term and horizon-specific forecasts farther along the route.** Start with forecast buckets such as 0, 10, 20, 30 and 60 minutes, and select a bucket using the estimated time each segment will be reached. Long trips span changing conditions, so the serving interface must expose future traffic horizons. We accept forecast-version coordination and bounded iteration, keeping historical estimates as the sparse-data fallback.
+
 Long routes may need another pass because revised segment times change later arrival horizons. Bound the number of passes and include that cost in the routing budget. Regions with limited observations fall back to historical speeds and wider, separately evaluated intervals.
+
 A graph-based traffic model is a later alternative when congestion propagation matters. [Google Maps' traffic-prediction work](https://deepmind.google/blog/traffic-prediction-with-advanced-graph-neural-networks/) illustrates how neighboring road segments can contribute to such forecasts.
+
 **Select traffic by the expected arrival horizon**
+
 Walk the route from departure time. For each segment, use the elapsed predicted time to choose its forecast bucket, calculate that segment's duration, and advance the elapsed time. A segment 25 minutes into the journey needs the 20/30-minute forecast range rather than the speed observed at departure.
 
 ```python
@@ -356,6 +377,7 @@ for segment in route:
 ```
 
 Interpolation must be defined for adjacent buckets; missing forecasts use historical road/time-of-day estimates. Keep one forecast snapshot for the pass so a mid-request update does not combine inconsistent values.
+
 A revised residual or traffic pass may shift downstream horizons. Limit iterations and stop when the change is below a configured threshold, with a hard deadline fallback to the last valid estimate. Benchmark intersections, incidents and long routes separately. A spatial traffic model may improve propagation forecasts, but the request path still uses the same versioned horizon interface.
 
 ### How do we return an interval users can trust?
@@ -367,6 +389,7 @@ A point estimate hides how variable a trip can be. Repeated model sampling can e
 - **Model ensembles:** Run several independently trained models and examine their prediction spread. This can expose model disagreement, but costs multiple inferences and spread alone does not establish trip-duration coverage.
 
 - **Quantile outputs with held-out calibration — recommended:** Adjust quantile intervals using independent completed trips, then test coverage on a later untouched set. Serving remains compact; maintaining cohort-aware calibration requires mature labels and interval-width monitoring.
+
 **Train P10, P50 and P90 quantile outputs, then calibrate them on held-out trips.** Quantile loss penalizes errors differently above and below the requested percentile. The API needs a fast interval with observable coverage, not repeated expensive sampling. We accept separate calibration releases and wider intervals in weakly supported cohorts, while monitoring whether the resulting ranges remain useful.
 
 ```python
@@ -376,9 +399,13 @@ loss = max(quantile * error, (quantile - 1.0) * error)
 ```
 
 Constrain the outputs to remain ordered and positive. Measure how often actual trips fall inside the P10–P90 interval; the target is 80% coverage over comparable trips, rather than a guaranteed probability for a particular journey.
+
 Check coverage and interval width by region, duration, weather and trip type. During unusual conditions, widen intervals only through a validated calibration rule and report stale or missing features.
+
 **Calibration with an explicit example**
+
 Suppose held-out trips fall inside the nominal P10–P90 interval only 65% of the time. The raw quantile heads are under-covering their evaluation population. Use a separate calibration set to estimate the extra width needed for the desired coverage, then evaluate that adjustment on an untouched later period.
+
 Track interval width as well as coverage: widening every estimate dramatically could reach coverage while becoming unhelpful. Small region/weather slices may need pooled calibration with uncertainty rather than an unstable independently fitted correction.
 
 ```text
@@ -401,10 +428,17 @@ A new region has a road graph before it has enough completed trips to train a re
 - **One shared residual model:** Learn across regions with regional features. Data and capacity are shared, but dominant regions can hide local bias in aggregate metrics.
 
 - **Shared model with routing fallback and local calibration — recommended:** Reuse shared learning and enable regional corrections only with sufficient completed-trip evidence. New regions keep a road-aware baseline; this adds calibration versions and requires explicit regional release gates.
+
 **Use a shared residual model with an explicit routing fallback, then add regional calibration from measured errors.** Keep the initial correction small where coverage is weak. Evaluate new regions separately before enabling a larger learned correction. Coverage varies by region and traffic updates faster than model training. We accept separate live-feature, calibration and model-release clocks so sparse regions have a controlled fallback and local improvements remain evidence-based.
+
 Traffic features update continuously. Calibration refreshes use recent completed trips; full model candidates follow a slower release cycle. Keep recent trips out of training when they are used for release evaluation.
+
 Shadow a candidate to inspect errors and latency, then run a controlled rollout to measure its effect on the application. Rollback restores the previous model and feature contract; live traffic ingestion continues independently.
+
 **Adaptation operates at several time scales**
+
 Current traffic changes through the stream pipeline; regional calibration changes after enough completed trips arrive; model weights change after training and validation. Keeping these clocks separate allows a traffic incident to affect serving immediately without retraining the model in response to every spike.
+
 A new region initially uses routing with a small, validated correction. As reviewed trip coverage grows, compare local residual distributions with the shared model and enable a region-specific calibration only when enough evidence supports it.
+
 Maintain cohorts for previously seen and genuinely new roads/trip patterns. Shadow candidates reproduce the exact request-time features and compare later mature trip outcomes. A canary measures serving errors and latency immediately, but quality conclusions wait for completed trips. Rollback pins the prior bundle while allowing compatible live traffic features to continue; incompatible feature-schema updates require a coordinated pointer change.

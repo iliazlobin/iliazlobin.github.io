@@ -19,6 +19,7 @@ A Tinder-style service for discovering nearby profiles, recording likes and pass
 ## Problem
 
 A user browses nearby profiles and decides whether to like or pass on each one. When two users like each other, the service creates a match and lets them start a conversation.
+
 The main engineering challenges are serving a relevant feed quickly, detecting mutual likes under concurrent requests and keeping match permissions consistent with chat. Feed ranking can tolerate some staleness; a confirmed swipe, match or unmatch needs a durable outcome.
 
 ## Requirements
@@ -248,21 +249,25 @@ class C,D control;
 ```
 
 Pagination pins the candidate-pool version and remembers recently delivered IDs. Profiles already committed as liked, passed, blocked or unmatched are removed in the final check. A profile included in an earlier response may still be visible on a second device until that device receives the updated decision.
+
 Repeated feature reads and scattered pair checks make this path expensive. Candidate precomputation and batched membership checks reduce that work; the feed deep dive describes the coverage and freshness trade-offs.
 
 ### Recording a swipe and detecting a match
 
 The pair service validates the target and decision, derives the canonical pair key and starts a transaction on that shard. It inserts an empty pair row if needed, locks the row, checks the command identity and writes the actor's decision. If both decisions are likes and the pair is eligible, it creates the match and its outbox event in the same transaction.
+
 After commit, the API returns the recorded result. Event consumers update each user's match list and exclusion cache, then send WebSocket or push notifications. Reconnecting clients fetch durable match state, so a missed notification does not lose a match.
 
 ### Sending a message
 
 The chat service validates membership and locks the pair row. For an active match, it assigns the next sequence, stores the message and its outbox event, then commits before returning success. A repeated `client_message_id` returns the existing result.
+
 The outbox consumer delivers the message to connected devices and projects it into history storage. Recipients deduplicate by `(match_id, sequence)` and request missing sequences after reconnecting. Delivery and read receipts are separate from the durable acceptance response.
 
 ### Unmatching and reporting
 
 Unmatching locks the same pair record used for message acceptance and changes it to `CLOSED`. A message committed before that transaction remains part of the retained history; a later message request is rejected. The close event disconnects live conversation views and updates discovery exclusions.
+
 Reports are retained in restricted review storage. Moderation decisions update profile eligibility and pair restrictions, with an audit trail for review. Report counts alone are insufficient for an automatic account ban.
 
 ## Deep dives
@@ -276,6 +281,7 @@ Reports are retained in restricted review storage. Moderation decisions update p
 - **Cassandra pair partition with LWT:** Co-locate pair decisions and use a conditional version transition. Distributed storage is retained; consensus rounds and contention retries add latency and need a bounded policy.
 
 - **PostgreSQL pair transaction — recommended:** Lock one canonical pair row and commit decisions, match identity, command outcome and outbox together. Mutual likes serialize directly; pair-shard routing and writer fencing become explicit operational requirements.
+
 **Recommendation: use the PostgreSQL pair transaction.** [Row locking](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS) serializes concurrent updates to the pair. A later transaction sees the earlier committed decision and creates the match when both are likes. The design needs one recoverable match transition and messages/unmatches already share pair authority. We accept pair-row contention and shard ownership in exchange for an account-independent transactional boundary that covers the entire state change.
 
 ```python
@@ -295,7 +301,9 @@ commit()
 ```
 
 The first transaction may return no match; the second creates it and notifies both users. A crash before commit leaves a retryable command. A crash after commit returns the stored result on retry and leaves the outbox event available for delivery. Command identity is retained for the documented retry window.
+
 Unmatching closes the pair permanently under the current product policy. Re-matching would need a new consent generation and a new conversation identity, rather than replaying old likes. Track pair-lock wait, retry rate, outbox age and reconciliation mismatches.
+
 **The simultaneous-like transaction.** Canonicalize A/B as `(min_id, max_id)` and route both swipes to the same pair shard. Create the pair row through a unique-key insert if necessary, then lock it. A's transaction writes A=LIKE and commits. B's waiting transaction reads that state, writes B=LIKE, creates one match and commits its notification outbox.
 
 ```mermaid
@@ -327,11 +335,17 @@ Retrying either command reads its retained outcome. Match delivery may repeat, b
 - **Precomputed spatial-cell pools — recommended:** Publish candidate IDs for all cells covering the radius, oversample, then verify current distance and eligibility. Repeated lookup work falls; stale pools and incomplete boundary coverage can lower recall.
 
 - **Distributed spatial index:** Partition a frequently changing location index across owners. Capacity grows horizontally, but movement, neighborhood fan-out and ownership changes complicate recovery and query coverage.
+
 **Recommendation: use indexed regional spatial storage and precomputed Redis pools.** Select all cells intersecting the radius, oversample candidates from those pools, then verify actual distance and preferences. A fixed 3×3 geohash neighborhood does not cover an arbitrary 50km radius. Regional candidate reuse is valuable at discovery volume, while final pair/profile checks protect visibility. We accept pool-refresh lag and oversampling work, testing boundary and dense-region recall rather than assuming a fixed cell neighborhood covers every radius.
+
 Candidate builders publish versioned pools atomically. Rebuilds include active profiles and allocate exposure for new users; pagination reads one version. In sparse areas, offer an explicit distance change instead of silently changing age or preference filters. Dense areas use larger or rotating pools to avoid permanently hiding the same profiles.
+
 Location changes select the new cell coverage immediately. Profile removal and safety restrictions use current eligibility checks even when the pool is several minutes old. Measure radius coverage, eligible-pool size, refresh lag and exposure distribution.
+
 **Radius coverage and pool generation.** A request for users within 20 km first selects every cell intersecting that circle, including boundary cells. Pools provide candidate IDs; exact distance and current preferences remove the extra area covered by whole cells.
+
 In a dense city, each cell pool is a sampled/rotating eligible set rather than an unexplained permanent popularity cutoff. Publish pool generation G with a source cutoff and exposure policy. A feed session pins G so refreshes do not repeatedly show the first high-ranked profiles while the user paginates.
+
 Batch profile and pair checks under a candidate budget, then fetch another bounded batch if many candidates were excluded. A sparse result invites an explicit distance change. Changing location immediately selects new cell coverage; stale cells do not override the user's current request or bypass safety restrictions.
 
 ### How do we exclude earlier swipes without loading the entire history?
@@ -343,12 +357,19 @@ Batch profile and pair checks under a candidate budget, then fetch another bound
 - **Redis exact history sets:** Cache all retained decisions for quick membership. Reads are fast, but memory grows with heavy-user histories and stale entries need reconciliation.
 
 - **Bloom-filter acceleration:** Use a compact probabilistic history representation before exact checks. Memory is smaller; false positives can hide unseen profiles, while an incomplete or stale filter can miss a recorded decision.
+
 **Recommendation: batch exact checks, with a Bloom filter as an optional accelerator.** Use [Redis Bloom filters](https://redis.io/docs/latest/develop/data-types/probabilistic/bloom-filter/) to cheaply discard likely repeats, then check surviving candidates against current pair records. This keeps database work proportional to the candidate batch. Exclusions affect user-visible correctness and permissions, so exact checks remain final. We accept bounded shard reads and optionally use a measured Bloom-filter accelerator, tracking coverage loss and freshness rather than calling it an exact history.
+
 A complete Bloom filter has no false negatives for inserted IDs. That property does not cover dropped updates, resets or stale cache replicas. Rebuild from a consistent checkpoint, replay newer outbox updates into the replacement and swap versions after catching up.
+
 Retain compact pair decisions for as long as the product promises to exclude earlier swipes. A 90-day event-log TTL can remove detailed history while keeping those decisions. At a fixed false-positive rate, ten times the filter capacity needs approximately ten times the bits; rebuilding the same set does not inherently eliminate false positives.
+
 Monitor filter capacity, update lag, exact-check load and repeated-profile reports. If the accelerator is unavailable, bounded exact checks remain the fallback.
+
 **Candidate-scoped history checks.** Instead of transferring 100,000 previous swipe IDs, a page might retrieve 200 candidates and batch-check their pair records grouped by shard. The response work remains proportional to 200 candidates, with bounded shard concurrency.
+
 A complete Bloom filter can skip likely repeats cheaply, but false positives can hide unseen profiles. If exposure completeness matters, verify positives exactly too; otherwise declare and measure the tolerated suppression. Surviving candidates still receive exact checks because an incomplete or lagging filter can miss recent swipes.
+
 Build a replacement filter from a consistent pair checkpoint, replay changes after that cutoff, then atomically switch generations. Keep previous decisions as compact authoritative rows even after detailed event history expires. Cache loss falls back to bounded exact checks rather than showing repeat profiles or loading the entire history.
 
 ### How should profile ranking evolve?
@@ -360,9 +381,15 @@ Build a replacement filter from a consistent pair checkpoint, replay changes aft
 - **Versioned multi-signal ranker — recommended:** Combine normalized activity, interests, reciprocal context and bounded exploration. More useful ordering is possible without a training pipeline; manual weights still require product-quality evaluation and exposure monitoring.
 
 - **Learned retrieval and ranking:** Estimate compatibility from impression-linked interactions. Personalization can improve with mature labels, but exposure bias, model/index compatibility and safety controls add substantial release work.
+
 **Recommendation: start with the multi-signal ranker and evaluate learned ranking against it.** Score only eligible candidates, include exploration for new profiles and measure mutual matches and useful conversations alongside exposure coverage and safety reports. Start with a measurable multi-signal baseline while independent interaction evidence accumulates. We accept less expressive personalization initially, promoting learned ranking only when mutual matches and useful conversations improve without concentrating exposure or weakening safety.
+
 Training uses actual displayed profiles and later outcomes so an unseen profile is not treated as a rejection. Keep feature and model versions in impression events. Cold-start users rely on declared preferences and location; new profiles receive measured exploration exposure.
+
 Evaluate by market and activity cohort with controlled experiments. Ranking changes preserve explicit user preferences and moderation restrictions. This is the proposed ranking approach; it does not describe Tinder's current production algorithm.
+
 **Eligibility, scoring and exploration.** Apply age, distance, reciprocity, safety and prior-decision filters before scoring. Normalize the remaining activity/interest features and score a bounded candidate set under a pinned policy version. Add controlled exploration slots for new or underexposed profiles.
+
 Log the actual displayed profile, position, model/features and later outcomes. A user who never saw a profile supplied no rejection label for it. Evaluate mutual matches and subsequent useful conversations, not only one-sided likes, and include exposure/safety guardrails.
+
 A learned model can rerank the same eligible candidate set once it beats the baseline under controlled tests. Missing optional features use trained defaults; unavailable required eligibility checks reduce the result set. Model changes do not broaden user preferences or restore profiles excluded by moderation.

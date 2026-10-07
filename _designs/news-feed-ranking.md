@@ -17,6 +17,7 @@ Design of a personalized feed that retrieves relevant content, ranks it for the 
 ## Problem
 
 A user opens the feed to catch up with followed accounts and discover useful content. The service selects a small set of posts from a much larger collection, taking the user's interests, recent activity and content eligibility into account.
+
 The goal is worthwhile engagement: useful reading or viewing, meaningful interactions and return visits. Clicks provide one signal; hides, reports and repetitive recommendations help identify poor results.
 
 ## Requirements
@@ -207,6 +208,7 @@ Retrieval determines which items can compete, and staged ranking spends expensiv
 4. The deep model predicts engagement and negative feedback using shared user context plus candidate-specific features.
 
 5. Final reranking applies eligibility, creator diversity and the bounded exploration policy. The API returns 25 items and logs its serving snapshot.
+
 Scoring every candidate with the deep model would multiply GPU work. The staged approach below controls that cost while measuring which useful items each stage drops.
 
 ### Using feedback on the next request
@@ -228,6 +230,7 @@ A richer model can capture user–item interactions that a retrieval vector miss
 - **One deep ranker:** Score every retrieved item using rich cross-features and history attention. There is no intermediate scoring loss, but GPU work and feature reads grow with every candidate and can exceed the page deadline.
 
 - **Staged ranking funnel — recommended:** Use cheap shortlisting before bounded deep inference. This controls peak work; useful items removed early cannot be recovered, so each stage needs retention and recall measurements.
+
 **Use a staged funnel with explicit candidate budgets.** Retrieval uses a two-tower encoder; item vectors are precomputed, while the user vector is computed from recent history. The light model learns to preserve candidates favored by the deep ranker. The deep model adds user–item cross-features and history attention. The 2,000-to-25 funnel spends deep-model capacity on 100 candidates per request. We accept early-stage recall loss, but measure it against a deeper reference scorer and tune budgets rather than treating shortlist size as a free efficiency gain.
 
 ```mermaid
@@ -244,8 +247,11 @@ class A,B,C,D request;
 ```
 
 Measure retrieval recall, top-item retention after light ranking and end-to-end quality separately. Profile actual batches at peak load; model parameter counts alone do not establish throughput. When capacity is constrained, reduce deep-ranking candidates and preserve the fallback rather than allowing an unbounded queue.
+
 **What each stage actually receives**
+
 Candidate generation combines followed creators, embedding neighbors and eligible recent content. Merge IDs before ranking so an item appearing in three sources gets one opportunity, while keeping its source membership as a feature.
+
 The light ranker uses cheap cached user/item aggregates. The deep ranker adds sequence attention and user-item cross-features only for its shortlist. Batch feature hydration and tensor preparation; network lookups per candidate can dominate inference even when the model itself is fast.
 
 ```text
@@ -265,6 +271,7 @@ Click probability favors attractive items, while dwell and meaningful interactio
 - **Independent outcome models:** Train and deploy separate predictors for engagement and negative signals. Objectives are isolated, but features and inference are duplicated and independently calibrated scores still need a product policy.
 
 - **Shared multi-task ranker — recommended:** Share a representation with separate click, dwell and negative-feedback heads. Serving work is reused; conflicting gradients and sparse targets can degrade one task, so loss weights and per-head quality are evaluated explicitly.
+
 **Use a shared model with explicit product weights.** Predict click, dwell, like, share, hide and report separately. Positive feedback increases the score; hide/report probabilities reduce it or trigger an eligibility rule. Feed quality combines positive engagement with hides and reports. We accept multi-task interference and product-weight tuning in exchange for shared serving work; a strong aggregate score cannot excuse regression in a safety or negative-feedback head.
 
 ```python
@@ -279,7 +286,9 @@ score = (
 ```
 
 Weights are versioned and tested in controlled experiments. Evaluate whole-session outcomes and negative feedback; offline NDCG is a comparison tool, not a guaranteed engagement gain. [Deep Interest Network](https://arxiv.org/abs/1706.06978) and [DCN V2](https://arxiv.org/abs/2008.13535) are candidate interaction-modeling techniques.
+
 **Separate model predictions from product policy**
+
 The model has distinct heads for outcomes observed at different times. A click is immediate; long dwell requires watching the session; reports may arrive later. Each head's missing/unmatured labels are masked rather than treated as negative.
 
 ```mermaid
@@ -302,6 +311,7 @@ class P control;
 ```
 
 Calibrate the heads used as probabilities on representative held-out traffic. Then select policy weights through controlled experiments with session-level satisfaction and negative-feedback guardrails. Changing a policy weight is a versioned release even when model weights remain fixed.
+
 Apply safety removals as eligibility constraints, not merely as a small score penalty. Otherwise a highly engaging prohibited item could remain near the top despite its negative term. Log component scores and policy versions to explain a ranking change.
 
 ### How do we learn from biased, delayed feedback?
@@ -315,11 +325,17 @@ High positions receive more exposure, and items excluded by the old policy have 
 - **Bounded controlled exploration — recommended:** Randomize a small approved exposure set and record actual assignment probabilities. Comparisons are better supported; experimentation can temporarily reduce relevance and propensity estimates need adequate support.
 
 The design needs outcome evidence beyond what the old ranker chose to show. We accept a bounded experience cost and keep delayed labels mature before evaluation; clipped weighting cannot repair items that had zero exposure probability.
+
 **Retain a small, policy-approved exploration sample and log the assignment probabilities.** Use position-aware training where justified; apply clipped propensity weighting only when the logged probabilities support it. [PAL](https://doi.org/10.1145/3298689.3347033) provides a position-aware modeling approach.
+
 A 24-hour attribution window means training waits until that window closes. Split chronologically, keep sessions together and join features by their historical availability time. Sampled negatives retain their sampling rates, while validation/test sets retain representative prevalence. Unseen items are not interchangeable with displayed items the user skipped.
+
 **An unbiased log needs the actual exposure policy**
+
 For each shown item, store position, candidate source, request/bundle IDs and any randomized assignment probability. Join engagement only after its observation window is mature. A late report revises the appropriate label version instead of creating another impression.
+
 Suppose an exploration item has assignment probability 0.02. Its inverse-propensity weight would be 50 before clipping, illustrating why rare exposure can create unstable updates. Use a documented cap and examine effective sample size; weighting cannot create evidence where the policy gave an item zero support.
+
 Position correction and candidate selection correction are different problems. A position model estimates examination among shown items; controlled retrieval/slot exploration supplies support for items that the earlier model rarely showed. Use representative, unweighted evaluation data and a chronological final test set to measure the actual result.
 
 ### How do fresh and unfamiliar items enter the feed?
@@ -331,7 +347,9 @@ New content has text, media and creator context before it has engagement history
 - **Content-based retrieval:** Encode new posts from their content and creator context. They become eligible before interactions arrive; semantic similarity alone gives weaker preference evidence than established behavior.
 
 - **Content vectors with bounded exploration — recommended:** Retrieve by content and allocate limited approved slots for uncertain items. This collects learning signals without replacing the whole feed; exploration consumes relevance budget and requires creator-exposure monitoring.
+
 **Combine content-based vectors with a bounded exploration budget.** Start with a 5% slot budget, gated by eligibility and quality checks. Tune it using session outcomes and creator exposure; this is an allocation policy, not a promise that every item receives traffic. Fresh content matters to a feed, so waiting for popularity creates a self-reinforcing cold start. We accept a tunable slot budget with eligibility gates and measure session outcomes as well as exposure distribution.
+
 Use recent-item retrieval and an age feature alongside measured engagement velocity. Express any decay using an explicit half-life:
 
 ```python
@@ -340,8 +358,11 @@ freshness_weight = 2 ** (-age_hours / half_life_hours)
 ```
 
 Different content types receive different policies. Freshness and exploration share one slot-allocation rule so their combined effect remains controlled.
+
 **Allocate one coherent exploration budget**
+
 A fresh-item source proposes content encoded with the active bundle, with missing engagement features explicit. The slot allocator chooses exploration items under one shared cap with freshness/diversity rules, then fills the remaining positions from established candidates.
+
 For a new user, use language, selected interests and current-session behavior. An immediate hide can remove similar content from the next request without changing the global model. A new item receives bounded eligible exposure, and its outcomes update streaming aggregates.
 
 ```text
@@ -359,9 +380,13 @@ Updating an item encoder changes the vector space; combining it with an older qu
 - **Independent component releases:** Update encoders, indexes and rankers separately. Individual rollout is quick, but mixed vector spaces or feature definitions can silently lower candidate recall.
 
 - **Complete compatible bundle — recommended:** Warm and switch encoders, index watermark, features and rankers as one serving version. Recovery is reproducible; rebuilding vectors and retaining the previous warm bundle increase release time and storage.
+
 **Release complete bundles.** Pin user/item encoders, index watermark, feature schema, rankers and policy version. Shadow traffic checks mechanics and latency; mature held-out labels establish offline quality, and a canary measures user impact. The ranking funnel depends on compatible retrieval vectors and features. We accept slower coordinated model releases and duplicated warm artifacts, while compatible live data updates continue through their own versioned interface.
+
 Stream processing continues during training and rollback. New sessions use the promoted bundle; an existing cursor stays on its original snapshot where possible. Alert on feature age, retrieval misses, fallback rate, per-stage queueing and negative feedback. Retraining creates a checkpointed candidate rather than mutating the live model invisibly.
+
 **A bundle switch is an interface change**
+
 The manifest records user/item encoders, embedding dimension, feature schema, base/overlay watermarks, rankers and scoring policy. Warm all artifacts, run query vectors against the new index, and validate sample feature tensors before routing live requests.
 
 ```text
@@ -371,4 +396,5 @@ Build artifacts → compatibility checks → shadow → canary → promote point
 ```
 
 A feed cursor includes a session/snapshot identity and records served item IDs. Continuing that cursor uses its pinned scoring snapshot where retained, while every page rechecks current eligibility. If the snapshot expired, return an explicit restart response rather than quietly changing pagination semantics.
+
 Rollback restores a complete compatible bundle. Streaming features continue only when their schema is compatible; incompatible records fall back or block promotion. Track stage-level fallbacks so a seemingly stable final latency does not hide an unavailable deep ranker.

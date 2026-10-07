@@ -17,6 +17,7 @@ A query-suggestion service that returns useful search completions as a user type
 ## Problem
 
 Users often know part of what they want to search for. Suggestions help them complete the query with fewer keystrokes and can surface a relevant phrase they would otherwise miss.
+
 The service receives the current prefix and returns a short ranked list. It combines a stable query corpus with recent trends, while keeping each response fast enough to remain useful for the next keystroke.
 
 ## Requirements
@@ -143,6 +144,7 @@ record_outcome:
 ## High-level design
 
 The API retrieves public candidates from a prefix cache or index and adds recent trending queries. A lightweight ranker uses request context, then the current policy filter produces the final list.
+
 Query events update the trend overlay and training data. Stable index and ranker releases are published as compatible bundles.
 
 ```mermaid
@@ -232,11 +234,13 @@ A ranker can improve candidate order, but retrieval coverage determines whether 
 ### Handling a typo
 
 For prefixes of at least three characters, expand retrieval with a bounded edit-distance search. Begin with one edit, retain a required exact initial portion where appropriate and cap both visited states and returned candidates.
+
 Exact prefix matches and fuzzy candidates are ranked together with an explicit typo penalty. If fuzzy retrieval exceeds its time budget, return the exact-match list.
 
 ### Updating a trend
 
 Deduplicate query events, aggregate short-window counts and compare them with the recent baseline. Promote a candidate only after language, policy and abuse checks pass.
+
 Write approved candidates and their trend features to the overlay, then invalidate affected prefix-cache entries. A five-minute cache TTL alone would miss the two-minute freshness target.
 
 ### Keeping the UI consistent
@@ -266,12 +270,19 @@ A high-frequency query is often a useful completion, but frequency alone misses 
 - **Prefix retrieval with a learned ranker — recommended:** Retrieve a bounded set, then score it using prefix, recency and permitted context features. Ranking can adapt the order within a predictable candidate budget; training labels and feature-version compatibility become additional dependencies, and missing candidates stay missing.
 
 - **Generated completions:** Decode new phrases from a language model conditioned on the prefix. This can cover queries absent from the corpus, but decoding consumes the keystroke latency budget and every generated phrase needs policy validation.
+
 **Use prefix retrieval followed by a small learned ranker.** Build a weighted FST from approved queries and store query-level features separately. Cache the frequent short-prefix candidate sets so a broad prefix has bounded lookup cost. The 50ms user-visible p99 target favors bounded retrieval and a small scorer over open-ended generation. We accept an approved-corpus coverage limit and maintain candidate-recall tests alongside ranking metrics.
+
 [Elasticsearch](/designs/tech-elasticsearch/) offers a [completion suggester](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/search-suggesters) as a practical managed-index alternative with prefix and fuzzy support. An in-process index gives more control over memory and traversal; the choice is driven by measured corpus size and operational cost.
+
 Start ranking with frequency and recency. Add a LightGBM LambdaMART model once impression and selection labels are reliable. [LambdaMART](https://www.microsoft.com/en-us/research/publication/from-ranknet-to-lambdarank-to-lambdamart-an-overview/) learns ordering from relevance labels; evaluate ranking and candidate recall separately.
+
 For very common prefixes, replicate the relevant index ranges. For less common prefixes, route by prefix range. Fuzzy expansion has a bounded shard fan-out so a typo cannot trigger a full-corpus query.
+
 **Prefix traversal and contextual scoring**
+
 Normalize the incoming prefix with the bundle's Unicode/case policy, traverse the FST to its prefix state, and read a bounded set of approved completions. For a broad prefix such as “a,” use a precomputed top-candidate set instead of enumerating its full subtree.
+
 The ranker receives query frequency, trend score, prefix coverage and request context for those candidates. Group training examples by one displayed list so the ranking loss compares candidates that competed in the same situation. Retrieve enough candidates to retain useful alternatives; ranking cannot recover a completion absent from the set.
 
 ```mermaid
@@ -304,10 +315,15 @@ The same prefix can be relevant to many users, but their history and permissions
 - **Cache a global final list:** Reuse one ranked list for a prefix and locale. Hit rate can be high, but context-sensitive relevance is lost and any private feature accidentally included in the result would be shared.
 
 - **Cache public candidates, rank per request — recommended:** Share prefix retrieval and public query features, then fetch only the requesting user's permitted context. This retains private ranking boundaries; each cache hit still pays for lightweight ranking and a current policy check.
+
 **Cache public candidates and perform lightweight contextual ranking for every request.** The cache key includes language, coarse region and the active bundle ID. Private history is read separately and never stored in that entry. At 100K requests/s, avoiding repeated index work has substantial value while private history must remain request-specific. We accept per-request scoring cost so shared entries have a clear public-data contract.
+
 The final policy check runs on both hits and misses. Trend updates invalidate affected entries; a bundle switch changes the cache namespace through its versioned key.
+
 If user features fail, rank with public frequency and recency. If the policy snapshot is unavailable or too stale, serve only a known-safe fallback under its approved policy deadline, or return an empty list. Policy failures are monitored separately from personalization fallbacks.
+
 **A shared candidate hit still has private work**
+
 A public cache hit returns IDs and public query features, not the previous user's final list. The request then fetches only the current user's consented history, ranks, and applies the latest policy snapshot.
 
 ```text
@@ -318,6 +334,7 @@ Output: request-specific ranked list after policy filtering
 ```
 
 If a suggestion becomes prohibited, a long candidate-cache TTL must not preserve it in the response. The policy filter rejects it immediately when the new deny-set version reaches the worker; monitor that propagation deadline separately from model/index freshness.
+
 Set limits on user-history reads and ranker batch size. If personalization misses its deadline, public ranking is a declared fallback. If the safety snapshot is beyond its permitted age, the service follows the known-safe/empty-result policy. Cache-hit rate and final-response latency should therefore be measured separately.
 
 ### How do we keep suggestions fresh without rebuilding everything?
@@ -329,10 +346,15 @@ A stable corpus may contain hundreds of millions of queries, while a trend can e
 - **Continuously mutable index:** Apply query updates directly to the serving index. Freshness improves, but concurrent reads, mutation recovery and reproducible release snapshots require more coordination.
 
 - **Immutable base plus trend overlay — recommended:** Publish large stable snapshots less often and merge a small recent overlay at retrieval time. Trends can meet the two-minute target; cutovers must reconcile watermarks and query IDs to avoid losing or double-counting updates.
+
 **Use an immutable base index and a Redis trend overlay.** The event stream feeds short-window aggregates. Abuse checks require enough independent activity and constrain sudden spikes before promotion. The corpus is large while the freshness requirement applies to a much smaller changing set. Two retrieval layers are an accepted cost in exchange for bounded rebuild work; base manifests and overlay watermarks make that coordination explicit.
+
 Each base build records the last event watermark it includes. At cutover, retain overlay entries newer than that watermark and reconcile candidates already present in the new base. Deduplicate by query ID so merging the two sources preserves one candidate per query.
+
 Warm the index and ranker bundle before switching the serving pointer. Keep the previous bundle available for rollback, with an overlay compatible with that version.
+
 **Cut over a base index without losing trends**
+
 Suppose the new base includes all events through offset 8,000. The overlay retains later contributions and merges query IDs already found in the base. Publishing the base manifest and its watermark together tells serving workers exactly which interval each layer represents.
 
 ```text
@@ -343,6 +365,7 @@ Live overlay after cutover    contributions after 8,000
 ```
 
 A query's historical frequency and recent-window trend are different features, so do not sum them blindly. The base supplies stable prior features; the overlay supplies its explicitly defined rolling-window contribution.
+
 An event consumer checkpoints only after the overlay update is recoverable. Stable query/event IDs prevent replay from inflating trend counts. Popularity promotion also applies minimum independent activity and abuse checks. During a failed rollout, preserve the previous base and rebuild or retain an overlay compatible with its watermark; reverting only the FST pointer would otherwise leave a gap.
 
 ### How do we learn from feedback without reinforcing the old list?
@@ -354,12 +377,19 @@ A suggestion near the top gets more exposure than one below it. A missing sugges
 - **Manually completed queries:** Use the query eventually typed by the user as a candidate-coverage signal. This reveals omissions, but intent can change during typing and it gives no controlled comparison between suggestions.
 
 - **Displayed-list outcomes with bounded exploration — recommended:** Join actual impressions, selections and search outcomes, with a small approved randomized exposure sample. This provides better-supported comparisons; exploration may temporarily worsen ordering and requires assignment-probability logs.
+
 **Train on actual displayed lists and resulting search outcomes.** Attribute selection and downstream engagement to the request ID. An unselected suggestion is a weak label; an abandoned search has a different interpretation from a successful manually typed query. Autocomplete needs both coverage and useful ordering, so the design combines completion signals with outcome-linked exposures. We accept a small, controlled exploration cost and keep it separate from ordinary production impressions.
+
 Split data chronologically and group events from the same session. Fit normalization and query statistics on the training period so future popularity does not leak into evaluation.
+
 Use a small randomized exposure experiment where appropriate, logging its assignment probabilities. Apply propensity correction only where those probabilities provide sufficient support, with bounded weights.
+
 Evaluate mean reciprocal rank, candidate recall and successful-search rate by language and prefix length. Run a canary to check selection, abandonment, latency and policy incidents before promotion. Shadow traffic checks mechanics and latency; user-impact comparisons need controlled exposure.
+
 **From a keystroke to a training group**
+
 The client debounces requests and tags each prefix with a request sequence. If a response to an older prefix arrives later, the UI discards it. The displayed list, not every server-produced list, becomes the exposure log.
+
 Join a selected suggestion and resulting search outcome to that displayed request. A manually completed query becomes a candidate-coverage signal when it differs from the suggestions; it is not proof that every shown suggestion was bad.
 
 ```text

@@ -19,6 +19,7 @@ Design of a streaming leaderboard for the most-viewed videos over recent and all
 ## Problem
 
 Users want to see which videos are popular now. Counting every view is straightforward at small scale, but a popular video can concentrate millions of updates on one counter.
+
 The service accepts view events into a durable log, aggregates them in partitions and publishes precomputed ranking snapshots. Approximate summaries bound the live ranking state; responses identify their freshness and uncertainty.
 
 ## Requirements
@@ -204,7 +205,9 @@ The ingest service validates event IDs, time bounds and the counting rule. It en
 ### Publishing rankings
 
 Workers update event-time buckets and candidate summaries. The coordinator unions candidate IDs, estimates each candidate across the relevant buckets/partitions and builds a deterministic list with video ID as the tie-breaker.
+
 A snapshot is published only after all required partitions reach its watermark. Readers see a complete generation or the previous generation with its age.
+
 Updating a database counter for every event would amplify writes and create hot rows. Stream-local aggregation batches that work; precomputed snapshots keep reads independent of aggregation cost.
 
 ## Deep dives
@@ -218,8 +221,11 @@ Updating a database counter for every event would amplify writes and create hot 
 - **Salted lanes with local top-K union only:** Split hot items across lanes and union each lane's strongest IDs. Work is balanced, but an item strong globally can remain below every local cutoff, so a naive union can miss the true heavy hitter.
 
 - **Salted partial aggregation with mergeable candidate summaries — recommended:** Distribute hot-item contributions, retain bounded candidate evidence and combine lane estimates at publication. Ingest balance improves; candidate coverage and approximation error need explicit bounds and reconciliation.
+
 **Recommendation.** Use salted partial aggregation for hot traffic, then combine counts/summaries at publication time. Stable event IDs retain retry deduplication even when routing changes. Viral traffic needs more than one worker without losing global ranking candidates. We accept summary merge work and approximate discovery limits, preserving the lane example below to show why a plain local-top-K union is insufficient.
+
 Exact per-video ownership permits merging local top-K lists into an exact global list. Salted partitions split a video's count, so local top-K unions alone are insufficient: a globally popular item may be absent locally. Approximate candidate summaries need explicit coverage/error accounting and evaluation.
+
 **Why partial rankings can miss the winner.** For K=1, imagine two salted lanes. Lane one has A=12 and H=11; lane two has B=12 and H=11. Their local winners are A and B, but H has 22 total views and is the global winner.
 
 | Video | Lane 1 | Lane 2 | Total |
@@ -229,6 +235,7 @@ Exact per-video ownership permits merging local top-K lists into an exact global
 | H | 11 | 11 | 22 |
 
 For an exact path, partial lanes emit per-video bucket deltas to one final video owner, which combines every lane before ranking. Batch these deltas so one viral video's raw event rate does not become the final owner's update rate. Local top-K can then be merged across those final owners because each owner holds a complete count for its videos at the same cutoff.
+
 The approximate path retains broader heavy-hitter candidates with stated error/coverage bounds. A larger arbitrary heap alone does not prove that the hidden H case is covered.
 
 ### Recent windows without unbounded state
@@ -240,6 +247,7 @@ The approximate path retains broader heavy-hitter candidates with stated error/c
 - **Coarse fixed buckets:** Store aggregates for a few larger intervals. State is smaller, but a sliding boundary can include or exclude up to one bucket of contributions.
 
 - **Tiered time buckets — recommended:** Keep fine summaries for recent windows and coarser ones for longer periods. Work and retention are bounded; declared boundary precision and late-event correction require separate handling.
+
 **Recommendation.** Keep minute-level summaries for the hour and coarser summaries for longer windows. Combine the buckets for each publication; retain finer boundary buckets when the promised precision requires them. Top-K requests repeat standard windows, so minute-level recent summaries can amortize event processing. We accept bucket-boundary approximation where the contract permits it and retain finer boundary state when exactness is required.
 
 ```text
@@ -250,8 +258,11 @@ publish:      combine selected buckets → candidate counts → top K
 ```
 
 Coarser buckets introduce boundary approximation. Declare that granularity, accept late events within a configured allowance and rebuild corrected generations when needed. A late event belongs to its original event-time bucket, rather than the next hour.
+
 **Bucket alignment.** For a publication at 12:00, an aligned one-hour window uses buckets \[11:00,11:01) through \[11:59,12:00). Advance to 12:01 by excluding 11:00 and including 12:00. Exact bucket counters can maintain totals by subtracting the expired bucket and adding the completed new bucket.
+
 A query ending at 12:00:30 cuts both boundary buckets. Minute summaries cannot reconstruct the exact half-minute contributions. Either retain finer data for those boundaries or declare minute-aligned windows in the API.
+
 Watermarks determine when the system considers a bucket complete under its lateness policy. An accepted late event updates its original bucket and triggers a corrected generation. Expired events go to the documented reconciliation path. Sketch summaries are generally recombined from retained buckets; deleting an old item from a single all-time sketch does not recreate an exact sliding window.
 
 ### Approximate counts and candidate discovery
@@ -263,11 +274,17 @@ Watermarks determine when the system considers a bucket complete under its laten
 - **Count-Min Sketch alone:** Update fixed-size hashed counters and query an item's estimated frequency. Memory is bounded, but collisions overestimate counts and the sketch does not enumerate candidate IDs.
 
 - **Space-Saving candidates with compatible Count-Min estimates — recommended:** Maintain candidate identities separately, then estimate their totals across mergeable bucket sketches. State stays bounded; discovery omissions and sketch error remain distinct limits and close ranks need exact reconciliation.
+
 **Recommendation.** Use Space-Saving for candidate identities and compatible Count-Min Sketches for estimating candidate totals. [Redis's Count-Min explanation](https://redis.io/blog/count-min-sketch-the-art-and-science-of-estimating-stuff/) describes collision-based count overestimation. The API needs item IDs as well as frequency estimates. We accept explicit approximation bounds and occasional exact checks, because a small count sketch alone cannot produce the ranking it promises.
+
 For nonnegative streams, choose sketch width and depth from the required additive error and failure probability. Space-Saving retains items above its documented frequency threshold; an untracked item may still have nonzero frequency.
+
 Merge sketches only with identical hashes and dimensions. Combine candidate summaries using an algorithm preserving error bounds; do not treat an ordinary heap union as a proof of top-K completeness. Near ties require wider candidate sets or exact recounts.
+
 **Update and query mechanics.** A Count-Min Sketch hashes each accepted video ID into one counter per row. Query that ID by taking the minimum of those counters; collisions can increase the estimate. Keep a separate candidate structure because the counters do not store the identities needed to enumerate a ranking.
+
 The [original Count-Min paper](https://www.cs.ox.ac.uk/people/graham.cormode/pubs/html/CormodeMuthukrishnan04CMLatin.html) derives an additive-error bound for nonnegative streams. With an error allowance of 0.001 times a million-event stream, the tolerated overestimate is up to 1,000 for a queried item at the configured confidence. That can be acceptable for a 200,000-view leader but dominate a 20-view tail item.
+
 Publish approximate counts with the window/cutoff and error policy. If candidate confidence intervals overlap near the Kth position, exact recount those candidates from retained bucket data before claiming a precise order. Candidate recall and count error are separate measurements.
 
 ### Retry-safe aggregation and publication
@@ -279,8 +296,11 @@ Publish approximate counts with the window/cutoff and error policy. If candidate
 - **Checkpoint aggregation only:** Recover worker state and source offsets consistently. Processing replay is controlled, but a partially written serving generation still needs independent publication protection.
 
 - **Checkpointed state with immutable generations — recommended:** Recover input positions with state, write absolute outputs under a generation ID and switch a pointer only after completeness checks. Reads are consistent; old generations and publication manifests add storage and cleanup work.
+
 **Recommendation.** Deduplicate logical view IDs, checkpoint aggregation state with source offsets, and write absolute versioned outputs. Atomically switch the serving pointer after the generation is complete. Retries and partition lag are normal at ingest volume. We accept a publication interval and generation-retention cost so queries receive a complete snapshot rather than a partly updated ranking.
+
 Restoring from a checkpoint replays only later events under the same deduplication contract. Missing dimensions or lagging partitions are reported explicitly. Track duplicate rate, watermark lag, checkpoint age, top-K recall and exact-versus-approximate count drift.
+
 **Checkpoint to serving generation.** A checkpoint contains bucket counters, candidate/deduplication state and source positions. Restoring it resumes the same logical aggregation; events replayed after the checkpoint are deduplicated by their stable view identity within the supported replay window.
 
 ```mermaid

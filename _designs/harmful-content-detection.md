@@ -17,6 +17,7 @@ Design of a moderation service that identifies policy-violating posts and applie
 ## Problem
 
 A social platform needs to reduce users' exposure to harmful content while preserving legitimate posts. A post may combine text, images and video, and its meaning can depend on how those parts relate.
+
 The service evaluates new content, routes uncertain cases to reviewers and re-evaluates posts as reports or other evidence arrive. Model scores inform decisions; the policy service determines which action is permitted for each category.
 
 ## Requirements
@@ -226,6 +227,7 @@ The post service receives a committed assessment for one content version. Enforc
 5. Commit the assessment and decision with an outbox event. Return the committed decision version.
 
 6. Feed/search consumers apply the enforcement event and invalidate affected caches. Track propagation lag so an older cached eligibility value is detectable.
+
 Encoding every modality for every post is expensive. The cascade reduces heavy inference, but its early-exit recall needs separate evaluation.
 
 ### Re-evaluating a post
@@ -249,9 +251,13 @@ Text and images can be benign separately while conveying a violation together.
 - **Joint attention for difficult cases — recommended:** Let text tokens and visual tokens interact in the heavier model, after a cheap screen. This captures cross-modal context while bounding expensive inference; screening mistakes still limit total recall, and the heavy path needs its own latency and capacity budget.
 
 The design needs category-specific moderation of combined text and visual meaning at a bounded serving cost. We accept a two-stage pipeline and evaluate early-exit recall alongside heavy-model quality; joint attention is reserved for cases where that additional work is useful.
+
 Use a multilingual text encoder, an image encoder and category-specific heads. [FLAVA](https://arxiv.org/abs/2112.04482) is a reference for language/vision representations; the final architecture is selected through category-specific evaluation.
+
 Keep content encodings separate from rapidly changing report/count features. Re-evaluation can reuse expensive content work when versions match. Compare the screening recall, heavy-model quality and complete cascade quality; a missed early exit limits overall recall.
+
 **The multimodal cascade in one assessment**
+
 Pin the post's content version, extract text/OCR and image features, and run the inexpensive screen. Clear lower-risk exits are allowed only under independently validated thresholds. Ambiguous cases go to the heavy fusion model, which compares text and visual representations before producing separate category scores.
 
 ```mermaid
@@ -274,6 +280,7 @@ class P control;
 ```
 
 For example, benign text over an otherwise benign image may become a prohibited message when read together. The joint model receives both representations; independent binary decisions would miss that relationship.
+
 Cache embeddings by content and encoder version. A new report changes behavioral context without requiring the image to be re-encoded. An edit changes content identity and invalidates the old assessment. Quality tests include the whole cascade, because a heavy model never sees content mistakenly dismissed by the screen.
 
 ### How should rare violations be learned and evaluated?
@@ -287,11 +294,17 @@ Natural traffic contains many legitimate posts. Balanced training batches help t
 - **Targeted training plus representative evaluation — recommended:** Train with reviewed positives and hard legitimate examples, while keeping a separately sampled audit set for quality estimates. This supports rare-category learning and realistic evaluation; it requires label provenance, sampling information and two independently maintained datasets.
 
 Rare violations need deliberate training coverage, while removal precision and missed-violation rates must reflect the population actually served. The extra review and dataset-management work is justified by keeping those two questions measurable.
+
 [Focal loss](https://arxiv.org/abs/1708.02002) downweights well-classified examples. Evaluate it alongside weighted cross-entropy rather than assuming ordinary cross-entropy always learns a trivial classifier.
+
 Reports are weak evidence and can be coordinated. Human labels include category, policy version, reviewer agreement and provenance. Time-based splits use only features available at assessment time; group near-duplicate content to prevent leakage.
+
 Report PR-AUC, recall at the chosen precision, false-positive rate and harmful-view prevalence. Evaluate languages and categories separately; successful appeals describe the subset that appealed, rather than all mistaken removals.
+
 **Build datasets with different purposes**
+
 Maintain reviewed positive examples, hard legitimate examples and a representative audit sample as distinct sources. Training can oversample rare categories; prevalence and precision estimates use representative held-out data with selection information retained.
+
 A coordinated-report campaign may create many reports for legitimate material. Store reports as features/weak evidence rather than turning their count directly into a gold label. Review records include policy version and disagreement; policy changes can require relabeling before reuse.
 
 ```text
@@ -328,8 +341,11 @@ else:
 ```
 
 Track review capacity as part of threshold selection. A wider review band improves coverage only if reviewers can handle it within the intended delay. Separate score-model releases from policy changes, with rollback for both.
+
 **Scores become actions through a separate policy**
+
 An assessment writes content version, category scores, calibration version and required-check completeness. The policy maps those values to allow, quarantine/review or remove, with thresholds selected using independently reviewed data and available review capacity.
+
 If 10K posts/day enter the review band but reviewers can handle 2K, the queue violates its turnaround target. Adjust admission, thresholds or staffing through an explicit policy decision; a review state without capacity only postpones action.
 
 ```text
@@ -353,11 +369,17 @@ Removed posts accumulate fewer views and reports. Training only on surviving con
 - **Independent audits across decisions — recommended:** Sample pre-decision content and retained evidence from allowed, quarantined and removed bands for restricted review. Logged sampling probabilities support population estimates; human review and evidence retention add operational and privacy costs.
 
 This design needs to measure missed violations and mistaken removals while its safety controls remain active. Independent review provides that evidence, with explicit sampling and retention costs; imputed behavior remains an analytical aid rather than the release-quality signal.
+
 Evaluation sampling preserves normal safety enforcement. It does not require intentionally exposing users to known harmful content. Record which observations were truncated by enforcement and distinguish missing behavior from zero reports.
+
 Use representative audits to estimate missed violations and targeted reviews to learn difficult boundaries. Keep both datasets identifiable so targeted review does not masquerade as prevalence measurement.
+
 **Measure missed violations without weakening enforcement**
+
 Select audit samples from the pre-decision population and from each action band using logged selection probabilities. Review retained evidence in restricted systems. This provides observations about allowed, quarantined and removed content while normal user-facing safeguards remain active.
+
 Suppose reports fall to zero after a removal. That is censored exposure, not a clean negative label. Store the decision time and the period during which users could view the material. Models using report velocity receive the history available at assessment time, rather than the later suppressed count.
+
 Representative audits estimate current missed violations and mistaken actions; targeted disagreement review supplies difficult training examples. Keep these datasets separate so a deliberately enriched violation sample does not become a prevalence claim. Weighting helps only where sampling support exists. Appeals contribute verified evidence for their reviewed cases but cannot alone describe all removed posts.
 
 ### How do emerging patterns and releases stay controlled?
@@ -371,8 +393,13 @@ New formats and language patterns can reduce recall before enough labels arrive.
 - **Scheduled training with reviewed drift response — recommended:** Keep regular releases and use drift alerts to collect labels and prioritize an incident candidate. This supports controlled adaptation; it requires mature audit evidence and may temporarily increase quarantine or review load.
 
 Input drift suggests investigation; mature labeled performance establishes quality degradation. New policy descriptions or few-shot models can prioritize review while gold labels accumulate. They need category-specific validation before automated enforcement.
+
 Block incompatible schemas and malformed datasets. Shadow evaluation measures latency and decision differences while existing enforcement stays active; controlled rollout measures quality and propagation. Rollback restores the compatible model/policy bundle and leaves the decision audit trail intact.
+
 **Release and drift investigation** Moderation changes affect user-visible enforcement, so a drift alert should accelerate investigation rather than directly change policy. The reviewed release path preserves compatible encoder, calibration and policy versions; its accepted cost is the time and reviewer capacity needed to establish quality.
+
 Compare input drift with missing-feature, category-score, enforcement and mature audit trends. A spike in removals may follow a new format, a tokenizer error or a policy change; route diagnosis to the affected stage.
+
 Warm a complete content-encoder/fusion/calibration/policy bundle and test fixtures covering category/language interactions. Shadow against the existing decision path, review sampled disagreements, then canary only after quality gates pass. Preserve current enforcement during evaluation.
+
 A rollout failure restores the prior compatible bundle and leaves the audit trail intact. Outbox consumers continue applying versioned human decisions and removals. Measure propagation from decision commit to feed/search/media enforcement, plus review age and model fallback rate. A model with good offline accuracy still fails the product goal if its decisions arrive after broad exposure.

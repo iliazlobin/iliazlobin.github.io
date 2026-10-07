@@ -19,6 +19,7 @@ Design of a short-video service with resumable uploads, personalized feeds and l
 ## Problem
 
 A user uploads a short video or opens the app and swipes through recommendations. Playback needs to feel immediate, while the next feed batch should reflect what the user has watched, skipped or liked during the current session.
+
 The service separates media preparation from discovery. A video becomes eligible after a playable rendition and required publication checks complete; additional renditions can follow in the background.
 
 ## Requirements
@@ -221,23 +222,29 @@ The feed API returns a stable session order while the client downloads media ind
 ### Uploading and publishing
 
 Create an upload session, send parts directly to object storage and complete it with checksums. Completion verifies the objects, creates the video record and durable preparation jobs, then returns processing state.
+
 Workers write renditions under immutable versioned keys. Once a compatible rendition and required eligibility checks complete, the catalog marks the video ready. A manifest lists only complete outputs.
+
 A Bloom filter can avoid many deduplication lookups, but a positive result still requires an exact lookup and access checks. Reusing encoding outputs preserves each user's independent video record and permissions.
 
 ### Loading the feed
 
 Retrieve candidates from user/video similarity, recent popular content, followed creators and bounded exploration. Merge and deduplicate them, fetch current features and rank a limited shortlist.
+
 Apply publication, language, access and diversity filters before returning a feed session. The cursor refers to that session's order, so later model updates do not reorder a page already being traversed.
+
 Scoring every video is impractical. Candidate retrieval and bounded ranking reduce the work per request.
 
 ### Swiping to the next video
 
 The player fetches the current manifest and a small amount of the next likely videos. It selects a supported rendition based on available bandwidth and device capability.
+
 A prepared player can display the next frame quickly. The client cancels obsolete downloads after rapid swipes and reduces prefetch on metered or poor connections. Playback telemetry reports startup delay, rebuffering and unused bytes.
 
 ### Recording engagement and social actions
 
 A like stores the user's desired state under a unique user/video key. Comments and follow changes commit with an outbox event. Repeated event IDs have one logical effect on counters and features.
+
 The client can update its UI optimistically, then reconcile with the accepted server state. Views and watch-time events are batched; the pipeline updates current-session features independently of full model retraining.
 
 ## Deep dives
@@ -253,11 +260,17 @@ Batch models provide useful long-term preferences but cannot encode actions that
 - **Stable model with fresh session features — recommended:** Update bounded recent-action features through the stream while keeping model releases versioned. Same-session context changes promptly; event lag, deduplication and feature-schema compatibility remain serving dependencies.
 
 Most immediate adaptation comes from recent user actions, which do not require new weights. We accept a feature-freshness pipeline and monitor its lag, keeping model promotion on quality gates rather than every engagement event.
+
 Use a two-tower representation for ANN retrieval, then a richer ranker for a bounded candidate set. A dot product is suitable for candidate similarity; ranking can additionally model watch completion, satisfaction and session context.
+
 [Monolith](https://arxiv.org/abs/2209.07663) is a reference for online training and collisionless embedding tables. Ordinary keyed hash tables already distinguish colliding keys; its relevant contrast is shared hashed embedding buckets versus identity-preserving embedding entries.
+
 Start with a durable engagement log, a recent-action feature store and versioned batch training. Add online parameter updates only when measured freshness and quality gains justify their recovery complexity. Missing features use a known fallback; candidate-source timeouts return the remaining eligible candidates.
+
 **One swipe changes the next retrieval context**
+
 The client emits an impression identity, playback outcome and stable action sequence. A stream consumer deduplicates retries and updates the user's bounded recent-watch/skip window. The next feed request encodes that window with the active user tower and retrieves compatible video vectors.
+
 A skipped clip, a completed clip and a playback failure are distinct outcomes. Keep their event types and timestamps rather than collapsing them into one engagement counter. The ranker can then model current-session interests without changing global parameters after every swipe.
 
 ```mermaid
@@ -291,8 +304,11 @@ Waiting for every output makes one slow encoding job delay the whole publication
 - **Playable-rendition first — recommended:** Prioritize one compatible output after required eligibility checks, then backfill other renditions. Startup is available earlier; manifests must expose only completed versions and some devices initially have fewer quality choices.
 
 The required rendition is selected from device and network coverage rather than assuming one resolution fits every user. Workers deduplicate by video/version/rendition, checkpoint progress where supported and atomically publish completed manifests.
+
 Retry failed outputs independently. Bound queue age and apply admission limits to unusually large uploads. Hardware acceleration is useful only after codec, quality and throughput benchmarks.
+
 **Publish one valid media generation** A short-video feed needs a playable clip quickly, not every optional rendition at once. We accept reduced initial rendition coverage and versioned manifest updates while preserving eligibility as a publication gate.
+
 An upload creates a video/version record and deterministic rendition jobs. The workflow prioritizes the required playable rendition, validates its segments, and publishes a manifest pointing only to completed immutable outputs. Other renditions join a later compatible manifest generation.
 
 ```text
@@ -302,6 +318,7 @@ Upload committed → required rendition → validate segments → playable manif
 ```
 
 A worker retry writes the same rendition/version key and verifies checksums before accepting an existing object. A stale worker cannot overwrite a newer generation. If a higher-resolution task fails, the already valid playable rendition remains available.
+
 The client chooses a compatible rendition using device/network capabilities. Publishing “720p ready” is meaningful only for clients that can decode its codec. Track required-rendition completion, quality validation, queue age and independent backfill failure. Admission limits prevent a large upload from occupying all latency-critical encoder capacity.
 
 ### How much should playback prefetch?
@@ -315,10 +332,15 @@ Downloading many predicted videos improves readiness but wastes mobile data when
 - **Adaptive bounded prefetch — recommended:** Prepare limited initial segments based on network conditions and session behavior. Startup and byte use can be balanced; prediction errors still waste data and require explicit cancellation and metered-network limits.
 
 Users swipe unpredictably on mobile connections. We accept a small amount of measured unused data to improve startup, tuning it against watch behavior, rebuffering and wasted bytes rather than prefetch depth alone.
+
 [HTTP Live Streaming](https://developer.apple.com/documentation/http-live-streaming) provides a standard adaptive-delivery format. Use immutable rendition URLs, shared cache keys for public media and authorization compatible with the content's visibility.
+
 CDN hints can support warming, but manifests alone do not guarantee proactive placement. Measure first-frame latency, edge hit rate and unused prefetch bytes before adding lookahead caching or peer-assisted delivery.
+
 **A prefetch decision with an explicit byte budget**
+
 Prefetch the first playable segment of the next small candidate set, then extend only when the clip is likely to be viewed and the network budget allows it. Cancel obsolete requests when the user rapidly skips or leaves the feed.
+
 Estimate usefulness from current-session skip behavior, not only long-term interests. On constrained or metered networks, reduce candidates/rendition bytes; on a stable fast connection, prepare enough to improve first-frame readiness without filling the entire slate.
 
 ```text
@@ -341,9 +363,13 @@ Feed caches, search and media edges hold different copies of publication state.
 - **Versioned eligibility events with current read checks — recommended:** Commit durable changes, invalidate controllable caches and check restricted-media access at serving. Propagation is recoverable; lag and unreachable browser/edge copies still require explicit freshness policy.
 
 Feed ranking and media delivery cache different state. We accept asynchronous propagation with monitored deadlines and fresh restricted-access checks, so a consumer outage cannot silently reverse a newer removal.
+
 Consumers ignore older versions and record propagation lag. Feed generation rechecks eligibility even when reusing a cached candidate batch. Media retention and removal policy determine when objects and CDN copies are revoked.
+
 **Removal follows the version through every copy**
+
 A content authority commits a tombstone/visibility revision and its event together. Search, ANN overlays and feed caches apply only newer versions; replay includes tombstones so rebuilding an old base cannot restore removed content.
+
 The final serving path checks current eligibility before issuing media access. Clients encountering an unavailable prefetched clip advance to another eligible item and log the reason, rather than treating it as a dislike.
 
 ```text

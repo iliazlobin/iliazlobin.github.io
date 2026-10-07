@@ -17,6 +17,7 @@ A speech-recognition service for live audio and uploaded recordings, with partia
 ## Problem
 
 Users expect a voice interface to respond while they are speaking. An uploaded recording has a different requirement: the service can use the complete audio to produce a more accurate transcript.
+
 We provide both through a shared audio-processing pipeline. Live recognition uses a streaming model; a second pass refines the transcript after the service detects the end of an utterance.
 
 ## Requirements
@@ -157,6 +158,7 @@ batch_transcription:
 ## High-level design
 
 The live path extracts audio features and runs a streaming Conformer encoder with an RNN-T decoder. RNN-T generates text as audio arrives. A final rescoring pass uses the completed utterance to choose the final transcript.
+
 Uploaded recordings run through a queued batch path. Both paths load versioned bundles and feed a separate evaluation and training workflow.
 
 ```mermaid
@@ -239,11 +241,13 @@ A very short audio chunk reduces transport delay but increases scheduling overhe
 ### Reconnecting or cancelling
 
 The worker acknowledges the highest sequence it has processed. On reconnect, the client sends the session ID and replays chunks after that sequence. The gateway resumes only while the assigned worker's lease and decoder state are still available.
+
 If the worker has failed or the replay window expired, return `session_expired` and begin a new session. The application shows that interruption explicitly. Cancellation stops both live decoding and queued final rescoring.
 
 ### Transcribing an uploaded recording
 
 Create a job after validating file size, duration and format. A worker claims the job, downloads the audio and transcribes it in bounded segments with overlap for boundary context.
+
 Convert segment-relative timestamps to file-relative timestamps, reconcile overlapping words and store one completed result. A retry uses the same job ID and bundle, preserving the result contract.
 
 ## Deep dives
@@ -257,10 +261,15 @@ A streaming decoder has only the audio received so far. Similar-sounding words m
 - **Streaming model only:** Maintain causal encoder/decoder state and emit revisions as audio arrives. Capacity and latency are bounded, but ambiguous words have limited future context and final quality inherits those errors.
 
 - **Streaming plus final rescoring — recommended:** Generate prompt partial hypotheses, then rescore candidates with the completed utterance. This fits interactive transcription; it retains utterance state and consumes extra final-pass capacity, while rescoring is limited by candidate coverage.
+
 **Use a streaming Conformer/RNN-T first pass and a final rescoring pass.** [Conformer](https://arxiv.org/abs/2005.08100) combines convolutional and attention-based acoustic modeling. [Two-pass ASR](https://arxiv.org/abs/1908.10992) uses a streaming RNN-T followed by a Listen, Attend and Spell model for final recognition. The product needs useful text while the user speaks and a better final result after endpointing. We accept retained utterance state and reserved final-pass capacity, with a tested streaming-only fallback for overload.
+
 Keep a bounded set of candidate transcripts from the first pass. The second pass scores those candidates using the complete utterance. Its benefit depends on candidate coverage: a correct word pruned by the first pass may be unavailable to the rescoring stage.
+
 Tune processing chunk size, lookahead and beam width together. Evaluate partial-transcript stability as well as final word error rate. Batch-only models such as [Whisper](https://arxiv.org/abs/2212.04356) provide another baseline for completed recordings.
+
 **Audio frames to a revised transcript**
+
 Decode ordered audio chunks into encoder representations, retaining the streaming model's bounded acoustic context. The RNN-T decoder combines those representations with the token-prefix state to advance a small hypothesis beam. The client receives a revision ID and replacement partial text for the current utterance, rather than appending every changing hypothesis.
 
 ```mermaid
@@ -283,6 +292,7 @@ class A,N,U data;
 ```
 
 For example, the partial text may change from “send to Ann” to “send to Anna” when later sounds resolve the name. The UI replaces that partial region. After finalization it receives a final result with a stable utterance ID.
+
 Retain enough audio and hypotheses for the final pass, with explicit duration/byte limits. When an utterance exceeds the limit, finalize at a safe segment boundary or report the configured long-utterance behavior. The rescorer chooses among retained paths; increasing its capacity cannot recover a word eliminated from all first-pass candidates. Inspect oracle error over the beam to distinguish a retrieval problem from a rescoring problem.
 
 ### What does the user actually experience as latency?
@@ -300,9 +310,13 @@ Audio transport, model lookahead and silence detection contribute different dela
 - **Learned endpoint model:** Use acoustic and linguistic context to decide when speech has ended. It can recognize natural endings, but requires separate cohort calibration and can fail on hesitant speech or background conversation.
 
 - **VAD silence threshold with explicit end signals — recommended:** Use predictable silence handling for continuous audio and honor a sequenced client end signal for push-to-talk. This covers both interaction modes; the silence threshold still trades false cutoffs against waiting.
+
 **Start with VAD plus a 500ms silence threshold and explicit end signals.** At 200ms finalization, the last-word-to-final delay can be around 700ms before delivery overhead. Tune endpointing against false cutoffs, missed endings and the complete user-visible delay. A baseline endpoint state machine is easy to test against the user-visible budget. We accept its configurable silence delay and measure false cutoffs, endpoint delay and final-pass work separately before adding another endpoint model.
+
 Reserve capacity for final passes so a burst of completed utterances cannot delay every active stream. If final rescoring misses its deadline, return the streaming result as final and record that fallback mode.
+
 **Endpointing is a state machine**
+
 Use voice-activity estimates to move through `waiting → speaking → trailing_silence → finalized`. New speech during trailing silence returns to speaking. An explicit end message finalizes the current utterance after all preceding sequence-numbered audio is accounted for.
 
 ```text
@@ -312,7 +326,9 @@ Last spoken frame      trailing silence       final pass       delivery
 ```
 
 Sequence IDs expose missing audio. A reconnect can replay unacknowledged chunks within the bounded session buffer; the worker deduplicates them before acoustic processing. If a gap cannot be filled, mark the result incomplete instead of disguising it as clean transcription.
+
 Test pauses inside names, hesitant speech, background conversation and long terminal silence. A shorter silence threshold trades less waiting for more false cutoffs. Measure first partial and last-word-to-final latency from client timestamps with clock assumptions recorded; also capture server-side stages for diagnosis.
+
 Final-pass overload uses the stated streaming-result fallback and labels that result mode. Monitor its rate by language and noise cohort so capacity degradation does not silently appear as a model-quality regression.
 
 ### How do we keep training and serving consistent?
@@ -326,10 +342,15 @@ Audio preprocessing can change recognition quality as much as model weights. A s
 - **Fine-tune a pretrained model — recommended:** Adapt the pretrained recognizer on consented target-domain audio while retaining a reproducible preprocessing contract. This reduces the initial training burden; it still needs domain coverage and regression tests for forgetting.
 
 The proposed service benefits from an established acoustic representation and needs adaptation to its actual audio cohorts. We accept reviewed fine-tuning and bundle-parity tests. Noise, speed and feature masking are complementary training augmentation for either model origin, not a separate alternative to pretraining.
+
 **Fine-tune a pretrained model on representative, consented audio.** Split by speaker and recording session before training, then reserve recent recordings for chronological evaluation. Keep microphone, accent, background-noise and language cohorts visible in the reports.
+
 Package resampling, feature extraction, normalization and tokenizer settings with the weights. Domain adapters carry the base-model and tokenizer versions they require, and each session pins its selected adapter with that bundle. Validate them on the same audio fixtures in training and serving. [SpecAugment](https://arxiv.org/abs/1904.08779) provides time and frequency masking during training; apply augmentation only to the training split.
+
 User corrections are useful candidates for review. A changed transcript may reflect preference or punctuation rather than an acoustic error, so corrections are labeled before entering the training set.
+
 **One reproducible preprocessing contract**
+
 Specify accepted sample rates, channel conversion, amplitude normalization, resampling kernel and feature-window/hop sizes in the bundle. For the same audio fixture, offline and online feature extraction should agree within an explicit tolerance. “Both use log-mel features” is insufficient if their framing or normalization differs.
 
 ```text
@@ -340,6 +361,7 @@ Compare shape, timestamps and numerical tolerance before promotion.
 ```
 
 Apply training augmentation after split assignment. A noise recording, speaker session or near-duplicate clip shared across train and test can inflate reported performance. Store speaker/session grouping and provenance so the split is reproducible.
+
 Keep human corrections as raw feedback with the original transcript, audio/version reference and consent. A reviewer distinguishes acoustic substitutions from preferred punctuation or formatting. The training target and evaluation normalization then use the same definition of an error. Pin the complete preprocessing/tokenizer/weights bundle at session start, including during rolling worker replacement.
 
 ### How should we recognize names and domain terms?
@@ -351,6 +373,7 @@ A general recognizer may assign low probability to a product name or technical t
 - **Domain adapters:** Train a small domain-specific parameter set from approved audio. Persistent pronunciation and language patterns can improve; adapter routing and base/tokenizer compatibility must be versioned, warmed and rolled back together.
 
 - **Full fine-tuning:** Update the shared recognizer for domain examples. It can address broad acoustic shifts, but changes every session using those weights and needs general-cohort regression evaluation.
+
 **Start with bounded hotword biasing, then add adapters for sustained domain errors.** Apply the boost while expanding decoder candidates, and tune its strength on both recordings containing the term and recordings that do not contain it. The design starts with bounded hotword biasing because vocabulary updates are smaller and faster than recognizer releases. We accept a false-insertion budget validated on negative examples; sustained errors justify a versioned adapter, with the selected adapter pinned at session start.
 
 ```python
@@ -360,8 +383,11 @@ candidate_score = model_log_probability + hotword_bonus
 ```
 
 Evaluate false insertions alongside recall of the requested terms. A multilingual bundle uses a compatible tokenizer and decoder throughout the utterance; code-switching support is evaluated on mixed-language recordings rather than changing vocabulary mid-stream.
+
 **Where the hotword score enters decoding**
+
 Build a trie over the requested terms using the active tokenizer. Each hypothesis carries its current trie state. Advancing a compatible prefix receives a bounded boost; completing a term receives the configured final bonus. The model still evaluates the acoustic evidence and alternative paths.
+
 For a term such as “AcmeDB,” boosting only the final text after decoding is too late if the path was pruned. Applying the boost during candidate expansion keeps the intended path in competition. Limit term count, token length and total bonus per utterance so a large vocabulary cannot overwhelm acoustic likelihood.
 
 ```text
@@ -384,9 +410,15 @@ Calculate word error rate from substitutions, deletions and insertions against r
 - **Reference metrics plus targeted listening and canary gates — recommended:** Compare identical labeled audio by cohort, review consequential errors and test endpointing and capacity before rollout. This establishes both recognition and operational quality; it requires maintained references, reviewers and compatible warm rollback workers.
 
 A live recognizer must be accurate and responsive across accents, devices and noise. We accept combined evaluation cost, while session pinning keeps a rollout or rollback from transferring decoder state between incompatible bundles.
+
 Compare results by language, accent, device, noise and utterance length. A candidate passes only when quality and latency gates pass together. Live corrections and user abandonment provide operational signals; periodic labeled evaluation provides the actual error-rate measurement.
+
 Warm the candidate workers, run a small canary and monitor session errors, partial stability, endpointing and final-pass fallbacks. Keep previous-bundle workers available so rollback restores compatible preprocessing and decoder state for new sessions. Existing sessions finish on the bundle they started with.
+
 **A candidate release and rollback**
+
 Record baseline and candidate results on identical reviewed audio, reporting substitution, deletion and insertion counts separately. The total WER can hide a shift toward hallucinated words during silence. Endpoint accuracy and partial-revision frequency belong in the same report as final recognition quality.
+
 Run shadow transcription on consented traffic for mechanical comparison without changing the shown transcript. Quality gates require reviewed references; agreement with the old model alone cannot establish correctness. Warm a canary pool, pin new sessions to their assigned bundle, and compare capacity under simultaneous streaming and final rescoring.
+
 A regression switches new sessions to the prior complete bundle. Active sessions retain their encoder/decoder state and finish under the original version; transferring it to different weights would create an undefined state. Preserve retained job IDs so batch retries return the existing final result instead of publishing a second transcript. Monitor memory per session, replay gaps and fallback finalization along with model-quality cohorts.

@@ -19,6 +19,7 @@ Limit API traffic by user, API key, IP address or endpoint, with explicit burst 
 ## Problem
 
 A client can send more requests than an API can safely process. A rate limiter checks each request before forwarding it and returns HTTP 429 when the client has exhausted its allowance.
+
 The same client may reach several gateway instances. Those instances need shared accounting, while popular keys and backing-store failures require bounded work on the request path.
 
 ## Requirements
@@ -199,21 +200,25 @@ A gateway spends a previously reserved local allowance or obtains an atomic glob
 ### Identifying and matching a request
 
 Authenticate the request, then use the resulting user or API-key ID. For anonymous traffic, derive IP from the connection and an explicitly trusted proxy chain. Strip or ignore client-supplied forwarding headers.
+
 Match the normalized route and identity to a versioned rule snapshot. An IP limit and a user limit are separate buckets. Bound the number of evaluated rules so policy configuration cannot create unbounded request work.
 
 ### Consuming allowance
 
 A local grant, if valid for the current rule version, can admit a request immediately. Otherwise the global limiter reads, refills and deducts tokens in one Redis operation.
+
 When several independent rules apply, rejection by any rule stops forwarding. Earlier deductions can remain charged as attempted requests; policies must state this behavior. Atomic admission across unrelated Redis slots would require different coordination.
 
 ### Returning a rejection
 
 Calculate the time until enough tokens exist for the requested cost. Round up to whole seconds for Retry-After and provide finer guidance in the body. A short local rejection cache can absorb repeated abuse, with a bounded expiry tied to the decision.
+
 A rejected request gets 429. Failure to determine allowance gets 503 when the rule requires global enforcement; these are different outcomes.
 
 ### Updating rules and handling outages
 
 Publish validated configuration with a new version. Gateways invalidate older grants and apply the new rule snapshot. A version transition can reset burst state, so reductions need a deliberate migration policy rather than silently initializing a fresh full bucket.
+
 During an outage, enforce a bounded local emergency limit for availability-oriented rules. Sensitive endpoints can require global admission and return 503. Track the time and volume served under fallback.
 
 ## Deep dives
@@ -229,10 +234,15 @@ During an outage, enforce a bounded local emergency limit for availability-orien
 - **Sliding request log:** Retain individual request timestamps and count the live interval. Rolling-window semantics are exact for retained events, but state and cleanup work grow with accepted request volume.
 
 - **Token bucket or GCRA — recommended for rate and burst control:** Maintain refillable allowance or a virtual scheduling time in one atomic update. Sustained rate and burst behavior are explicit; time, expiry and concurrency handling must be correct, and this differs from an exact rolling-window policy.
+
 **Recommendation:** use token buckets for API fairness and burst control. Choose an exact log only for a workload needing precise rolling-window semantics. Concurrency limits separately bound in-flight work; a request-rate limit alone cannot protect a slow upstream. The selected bucket owner coordinates clock and balance updates; its outage behavior follows the endpoint policy below.
+
 [Envoy's global rate-limiting architecture](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_features/global_rate_limiting) is a useful reference for combining local protection and a shared decision service.
+
 **A token-bucket example.** With capacity ten and refill rate two tokens/s, a full bucket admits a burst of ten unit-cost requests immediately. After spending all ten, two seconds of idle time restore four tokens. Sustained traffic can continue at two requests/s once the initial burst is exhausted.
+
 This differs from a fixed “ten per five seconds” counter, which can admit ten requests just before a window boundary and another ten just after it. An exact sliding log avoids that boundary burst but stores timestamps for retained requests.
+
 Request rate and concurrency solve separate problems. If an upstream call takes 30 seconds, two admitted calls/s can create about 60 concurrent calls. Add an in-flight limit that is released on completion or timed expiry. Select cost weights for expensive endpoints before applying the bucket, and version the policy so gateways interpret cost consistently.
 
 ### How do we prevent concurrent token consumption races?
@@ -244,6 +254,7 @@ Request rate and concurrency solve separate problems. If an upstream call takes 
 - **WATCH/MULTI retries:** Detect a changed bucket and retry an optimistic transaction. Conflicting writes are coordinated, but hot buckets generate repeated reads and retries that worsen tail latency.
 
 - **Bounded atomic Lua script — recommended:** Refill, check and deduct next to the Redis state as one operation. A request observes a consistent bucket result; scripts block other work on that server, so calculation and key count must remain small.
+
 **Recommendation:** use one bounded script per bucket. [Redis documents atomic script execution](https://redis.io/docs/latest/develop/programmability/eval-intro/); the script blocks other server work while it runs, so avoid loops over request history. Hot identities make optimistic contention retries costly. Redis failover can lose recent decisions, so hard spending guarantees remain in a separately designed durable ledger.
 
 ```lua
@@ -272,6 +283,7 @@ return {allowed, math.floor(tokens), retry_ms}
 ```
 
 The timestamp includes microseconds and clamps backward movement. Expiry occurs only after enough idle time to refill fully. Handle NOSCRIPT by loading the reviewed script and retrying under a deadline; benchmark execution and clock/failover behavior.
+
 **One indivisible decision.** The gateway routes a bucket key to its Redis owner. The script reads stored tokens/time, refills up to capacity, checks cost, deducts if allowed and writes the new state before another script can touch that bucket.
 
 ```mermaid
@@ -292,6 +304,7 @@ sequenceDiagram
 ```
 
 With one token remaining, competing scripts produce one allowed result and one rejection. Separate GET and SET operations could let both gateways spend it.
+
 A lost reply is different: the script may have deducted a token even though the gateway timed out. For ordinary traffic protection, conservatively accepting that lost allowance is simpler than refunding an uncertain deduction. If decisions must be retry-idempotent, retain request identities within a bounded decision window and include their memory/latency cost.
 
 ### How do local grants reduce global work?
@@ -303,6 +316,7 @@ A lost reply is different: the script may have deducted a token even though the 
 - **Independent local buckets:** Give every gateway its own full rule allowance. Admission is fast, but fleet-wide allowance grows with gateway count and a client can exploit routing changes.
 
 - **Reserved token grants — recommended for busy tolerant rules:** Deduct a small batch globally before consuming it locally under a versioned expiry. Shared-store calls fall; crashed gateways strand unused tokens and grants temporarily reduce fairness or rule-change responsiveness.
+
 **Recommendation:** grant small batches only to busy, burst-tolerant rules. Deduct the grant before returning it, bind it to a gateway/rule version and expire it quickly. Lost or unused tokens are discarded; automatic refunds would require proof that they were never spent. Tune grant size against refill frequency and short-term allocation skew, retaining per-request authority for rules that require tighter fairness.
 
 ```mermaid
@@ -321,8 +335,11 @@ sequenceDiagram
 ```
 
 Grants shift the timing of consumption. The extra instantaneous burst is bounded by outstanding unspent grants, rather than a universal percentage. Cap grant size and grants per identity; monitor utilization and under-admission from lost tokens.
+
 **Grant size and time horizon.** A busy gateway reserves 20 tokens once and spends them locally; it makes one shared check instead of 20. Reserve globally before exposing the grant, bind it to the gateway process and rule generation, and discard unused tokens when it expires or the process restarts.
+
 Twenty gateways each holding 20 unused tokens can collectively emit an extra burst of up to 400 already-reserved requests. Choose grant sizes from that fleet-wide bound, not just the savings in Redis commands. Stop issuing grants when rule changes or dependency health require tighter admission.
+
 Small grants improve fairness but make more shared calls. Large grants strand allowance on idle gateways and extend the time between reservation and use. Adapt grants to measured utilization while retaining a hard size/expiry ceiling. Refunds require durable proof of unused tokens; a gateway merely reporting a crash is insufficient because its requests may already have been sent.
 
 ### What happens when global state is unavailable?
@@ -334,8 +351,13 @@ Small grants improve fairness but make more shared calls. Large grants strand al
 - **Fail closed:** Return an unavailable response whenever global allowance cannot be checked. Strict admission is protected, but legitimate requests lose access during the dependency failure.
 
 - **Endpoint-specific bounded local fallback — recommended:** Use declared emergency local limits for tolerant endpoints and fail closed for strict rules. Some availability and protection remain; the total emergency allowance depends on fleet size and must be measured and time-bounded.
+
 **Recommendation:** choose fallback per endpoint and retain coarse local controls everywhere. Login and other abuse-sensitive endpoints require their own policy; being user-facing alone does not justify unlimited admission. Bound emergency allowance across the fleet and report fallback duration and admitted volume, making the temporary reduction in protection visible.
+
 Use circuit breakers and short timeouts to prevent dependency failures from exhausting gateway pools. Alert on degraded-check duration, admitted traffic and upstream saturation. Test lost replies, failover, rule-version changes and gateway crashes as well as normal refill behavior.
+
 **Bounded fallback capacity.** If a shared bucket is unavailable, a local fallback of five requests/s on 100 gateways can admit 500 requests/s fleet-wide. Autoscaling changes that bound, so configure fallback against an explicit gateway-count/capacity envelope or use pre-reserved expiring allowance.
+
 Strict endpoints reject when required coordination is unavailable. Burst-tolerant endpoints may use the approved local fallback while emitting a degraded-decision metric. Every request still passes coarse concurrency protection so slow upstream calls cannot fill all gateway workers.
+
 Use short dependency deadlines and a circuit breaker; repeated Redis timeouts should not consume the full request timeout. On recovery, resume the correct rule generation and discard expired grants. Traffic quotas tolerate a documented amount of failover drift; hard financial spending limits belong to a durable budget-reservation system.

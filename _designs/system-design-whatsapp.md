@@ -19,6 +19,7 @@ Design of an encrypted messaging service for direct chats, group messages, media
 ## Problem
 
 Users expect a message to arrive promptly when the recipient is online and to remain available when they reconnect later. Mobile connections can disappear during a send, so the service must distinguish durable acceptance from delivery and support safe retries.
+
 Message content is encrypted on the devices. The server routes ciphertext and retains pending deliveries; clients manage encryption keys, decryption and local message history.
 
 ## Requirements
@@ -211,17 +212,21 @@ Accepted means the service can recover the ciphertext and delivery intent. Deliv
 ### Sending and reconnecting
 
 The sender encrypts locally and submits a stable message ID. The message service checks chat membership, records the ciphertext and recipient set durably, and returns accepted. Delivery workers write pending recipient references and notify the recipient's gateway.
+
 The recipient stores the message locally, deduplicates by ID and acknowledges delivery. Reconnect requests resume the pending inbox with a cursor; a lost acknowledgement produces another delivery attempt and another acknowledgement.
+
 Direct socket delivery alone would leave a failure window after acceptance. Persisting delivery intent first adds a write but provides a reliable recovery path.
 
 ### Group messages
 
 The service validates the membership version used for the send, assigns a chat sequence and records the recipient set for that version. Workers fan out independently so one disconnected member does not delay others.
+
 Client-side sender-key distribution occurs through authenticated pairwise sessions. Membership changes establish a new key epoch; remaining members receive the keys needed for subsequent messages.
 
 ### Media, receipts and presence
 
 The sender encrypts a media object, uploads it and verifies completion before publishing its reference and key inside a chat message. Recipients fetch and verify the ciphertext before decrypting locally.
+
 Receipts progress monotonically and survive routing retries. Presence uses renewable leases and privacy-filtered subscriptions; an expired lease shows the user as offline.
 
 ## Deep dives
@@ -237,6 +242,7 @@ Receipts progress monotonically and survive routing retries. Presence uses renew
 - **Durable polling only:** Store accepted messages and let clients periodically pull. Recovery is straightforward, but delivery waits for polling and repeated empty reads consume mobile resources.
 
 - **Durable acceptance with immediate forwarding — recommended:** Commit delivery intent first, then push online and replay pending inboxes on reconnect. Reliability and low online latency coexist; duplicated attempts, inbox retention and acknowledgements require state.
+
 **Recommendation.** Persist every accepted message and delivery intent, then attempt low-latency forwarding. Replay unfinished fan-out and pending inbox entries after failures. Mobile devices disconnect routinely. We accept the durability write and duplicate-delivery handling so sender acceptance has a recovery guarantee independently of the current socket.
 
 ```mermaid
@@ -258,8 +264,11 @@ sequenceDiagram
 ```
 
 Client deduplication makes repeated network delivery appear once in the local conversation. Define the retention expiry outcome explicitly and track acceptance-to-delivery latency, pending age and reconnect backlog.
+
 **Durable recipient inbox.** The sender assigns a stable message ID before sending. Acceptance appends ciphertext and a recipient-delivery plan durably; the server responds only after that boundary. A fan-out worker writes a unique recipient/message reference and advances its checkpoint after the reference is durable.
+
 On reconnect, the recipient requests inbox entries after its persisted cursor. The client stores the message locally before acknowledging delivery. If the acknowledgement is lost, the same reference is redelivered and the local unique message ID prevents another visible copy.
+
 Delivered and read are separate states. A read receipt is an explicit client event, not an inference from the gateway having written bytes to a socket. If retention expires before delivery, record an expired outcome and show the documented behavior. Large replay backlogs are paginated and rate-limited so reconnecting offline clients do not overwhelm live delivery.
 
 ### Efficient group fan-out
@@ -273,8 +282,11 @@ Delivered and read are separate states. A read receipt is an explicit client eve
 - **Shared encrypted log with client pull:** Keep one durable group log and let authorized members fetch from their cursors. Per-message fan-out writes fall, but polling/notifications, membership-versioned read access and retention move more work to delivery reads.
 
 - **Sender-key ciphertext with durable member references — recommended:** Store one group ciphertext under its membership epoch and fan out recoverable references. Payload work is shared; member key distribution, epoch changes and recipient-plan checkpoints still grow with membership.
+
 **Recommendation.** Use sender-key encryption and asynchronous per-member delivery for bounded chat groups. Store one ciphertext body with recipient references; checkpoint fan-out progress so a worker can resume after a crash. The cryptographic setup cost still grows with membership. Bounded chat groups need offline recovery without uploading the same body repeatedly. We accept membership-driven key setup and fan-out progress state, preserving the recipient set selected at send time.
+
 A removed member retains old keys but receives no keys for the new epoch. Validate membership changes and pending sends consistently, and monitor fan-out queue age and per-group throughput. Large broadcast channels can use pull-based delivery with online notifications.
+
 **Fan-out across membership changes.** Record the group membership epoch with the accepted message. The delivery plan uses that validated epoch, giving the worker a stable recipient set instead of rereading a mutable group halfway through fan-out. Recipient references are idempotent under group/message/member keys.
 
 ```mermaid
@@ -294,6 +306,7 @@ class M,L,P,B,I data;
 ```
 
 A removal advances membership and the cryptographic sender-key epoch according to protocol. New messages use the new epoch; old ciphertext and previously learned keys retain their original access implications. Pending acceptance must compare the validated membership version before committing. This prevents a worker from deciding authorization from a stale cache after removal.
+
 For a very large broadcast channel, shared-log pull avoids millions of per-member writes, but it needs a different read-access and retention policy from bounded private groups.
 
 ### Keeping media transfer separate
@@ -305,10 +318,15 @@ For a very large broadcast channel, shared-log pull avoids millions of per-membe
 - **Dedicated encrypted-media relay:** Transfer ciphertext through a separate media service. Chat gateways stay responsive and authorization is centralized, but relay bandwidth and resumable-transfer state still grow with media traffic.
 
 - **Authorized direct transfer of encrypted objects — recommended:** Upload ciphertext in resumable chunks and send its verified reference/key in the encrypted message. Chat remains small; object completion, integrity and independent retention must be coordinated.
+
 **Recommendation.** Use direct signed uploads and downloads of encrypted objects, with a media service authorizing access and checking completion. Transfer and retry chunks independently for large files. Large media should use a bandwidth-oriented path while chat retains prompt small-message delivery. We accept a two-step completion protocol and encrypted-object cleanup policy, preserving endpoint-only content access.
+
 Identical ciphertext can be reused for authorized forwarding. Independently encrypted copies usually have different hashes, so plaintext-level deduplication is unavailable to the server. Scope reuse checks to permitted objects to avoid exposing whether another user uploaded particular content. Garbage collection accounts for delivery retention, references and an orphan grace period.
+
 **Encrypted object lifecycle.** The client encrypts media with a randomly generated content key, uploads ciphertext through a scoped URL, and sends the ciphertext object reference and encrypted key material inside the message. The media service verifies completed upload size and ciphertext integrity before the reference is accepted.
+
 A download goes directly through the authorized object/CDN path; the client verifies and decrypts it locally. Chunk retries affect only media transfer, leaving small message delivery independent. The server can validate ciphertext hashes and sizes without gaining plaintext visibility.
+
 Forwarding may reuse an existing authorized ciphertext object, but access checks remain reference-specific. Avoid a global content-existence API, which would reveal other users' uploads. Garbage collection checks durable message references, retention and active uploads before marking an object collectible, then waits a grace period before deletion. A short-lived URL limits renewed access but does not erase a copy already downloaded.
 
 ### Key agreement and compromise recovery
@@ -320,9 +338,15 @@ Forwarding may reuse an existing authorized ciphertext object, but access checks
 - **Static endpoint session key:** Establish one shared key and reuse it. Encryption overhead is small, but compromise can expose a large span of messages and recovery requires explicit rekeying.
 
 - **Audited asynchronous agreement with a ratcheting protocol — recommended:** Use maintained prekey agreement and per-message key evolution, with authenticated device identities. Offline setup and bounded compromise recovery are supported; prekey inventories, device changes and key-state persistence add complexity.
+
 **Recommendation.** Use a maintained, audited implementation of the selected end-to-end protocol. [X3DH](https://signal.org/docs/specifications/x3dh/) describes asynchronous prekey-based agreement; the [Double Ratchet specification](https://signal.org/docs/specifications/doubleratchet/) describes per-message key derivation and fresh key agreement. Recipients can be offline and devices can be compromised, so both asynchronous setup and evolving keys matter. We accept audited protocol integration and device-key lifecycle work; no custom cryptographic construction is introduced by this design.
+
 Deleting old message keys protects earlier messages. A compromised symmetric chain can expose later keys until fresh uncompromised key agreement occurs. A new ratchet key is generated on ratchet transitions, rather than for every message.
+
 Authenticate identity keys, consume one-time prekeys atomically and bound skipped-key storage for out-of-order delivery. Identity changes require a clear verification flow; encrypted content still leaves traffic and membership metadata for the service to protect.
+
 **Client-owned key state.** The server stores public identity/prekey material and delivers encrypted messages; private identity, ratchet and message keys stay on the client. A new sender fetches and verifies the recipient's prekey bundle, establishes the session through the audited library, then persists session state before advancing it.
+
 The ratchet carries ordering information needed for messages arriving out of order. Keep skipped message keys under strict count and age limits; an attacker must not force unbounded key storage by claiming an enormous gap. Persist the updated ratchet state and accepted message locally in one crash-safe operation.
+
 Identity-key changes trigger the chosen user verification policy before trust is carried forward. Recovery protects encrypted key backups separately from server message storage. Assess compromise recovery at the protocol's actual key-update boundary: a new server connection or a symmetric-chain step alone does not establish a fresh uncompromised agreement.

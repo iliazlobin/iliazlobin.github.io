@@ -17,6 +17,7 @@ Design of an account-risk service that detects abusive automation and limits its
 ## Problem
 
 Spam accounts, engagement farms and compromised accounts can automate actions that reach many users. Simple rate limits stop obvious bursts, but coordinated activity can resemble ordinary behavior at the individual-account level.
+
 The service combines recent actions, account relationships and reviewed evidence to assess risk. Enforcement is proportionate to the action and confidence: monitoring, rate limits, challenges, reduced reach or account restrictions. Authorized automation is distinguished from abusive automation.
 
 ## Requirements
@@ -217,6 +218,7 @@ The action service applies the committed policy result for the same action ID. T
 5. Apply calibrated risk and action-specific policy. Persist the decision and publish its version before the caller applies it.
 
 6. Record the serving snapshot and later reviewer outcomes.
+
 The heavy path has its own latency budget. Low-risk actions can continue under existing limits while a background assessment completes; a policy-gated action waits or receives a challenge. Large graph traversal on every action would make latency unpredictable, so serving uses prepared representations.
 
 ### Handling drift or compromise
@@ -240,9 +242,13 @@ Timing/count features detect individual bursts; graph and sequence representatio
 - **Bounded cascade — recommended:** Apply fast checks to all actions and deeper scoring to the uncertain or high-impact subset, using prepared graph features. This concentrates expensive inference where it matters; early exits need separate recall validation and sudden ambiguity can overload the heavy path.
 
 High action volume and proportionate enforcement favor a bounded cascade. We accept two scoring paths and monitor the escalation rate, because the fast path's missed-abuse rate and the heavy path's capacity jointly determine the result.
+
 [GraphSAGE](https://arxiv.org/abs/1706.02216) provides inductive graph representations. Cap neighbor sampling and retain the graph's event-time/version context; an embedding for a new account still needs available attributes or neighbors.
+
 A GRU or transformer encodes recent events and elapsed-time features. Choose the simpler model based on quality and measured serving cost. Supervised distillation can train a lightweight student, but teacher agreement is distinct from recall on independently labeled abuse.
+
 **Assemble a bounded action-time feature vector**
+
 The synchronous path reads permitted account attributes, short-window velocity, a capped recent-event sequence and prepared graph features. It pins their schema/version and supplies age/missingness, then runs the fast scorer. Only the ambiguous band reaches the deeper model.
 
 ```mermaid
@@ -266,6 +272,7 @@ class P control;
 ```
 
 A sequence includes event type and time since the preceding action, allowing rapid repeated behavior to differ from the same actions over a day. Cap events and neighbor-derived features so an attack cannot turn feature extraction into unbounded work.
+
 Replaying an event updates counters once using its stable identity or an idempotent window computation. The offline training path reconstructs those counters at the original action time. A missing graph snapshot selects a separately evaluated fallback instead of an unexplained zero vector.
 
 ### How do thresholds avoid mistaken restrictions?
@@ -287,9 +294,13 @@ Appeal overturn rate = overturned appeals / all completed appeals
 
 ```
 [Calibration methods](https://scikit-learn.org/stable/modules/calibration.html) map scores to estimated probabilities; they do not automatically guarantee an enforcement-quality target. Report uncertainty and category/cohort coverage with each threshold version.
+
 Use wider review/challenge bands when labels are sparse. A new model receives its own calibration evaluation, shadow comparison and gradual rollout; rollback includes thresholds and feature definitions.
+
 **Calibrate and choose a proportionate action**
+
 Fit calibration on independent mature labels, then select thresholds for challenge, temporary restriction and review according to their costs. A challenge has different user impact from a permanent restriction, so each band needs its own quality/capacity evidence.
+
 If 1,000 reviewed restrictions contain 900 abusive accounts, precision is 90%. If there were 50K reviewed legitimate accounts and 100 were restricted, false-positive rate is 0.2%. These quantities answer different questions and should appear together with cohort coverage.
 
 ```text
@@ -312,10 +323,15 @@ A supervised model recognizes patterns represented in its labels. Novel coordina
 - **Anomaly-assisted investigation — recommended:** Combine novelty with observed harmful impact to prioritize review and proportionate temporary controls. This supports discovery without making novelty a gold label; investigator capacity and label turnaround limit response speed.
 
 Bot detection needs a path for new attacks while preserving legitimate unusual activity. We accept an investigation delay and queue-management cost, with temporary controls chosen by impact instead of automatically escalating an anomaly score into a permanent restriction.
+
 [Isolation Forest](https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.IsolationForest.html) is a lightweight candidate for activity features; an autoencoder can add a separate sequence/feature anomaly signal. Compare their investigation yield before maintaining both.
+
 A major event or accessibility workflow can look unusual. Evaluate those cohorts, apply proportionate temporary controls and seek independent labels. Product launches change feature schemas and baselines; they should be visible in drift diagnostics.
+
 **Novelty becomes an investigation queue**
+
 Build an anomaly score from bounded action-rate, sequence and relationship features. Compare it with observed product impact—for example, concentrated unsolicited messages—then prioritize review. Unusual activity alone remains insufficient evidence for a strong irreversible action.
+
 A live event can raise action rates for legitimate users, while a coordinated attack may look ordinary per account but unusual across a graph. Review examples from both sides and use temporary proportionate controls under the declared policy.
 
 ```text
@@ -338,11 +354,17 @@ Restricted accounts have truncated future activity. Appeals and investigator que
 - **Independent audits with targeted review — recommended:** Review stored action-time evidence across enforcement bands and retain selection probabilities. This supports quality estimates and difficult-case learning; audit labels, restricted evidence retention and reviewer work add cost.
 
 The design must measure legitimate-user impact and missed abuse after it has intervened. Independent audits supply that missing coverage; synthetic tests remain useful for mechanisms, while their accepted limitation is that they do not estimate live prevalence.
+
 Keep normal safety controls active during evaluation. Quarantined evidence and red-team test environments provide review data without deliberately allowing harmful activity. Red-team recall tests known scenarios; representative audits estimate current prevalence and missed abuse.
+
 Treat reports as weak labels and appeal decisions as reviewed judgments with provenance. Group coordinated accounts and near-duplicate sequences across time-based splits. Historical features must have been available at the original assessment time.
+
 **Preserve evidence across enforcement**
+
 Capture the allowed feature snapshot and assessment before action. Later reviews and appeals append label revisions. A restricted account's future inactivity is censored by enforcement; it is not proof that the model prevented an independently verified attack.
+
 Draw audits across action bands with logged probabilities, and keep targeted investigator cases distinguishable. Synthetic/red-team behavior tests known mechanisms but has different prevalence and fidelity from representative traffic.
+
 Group connected attack accounts and near-duplicate sequences before splitting datasets to reduce leakage. Evaluate labels only after their availability/maturity cutoff. Retain human corrections through retraining and rollback; automatically regenerated labels must not overwrite their provenance.
 
 ### How do model updates stay reliable?
@@ -356,8 +378,13 @@ Monitor input distributions, missing features, scores, action rates and mature l
 - **Scheduled releases with reviewed incident response — recommended:** Use drift diagnostics to collect evidence and accelerate a validated candidate. This combines repeatable release gates with urgent response; investigation and mature labels take time and require retained compatible bundles.
 
 A model update can change restrictions at scale. We accept the reviewed response time so diagnosis can distinguish a product event from actual degradation, and rollback can restore the corresponding scorer, features and thresholds together.
+
 Block incompatible feature/model releases. Test timeouts, missing graph snapshots, duplicate events and restriction expiry. Track investigator backlog and challenge completion alongside bot impact. A rollback restores the approved scoring/policy bundle while preserving the audit trail and human corrections.
+
 **Model failure and policy failure have different recovery**
+
 A timeout or missing feature is an operational failure routed to the documented fallback. A harmful increase in legitimate restrictions is a quality incident that can require threshold or bundle rollback. Persist the fallback reason and decision version for both.
+
 Test duplicate delivery of enforcement events, expired temporary restrictions, reordered human-review results and unavailable graph snapshots. Consumers apply conditional versions so stale events cannot recreate a restriction.
+
 Use shadow comparisons to locate disagreements and latency costs, then reviewed cohort evidence to establish quality. Maintain previous-bundle workers for rapid new-request rollback. Track impact, challenge/review completion, fallback use and mature false positives separately; one aggregate “bot detection rate” cannot explain whether the system remains safe and useful.
