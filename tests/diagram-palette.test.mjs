@@ -1,13 +1,43 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
-import { normalizeDiagramStyles } from "../assets/js/diagram-palette.mjs";
+import { MERMAID_VERSION, createDiagramConfig, normalizeDiagramStyles } from "../assets/js/diagram-palette.mjs";
 
 const designs = new URL("../_designs/", import.meta.url);
 const blocks = (name) => [...readFileSync(new URL(name, designs), "utf8")
   .matchAll(/```mermaid\r?\n([\s\S]*?)\r?\n```/g)].map((match) => match[1]);
 const withoutStyles = (source) => source.split("\n")
   .filter((line) => !/^\s*(classDef|style|rect)\s/.test(line)).join("\n");
+
+test("unstyled flowcharts and sequences receive a shared pastel fallback, not semantic guesses", () => {
+  const theme = createDiagramConfig().themeVariables;
+  assert.equal(theme.primaryColor, "#e8f0fe");
+  assert.equal(theme.actorBkg, "#e8f0fe");
+  assert.equal(theme.primaryBorderColor, "#9aa0a6");
+  assert.equal(theme.primaryTextColor, "#202124");
+  for (const source of ["flowchart TB\n A[Gateway] --> B[(Storage)]", "sequenceDiagram\n A->>B: Commit"]) {
+    assert.equal(normalizeDiagramStyles(source), source);
+  }
+  const independent = createDiagramConfig();
+  independent.themeVariables.primaryColor = "#000000";
+  assert.equal(createDiagramConfig().themeVariables.primaryColor, "#e8f0fe");
+});
+
+test("article and offline rendering use the same configuration and pinned Mermaid version", () => {
+  const layout = readFileSync(new URL("../_layouts/post.html", import.meta.url), "utf8");
+  assert.ok(layout.includes(`mermaid@${MERMAID_VERSION}/dist/mermaid.esm.min.mjs`));
+  assert.match(layout, /mermaid\.initialize\(createDiagramConfig\(\)\)/);
+  assert.doesNotMatch(layout, /themeVariables:/);
+  const offline = readFileSync(new URL("render_diagrams.mjs", import.meta.url), "utf8");
+  assert.match(offline, /JSON\.stringify\(createDiagramConfig\(\), null, 2\)/);
+  assert.match(offline, /normalizeDiagramStyles\(diagram\.source\)/);
+});
+
+test("design cards contain the full diagram without changing portfolio image cropping", () => {
+  const css = readFileSync(new URL("../assets/css/portfolio.css", import.meta.url), "utf8");
+  assert.match(css, /\.design-browser \.portfolio-item \.thumb img \{[^}]*object-fit: contain/);
+  assert.match(css, /\.portfolio-item \.thumb img \{[^}]*object-fit: cover/);
+});
 
 test("legacy groups keep distinct fills with neutral borders and readable labels", () => {
   const source = "classDef thread fill:#e8f4f8,color:#1A1A1A,stroke:#5B9BD5,stroke-width:2px\n"
@@ -64,6 +94,13 @@ test("sequence bands use the palette without changing messages", () => {
   assert.ok(normalized.includes("rect rgb(232, 240, 254)"));
   assert.ok(normalized.includes("rect rgb(254, 239, 227)"));
   assert.equal(withoutStyles(normalized), withoutStyles(source));
+});
+
+test("legacy sequence participant boxes are normalized without changing their labels", () => {
+  assert.equal(normalizeDiagramStyles("box rgb(240, 248, 255) Request service"),
+    "box rgb(232, 240, 254) Request service");
+  assert.equal(normalizeDiagramStyles("box rgb(232, 240, 254) Request service"),
+    "box rgb(232, 240, 254) Request service");
 });
 
 test("all current article diagrams retain their topology and normalize idempotently", () => {
