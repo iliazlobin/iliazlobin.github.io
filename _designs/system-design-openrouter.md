@@ -5,7 +5,7 @@ category: system-design
 date: 2026-07-23
 tags: [Interview-Prep, Distributed-Systems, API-Gateway, LLM-Infra]
 thumbnail: /images/posts/system-design-openrouter.svg
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-07
 description: "An OpenRouter-style gateway that gives applications one API for multiple LLM providers, with streaming, routing policies and tenant-level spending controls."
 notion_source: https://app.notion.com/p/3a7d865005a881f58000e2a2815d1111
 ---
@@ -135,32 +135,95 @@ Stateless gateways handle authentication, routing and stream translation. A budg
 
 ```mermaid
 flowchart TB
-  C[Web client or application] -->|Model request| G[Gateway]
-  G -->|Policies and health| R[(Redis routing cache)]
-  G -->|Reserve and settle| B[Budget service]
-  B -->|Budget transaction| P[(PostgreSQL account shards)]
-  G -->|Adapted request| A[Provider adapters]
-  A -->|Inference| U[LLM providers]
+  C[Web client or application]
+  U[LLM providers]
+  subgraph Request["Request handling"]
+    G[Gateway]
+    A[Provider adapters]
+    R[(Redis routing cache)]
+  end
+  subgraph Spending["Spending authority"]
+    B[Budget service]
+    P[(PostgreSQL account shards)]
+  end
+  subgraph Accounting["Background accounting"]
+    E[Durable event stream]
+    H[(ClickHouse)]
+    X[Reconciliation workers]
+  end
+  C -->|Model request| G
+  G -->|Policies and health| R
+  G -->|Reserve and settle| B
+  B -->|Budget transaction| P
+  G -->|Adapted request| A
+  A -->|Inference| U
   U -->|Streaming response| A
   A -->|Normalized events| G
   G -->|SSE| C
-  G -->|Usage checkpoints| E[Durable event stream]
+  G -->|Usage checkpoints| E
   P -->|Committed outbox| E
-  E -->|Usage projections| H[(ClickHouse)]
-  X[Reconciliation workers] -->|Provider usage records| U
+  E -->|Usage projections| H
+  X -->|Provider usage records| U
   X -->|Finalize unknown outcomes| B
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class C,G,A,U request
+  class R,P,E,H,X background
+  class B control
+  style Request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  style Spending fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  style Accounting fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
 ```
 
 ## Storage
 
-- **PostgreSQL:** API-key metadata, routing policies, budget accounts, reservations and authoritative settlement records. Shard by organization and colocate child budget accounts so tenant and organization deductions share one transaction. Index unresolved reservations for recovery; unique request and settlement IDs protect retries.
-- **Redis:** short-lived model catalogs, provider-health summaries, local rate-limit coordination and eligible answer caches. Redis loss can reduce capacity or cache hit rate; durable budget balances remain in PostgreSQL.
+- **[PostgreSQL](/designs/tech-postgresql/):** API-key metadata, routing policies, budget accounts, reservations and authoritative settlement records. Shard by organization and colocate child budget accounts so tenant and organization deductions share one transaction. Index unresolved reservations for recovery; unique request and settlement IDs protect retries.
+- **[Redis](/designs/tech-redis/):** short-lived model catalogs, provider-health summaries, local rate-limit coordination and eligible answer caches. Redis loss can reduce capacity or cache hit rate; durable budget balances remain in PostgreSQL.
 - **Durable event stream:** reservation outbox events and usage checkpoints, partitioned by request or account. Consumers replay with stable event IDs.
-- **ClickHouse:** usage and cost reporting, partitioned by date and ordered for tenant/model/provider queries. Versioned records and explicit deduplication provide the reporting view; background table merges alone are insufficient for an authoritative billing total.
+- [**ClickHouse**](/designs/tech-clickhouse/)**:** usage and cost reporting, partitioned by date and ordered for tenant/model/provider queries. Versioned records and explicit deduplication provide the reporting view; background table merges alone are insufficient for an authoritative billing total.
 
 Database row locks and committed reservations supply the spending invariant. See [PostgreSQL's locking behavior](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS). High-volume accounts require measured admission throughput or a separately designed allocation of durable budget leases.
 
 ## From request to response
+
+### One streaming request
+
+The gateway reserves enough budget before starting provider work. Tokens travel directly back through the gateway; finalized usage then settles that reservation and feeds reporting. This sequence shows a successful request. The retry and recovery deep dives explain rejected and uncertain attempts.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) External participants
+    participant C as Web client
+    participant G as Gateway
+    participant P as LLM provider
+  end
+  box rgb(254,247,224) Decision authority
+    participant B as Budget service
+  end
+  box rgb(230,244,234) Background processing
+    participant R as Usage reporting
+  end
+  C->>G: Submit model request
+  rect rgb(254,247,224)
+    G->>B: Reserve maximum charge
+    B-->>G: Committed reservation
+  end
+  rect rgb(232,240,254)
+    G->>P: Dispatch eligible attempt
+    P-->>G: Token frames
+    G-->>C: SSE token frames
+    P-->>G: Completion and final usage
+  end
+  rect rgb(230,244,234)
+    G->>B: Settle confirmed charge
+    B-->>R: Committed usage event
+  end
+```
+
+The gateway dispatches only after the reservation commits. Token delivery uses the same logical request identity, while settlement and reporting retain their separate durable outcomes.
+
+A committed reservation establishes the spending limit before inference. Reporting consumes settlement events afterward, so a dashboard query or reporting backlog does not add latency to individual token frames.
 
 ### Admitting a request
 
@@ -194,11 +257,11 @@ The durable writes add admission and settlement latency. Token-by-token budget t
 
 **Problem.** Always selecting the cheapest endpoint can overload it, while round-robin ignores different costs, model capabilities and latency.
 
-- **Round-robin:** simple distribution, with weak cost and performance control.
-- **Cheapest eligible provider:** predictable price selection, with concentration risk.
-- **Health- and capacity-aware weighted selection:** distribute traffic among compatible providers while honoring tenant policy.
+- **Round-robin:** rotate through compatible providers, giving each a similar request share. Routing is cheap and easy to inspect, but equal request counts ignore token volume, price and provider capacity; a slower endpoint can accumulate a queue while another has spare capacity.
+- **Cheapest eligible provider:** send each request to the lowest-priced compatible endpoint. This minimizes quoted unit cost while capacity is available, but concentrates traffic there; throttling and fallback can increase completion time and actual total cost.
+- **Health- and capacity-aware weighted selection:** sample among eligible providers using policy weights, then cap each provider's admitted concurrency. This spreads load while favoring cost or latency, but requires fresh telemetry, conservative capacity estimates and stable weight updates. Spare capacity at a higher price is sometimes the appropriate fallback.
 
-**Recommendation: use weighted selection after eligibility filtering.** Keep model choice separate from provider choice. A price-focused policy can use inverse-square price weights, while a latency-focused policy ranks providers against first-token and throughput targets. [OpenRouter's routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection) describes price-weighted routing and provider overrides.
+**Recommendation: use weighted selection after eligibility filtering.** At the proposed 50K-request/s peak, providers have different limits and tenants have different routing goals. Weighted selection can honor those policies without sending the entire fleet to one cheap endpoint. We accept telemetry and tuning overhead, and occasional higher-priced routing, to preserve usable capacity. Keep model choice separate from provider choice. A price-focused policy can use inverse-square price weights, while a latency-focused policy ranks providers against first-token and throughput targets. [OpenRouter's routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection) describes price-weighted routing and provider overrides.
 
 A circuit breaker removes repeatedly failing endpoints, then allows bounded half-open probes. A provider-specific `429` respects its retry interval and capacity limits; invalid provider credentials disable that adapter until repaired. New providers receive limited trial traffic instead of an unrestricted optimistic share.
 
@@ -226,18 +289,20 @@ Use a measured first-token estimate to reject a provider that cannot fit the dea
 
 **Problem.** A fallback is straightforward before the user receives output. Once part of an answer is visible, starting another model creates a second generation with a potentially different answer.
 
-- **Buffer the entire answer:** simplifies replacement, but delays every token until generation finishes.
-- **Fallback before output begins:** preserves one visible generation with limited recovery after streaming starts.
-- **Restart after partial output:** requires a client protocol that explicitly discards or distinguishes the earlier generation.
+- **Buffer the entire answer:** keep output at the gateway until generation finishes, replacing a failed attempt before exposing it. This makes fallback invisible to the client, but removes incremental delivery and retains the entire answer in memory while the user waits.
+- **Fallback before output begins:** retry a definitely rejected attempt before forwarding the first token. The client receives one coherent generation with low first-token latency; after output begins, failure ends that stream rather than transparently recovering it.
+- **Restart after partial output:** start another generation and identify it explicitly in the client protocol. This can recover usable output, but the application must discard or distinguish the partial answer; another attempt adds latency and can incur another provider charge.
 
-**Recommendation: allow bounded fallback before output, then report a stream error after partial delivery.** [OpenRouter's streaming contract](https://openrouter.ai/docs/api_reference/streaming) distinguishes errors before and during a stream. The proposed gateway uses the same clear boundary.
+**Recommendation: allow bounded fallback before output, then report a stream error after partial delivery.** Streaming is a core API capability here, so waiting for complete answers would defeat the user experience. The accepted limitation is that a partially delivered generation can fail visibly; an explicit terminal error is preferable to mixing two providers' answers. [OpenRouter's streaming contract](https://openrouter.ai/docs/api_reference/streaming) distinguishes errors before and during a stream. The proposed gateway uses the same clear boundary.
 
 ```mermaid
 sequenceDiagram
-  participant C as Client
-  participant G as Gateway
-  participant A as Provider A
-  participant B as Provider B
+  box rgb(232,240,254) External participants
+    participant C as Client
+    participant G as Gateway
+    participant A as Provider A
+    participant B as Provider B
+  end
   C->>G: Submit request
   G->>A: Attempt 1
   A-->>G: Reject before output
@@ -274,11 +339,11 @@ Cancellation is also an upstream operation with an outcome. Stop accepting new f
 
 **Problem.** Reading a balance and updating it later lets concurrent requests spend the same remaining amount. Regional counters can also diverge during failover.
 
-- **Reconcile after inference:** minimal admission work, but permits overspend.
-- **Redis atomic counters:** fast within one atomic scope; durability, failover and hierarchical accounts need additional guarantees.
-- **Durable reservations:** serialize the budget decision and retain maximum exposure until actual charges are known.
+- **Reconcile after inference:** start work immediately and deduct its charge when usage arrives. Admission is cheap, but several concurrent requests can spend the same remaining balance, leaving a debt that reconciliation cannot prevent.
+- **Redis atomic counters:** check and deduct allowance in one server-side operation. This gives fast coordination within that Redis authority, but acknowledged state can be lost during failover and parent/child accounts must share an atomic scope; hard durable budgets require an additional persistence protocol.
+- **Durable reservations:** lock related budget rows and commit a maximum charge hold before dispatch. Competing requests observe committed exposure, including uncertain attempts. The cost is transaction latency, contention on busy accounts and unavailable balance tied up by conservative or unresolved holds.
 
-**Recommendation: commit durable reservations on the organization's account shard.** The request's maximum output length, provider pricing and retry policy determine its charge bound. Unsupported or unbounded charging models require a stricter limit or separate policy.
+**Recommendation: commit durable reservations on the organization's account shard.** This gateway promises tenant and organization spending limits while admitting requests concurrently. Colocating those accounts makes one transaction the admission authority. We accept lock contention and temporarily reduced concurrency to keep provider exposure within the committed allowance. The request's maximum output length, provider pricing and retry policy determine its charge bound. Unsupported or unbounded charging models require a stricter limit or separate policy.
 
 ```python
 # One budget transaction; accounts locked in a stable order.
@@ -322,11 +387,11 @@ The conservative bound includes potentially billable fallback attempts, fixed fe
 
 **Problem.** A gateway crash can lose its in-memory token count and an unflushed completion event. A short batch interval limits exposure but cannot reconstruct the lost usage.
 
-- **Memory-only batching:** low latency with an explicit loss window.
-- **Persist every frame:** fine-grained recovery at substantial write cost; frame count is not necessarily token count.
-- **Durable attempt records and checkpoints:** retain recovery identity and reconcile finalized provider usage.
+- **Memory-only batching:** accumulate usage in gateway memory and publish completed batches. This minimizes durable writes, but a crash loses unacknowledged observations and may leave a billable attempt without recovery evidence.
+- **Persist every frame:** store each delivered frame before advancing the stream. Recovery can replay output precisely, but storage and write traffic scale with streaming chunks; frame counts still cannot establish billable token usage.
+- **Durable attempt records and checkpoints:** save provider identity before dispatch, publish cumulative usage versions and obtain final provider evidence during recovery. This bounds write volume while retaining reconciliation handles, but reports can remain pending and provider APIs may not expose the final usage needed to resolve every attempt.
 
-**Recommendation: persist attempt identity before dispatch, checkpoint bounded usage and settle from finalized evidence.** Provider-reported token counts are preferred over counting text fragments. A worker queries supported provider usage endpoints for unknown attempts; providers without recoverable records require a conservative documented billing policy.
+**Recommendation: persist attempt identity before dispatch, checkpoint bounded usage and settle from finalized evidence.** The estimated 1.73B requests/day already produces substantial accounting traffic; durable writes per token would multiply it. Attempt-level recovery keeps token delivery independent of that traffic. We accept delayed settlement and a documented unresolved-usage policy where a provider supplies insufficient evidence. Provider-reported token counts are preferred over counting text fragments. A worker queries supported provider usage endpoints for unknown attempts; providers without recoverable records require a conservative documented billing policy.
 
 Settlement and the corresponding outbox event commit together. Consumers use request, attempt and settlement versions to prevent double application. Reporting can lag behind the authoritative ledger and labels pending amounts separately.
 
@@ -343,6 +408,11 @@ flowchart TB
     C --> D["Final provider usage"]
     D --> E["Settlement and outbox<br>one database transaction"]
     E --> F["Reporting consumer<br>apply settlement version"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class B,D request
+  class A,C,E,F background
 ```
 
 If the gateway crashes after the provider finishes but before settlement, recovery retrieves the provider's final usage using that stored identity. If final usage is unavailable, the ledger exposes the amount as pending and follows the documented conservative policy. Text chunks may contain several tokens or parts of a token, so summing SSE frames cannot establish billable usage.
@@ -353,11 +423,11 @@ The reporting consumer stores the highest applied settlement version per request
 
 **Problem.** Repeated prompts can reuse inference work, but request parameters, model changes and private context affect whether an old answer is eligible.
 
-- **Provider prompt caching:** reuse prefix computation through each provider's supported API.
-- **Gateway exact-response caching:** return a stored answer for an explicitly eligible identical request.
-- **Semantic response caching:** increase hit rate while introducing similarity-based answer errors.
+- **Provider prompt caching:** ask the provider to reuse supported prefix computation while still generating a response for the current request. This can reduce prefill work without reusing a completed answer, but support, retention and pricing vary by provider; decoding and output charges can remain.
+- **Gateway exact-response caching:** key a completed answer by the complete eligible request and tenant. A hit avoids a new inference call, but exact equality limits reuse and model/policy changes require invalidation. Retaining private output also adds access and retention obligations.
+- **Semantic response caching:** search for a sufficiently similar previous prompt and reuse its answer. This increases potential hits, but similarity is not equivalent intent: a changed number, negation or tool contract can make the cached answer wrong, requiring quality gates beyond exact-key checks.
 
-**Recommendation: use provider prompt caching and opt-in exact-response caching.** Send the complete request unless the provider explicitly offers a stored-prefix handle. A gateway prefix hash alone cannot substitute for provider-side cache support.
+**Recommendation: use provider prompt caching and opt-in exact-response caching.** Applications depend on correct tool contracts and tenant isolation, so a high cache-hit rate is secondary to eligible reuse. Prefix caching saves repeated setup; exact completed answers are reused only under explicit policy. We accept a narrower hit rate and provider-specific behavior instead of semantic answer substitution. Send the complete request unless the provider explicitly offers a stored-prefix handle. A gateway prefix hash alone cannot substitute for provider-side cache support.
 
 The exact key includes tenant, model version, messages, tool definitions, generation settings and relevant policy versions. Cache completed eligible responses with bounded retention; tool-executing, time-sensitive or private requests require explicit rules.
 

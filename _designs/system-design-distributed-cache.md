@@ -7,7 +7,7 @@ tags: [Caching, Distributed-Systems, Redis, Consistent-Hashing]
 thumbnail: /images/posts/system-design-distributed-cache.svg
 redirect_from:
   - /2026/07/02/system-design-distributed-cache.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-07
 description: "Design of a distributed key-value cache using Redis Cluster, with bounded freshness and recoverable cache misses."
 notion_source: https://app.notion.com/p/391d865005a881b7b450c92e42369931
 ---
@@ -110,17 +110,51 @@ flowchart TB
     P1 --> R1["Replica A"]
     P2 --> R2["Replica B"]
     A -->|"Cache miss"| D[("Source database")]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class A,C,R1,R2 request
+  class P1,P2,D background
 ```
 
 ## Storage
 
-- **Redis Cluster:** in-memory key/value storage, expiry and an explicit slot-to-node map. Primaries serve writes; replicas provide failover capacity.
+- **[Redis](/designs/tech-redis/) Cluster:** in-memory key/value storage, expiry and an explicit slot-to-node map. Primaries serve writes; replicas provide failover capacity.
 - **Application source database:** durable records and versions. Cache loss or eviction never removes the underlying record.
 - **Bounded in-process cache:** optional for hot tolerant values, with expiration no later than the value's original freshness deadline.
 
 Use TLS, authenticated service identities, tenant key prefixes and value-size limits. Keep replica, resynchronization and migration memory outside the eviction budget.
 
 ## From request to response
+
+### One end-to-end request
+
+A client routes a key through its cached slot map.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as Application
+  end
+  box rgb(230,244,234) Durable state
+    participant A as Cache primary
+    participant D as Source store
+    participant W as Cache replica
+  end
+  rect rgb(232,240,254)
+    U->>A: GET key using slot owner
+    A-->>U: Miss or expired value
+    U->>D: Read authoritative record
+    D-->>U: Value, version and freshness deadline
+  end
+  rect rgb(230,244,234)
+    U->>A: SET versioned value with TTL
+    A->>W: Replicate under configured policy
+    A-->>U: Cache acknowledgment
+  end
+```
+
+A hit returns a value within its freshness deadline; a miss loads the authoritative store and fills the cache. Replication improves cache availability while the authoritative record remains the recovery source.
 
 ### Storing a value
 
@@ -152,9 +186,11 @@ Hash tags can colocate related keys, such as `user:{42}:profile` and `user:{42}:
 
 Modulo hashing by the current node count remaps many keys during a topology change.
 
-- **Consistent hashing:** convenient for disposable independent nodes, with virtual nodes reducing imbalance.
-- **Explicit fixed slots — recommended for Redis Cluster:** separates the key partition from node ownership and supports controlled migration.
-- **Central proxy routing:** simplifies applications, with an additional latency and availability boundary.
+- **Consistent hashing:** place independent nodes on a hash ring and use virtual nodes to spread key ranges. Only part of the key set moves when membership changes; clients and migration tooling still need a shared membership view, and equal ranges do not ensure equal traffic.
+- **Fixed slots:** hash keys into a stable slot set and assign slot owners separately. Redis Cluster can migrate explicit partitions and direct clients to their owners; clients must handle redirects and multi-key operations are constrained by colocation.
+- **Central proxy:** route every operation through a service that owns topology knowledge. Applications stay simple, but the proxy adds a hop, capacity demand and an availability boundary.
+
+**Recommendation.** Fixed slots fit the selected Redis Cluster because its protocol already defines ownership and migration. We accept topology-aware clients and slot-colocation constraints rather than implementing a competing ring or introducing a mandatory routing proxy.
 
 The [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/) defines 16,384 slots and client redirects. Cache the slot map, bound redirect retries and refresh topology after ownership changes.
 
@@ -171,6 +207,10 @@ flowchart TB
     M --> P["Current primary"]
     P -->|ownership changed| R["Bounded redirect and map refresh"]
     R --> N["New primary"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class K,H,M,P,R,N request
 ```
 
 Moving keys needs destination memory and a rate budget so migration does not exhaust the same bandwidth used by replication. Keep ownership transitions distinct from per-key copy progress. A multi-key atomic command needs keys in the compatible slot scope; moving arbitrary keys cannot preserve a cross-slot transaction.
@@ -181,11 +221,13 @@ For disposable cached values, migration can tolerate some misses and refill from
 
 A full cache must choose what to remove while continuing to serve requests.
 
-- **Strict LRU:** intuitive, with per-access bookkeeping and scan pollution.
-- **Approximate LRU:** lower overhead, prioritizes recent access.
-- **Approximate LFU:** useful when repeated hot values should survive one-off scans.
+- **Strict LRU:** maintain exact recency on every access and evict the least recently used key. The policy is intuitive, but bookkeeping consumes CPU and one-off scans can displace repeatedly useful values.
+- **Approximate LRU:** sample candidates and prefer older accesses. It keeps recency behavior with lower overhead; sampling can evict a useful record and remains vulnerable to scan-heavy workloads.
+- **Approximate LFU:** retain decayed access-frequency estimates and prefer less-used keys. Repeated hotspots survive scans better, but counters and decay need tuning and old popularity can delay adaptation to a new hotspot.
 
-Start with allkeys-lru and a measured memory ceiling; compare allkeys-lfu on production-like traces. [Redis eviction policies](https://redis.io/docs/latest/develop/reference/eviction/) describe the available choices.
+**Recommendation.** Start with `allkeys-lru` and a measured memory ceiling. Approximate recency bounds bookkeeping for general regenerable records; we accept imperfect eviction and compare `allkeys-lfu` on scan-heavy traces before switching. Source load and byte-weighted value matter alongside hit rate.
+
+[Redis eviction policies](https://redis.io/docs/latest/develop/reference/eviction/) describe the available choices.
 
 Track hit rate, bytes per key, evictions and source-store load. Leave memory headroom for replication and allocator behavior. TTL handles logical freshness; eviction handles memory pressure.
 
@@ -206,9 +248,11 @@ Set limits on value size and cached collections. Keep memory headroom for replic
 
 A primary can acknowledge a write before its replica receives it.
 
-- **Asynchronous replication — recommended for regenerable values:** low latency, with possible acknowledged-write loss.
-- **Replica acknowledgment with WAIT:** reduces some loss windows, with additional latency.
-- **Consensus-backed storage:** stronger durability at a cost suited to source-of-truth workloads.
+- **Asynchronous replication:** acknowledge at the primary and copy to replicas afterward. Regenerable values get a low-latency write path, but promotion can lose an acknowledged update or expose an older value.
+- **Replica acknowledgment with WAIT:** wait for a chosen number of replica acknowledgments. This narrows some replication-loss windows at additional latency and reduced availability; it still does not provide a consensus-backed durability contract.
+- **Consensus-backed authority:** commit writes through a durable replicated decision before acknowledgment. This fits records whose loss changes correctness, but quorum coordination costs more than a disposable cache write.
+
+**Recommendation.** Asynchronous replication fits cache values that can be rebuilt from the source store. We accept acknowledged cache loss and enforce freshness on reads; balances, unique allocations and other irreversible decisions stay in a durable authority rather than gaining a misleading guarantee from WAIT.
 
 [WAIT](https://redis.io/docs/latest/commands/wait/) does not make Redis a strongly consistent system. Failover can still lose or restore a stale value depending on the failure.
 
@@ -233,9 +277,11 @@ Cold failover sends more misses to the source. Apply a global fallback concurren
 
 Adding shards spreads different keys, but a single popular key still maps to one slot.
 
-- **More shards only:** increases aggregate capacity without splitting the hot key.
-- **Short-lived local copies — recommended for tolerant hot reads:** absorb repeated access near the application.
-- **Application-level splitting:** helps partitionable counters or collections, but changes their semantics.
+- **More shards:** distribute different keys among more owners. Aggregate capacity rises, but one popular key still belongs to one slot and can saturate that owner.
+- **Short-lived local copies with coalescing:** serve tolerant hot reads near the application and let one fill serve concurrent misses. This absorbs bursts, but local staleness, invalidation and memory budgets must be bounded.
+- **Application-level splitting:** divide a counter or collection across keys and merge at read time. Writes can scale across owners; the merge changes read cost and consistency and is unsuitable for an indivisible value.
+
+**Recommendation.** Local copies and single-flight fills fit repeated hot reads without changing the stored value's semantics. We accept a short freshness window and bounded authoritative fallback; write sharding is reserved for operations whose merge rule is explicitly defined.
 
 ```python
 value = local_cache.get(key)

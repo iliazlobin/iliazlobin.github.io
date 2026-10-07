@@ -7,7 +7,7 @@ tags: [Interview-Prep, Distributed-Systems, Streaming, Video, CDR, Personalizati
 thumbnail: /images/posts/2026-07-02-system-design-netflix.svg
 redirect_from:
   - /2026/07/02/system-design-netflix.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-07
 description: "An on-demand video service for discovering titles, streaming across devices and resuming playback."
 notion_source: https://app.notion.com/p/390d865005a8811ea560d755b9875983
 ---
@@ -130,20 +130,58 @@ flowchart TB
   U --> AUTH
   CDN --> OBJ[("Encoded media")]
   INGEST["Content processing"] --> OBJ
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class U,API,REC,CAND,AUTH,CDN,OBJ,INGEST request
+  class META background
 ```
 
 ## Storage
 
-- **PostgreSQL:** accounts, profiles, rights windows and entitlement versions. Transactions/constraints protect profile ownership and entitlement changes; playback reads current policy.
-- **DynamoDB:** playback sessions and progress keyed by profile/title, with conditional writes over session epoch and sequence. A separate recent-progress view supports Continue Watching; it is not an arbitrary filtered scan over all history.
-- **Redis:** prepared recommendation candidates and metadata caches. Final rows apply current catalog, country and maturity policy; progress is overlaid from its fresher store.
-- **Elasticsearch:** catalog text and faceted search; hydrate and recheck current rights before display/play.
+- **[PostgreSQL](/designs/tech-postgresql/):** accounts, profiles, rights windows and entitlement versions. Transactions/constraints protect profile ownership and entitlement changes; playback reads current policy.
+- **[DynamoDB](/designs/tech-dynamodb/):** playback sessions and progress keyed by profile/title, with conditional writes over session epoch and sequence. A separate recent-progress view supports Continue Watching; it is not an arbitrary filtered scan over all history.
+- **[Redis](/designs/tech-redis/):** prepared recommendation candidates and metadata caches. Final rows apply current catalog, country and maturity policy; progress is overlaid from its fresher store.
+- **[Elasticsearch](/designs/tech-elasticsearch/):** catalog text and faceted search; hydrate and recheck current rights before display/play.
 - **Object storage and CDN:** encrypted renditions, manifests, artwork and source masters. Immutable generation keys prevent mixed old/new encoding outputs.
 - **Event stream:** progress, quality-of-experience telemetry and content jobs. Keep short-lived operational events separate from retained watch history and privacy policy.
 
 [Netflix's video pipeline article](https://netflixtechblog.com/rebuilding-netflix-video-processing-pipeline-with-microservices-4e5e6310e359) describes processing decomposition. The stores above are choices for this proposal, not a claim about Netflix's current deployment.
 
 ## From request to response
+
+### One end-to-end request
+
+Playback starts with an authorization and stream-slot decision.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as User player
+    participant A as Playback API
+  end
+  box rgb(230,244,234) Durable state
+    participant D as Session store
+  end
+  box rgb(232,240,254) CDN / Progress service
+    participant W as CDN
+    participant C as Progress service
+  end
+  rect rgb(232,240,254)
+    U->>A: Start title under request key
+    A->>D: Check rights, claim account stream lease
+    D-->>A: Session epoch and committed lease
+    A-->>U: Manifest generation, license and endpoints
+  end
+  rect rgb(230,244,234)
+    U->>W: Fetch initial bitrate segments
+    W-->>U: Media segments
+    U->>C: Progress heartbeat with epoch/sequence
+    C->>D: Conditionally advance session progress
+  end
+```
+
+The API returns a compatible manifest and healthy delivery endpoints; segment traffic goes directly to the CDN, while ordered session progress updates return through the control API.
 
 ### Browsing and searching
 
@@ -175,11 +213,11 @@ For a permitted download, it selects device-compatible encrypted files and issue
 
 **Problem:** the same title may be watched millions of times, while long-tail titles have sparse regional demand.
 
-- **Origin only:** simplest placement, with high latency and concentrated egress.
-- **Commercial CDN:** broad delivery and managed operations, priced for actual volume and contracts.
-- **Owned/ISP-embedded delivery:** placement control and potential economics at sustained scale, with hardware, peering and operations costs.
+- **Origin only:** serve every media segment from central storage. Placement is simple and long-tail misses are natural, but popular titles concentrate egress and distant users pay network latency.
+- **Commercial CDN:** distribute cache fills through managed regional edges. Deployment and coverage are easier, but cache misses and high sustained volume incur contract-dependent cost and less placement control.
+- **Owned or ISP-embedded delivery:** place verified title files close to measured demand. Inventory steering and sustained traffic can justify placement control; hardware, peering, fills and fleet operations require significant investment and fallback capacity.
 
-**Recommendation:** use CDN delivery with inventory-aware steering and pre-position high-demand regional titles. [Open Connect](https://openconnect.netflix.com/en/) provides a concrete ISP-embedded model. Choosing owned versus commercial capacity requires measured traffic and total costs, not a universal percentage-of-internet crossover.
+**Recommendation:** use CDN delivery with inventory-aware steering and pre-position high-demand regional titles. [Open Connect](https://openconnect.netflix.com/en/) provides a concrete ISP-embedded model. Choosing owned versus commercial capacity requires measured traffic and total costs, not a universal percentage-of-internet crossover. Inventory-aware CDN steering fits repeated title delivery with highly regional demand. We accept cache-fill misses and alternate endpoints; owned placement is justified by measured total cost and coverage rather than a generic traffic threshold.
 
 Steering considers health, file availability, network path and load. Keep alternate endpoints and origin capacity for misses; rollout of new encodes publishes a complete generation atomically. Monitor startup time, rebuffering, cache misses, fill traffic and cost per delivered hour.
 
@@ -194,6 +232,11 @@ flowchart TB
   H -->|"No"| F["Coalesced origin fill"]
   F --> U
   F --> C
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class P,S,C,U,F request
+  class H background
 ```
 
 When many users request the same missing segment, one cache-fill operation downloads it while other requests share that work. Immutable generation keys let caches retain good files without mixing encodes. Prefill predictions use regional demand and release schedules; measure the bytes transferred for files that were never played as well as miss rate. If an endpoint fails mid-playback, the player requests the same segment generation from an alternate endpoint and retains its playback buffer.
@@ -202,11 +245,11 @@ When many users request the same missing segment, one cache-fill operation downl
 
 **Problem:** codec/resolution variants consume compute and must be consistent before a title is playable.
 
-- **Full synchronous encoding:** simple completion semantics but long ingestion latency.
-- **Independent uncoordinated jobs:** parallel work, with risk of incomplete manifests.
-- **Versioned workflow:** parallel tasks with explicit dependencies and a publication gate.
+- **Synchronous full encoding:** finish every variant before returning from ingestion. Completion is easy to reason about, but long videos and uncommon codecs hold the whole ingest path open.
+- **Uncoordinated parallel jobs:** encode each rendition independently. Compute scales out, but a partially written manifest can expose missing or misaligned segments.
+- **Versioned dependency workflow:** use deterministic task keys, validate aligned outputs and publish one complete generation. Retries reuse verified work and old media stays usable; workflow state and publication checks add coordination and retain overlapping generations.
 
-**Recommendation:** use a versioned workflow: inspect source → choose ladder → encode chunks → validate → package/encrypt → publish. Tasks use deterministic output keys and retry safely. Validate codec compatibility, audio/caption alignment and representative perceptual quality.
+**Recommendation:** use a versioned workflow: inspect source → choose ladder → encode chunks → validate → package/encrypt → publish. Tasks use deterministic output keys and retry safely. Validate codec compatibility, audio/caption alignment and representative perceptual quality. A versioned publication gate fits adaptive playback, where the manifest is a promise that compatible aligned segments exist. We accept staged ingestion and retained old generations to make retries safe and failed re-encodes invisible to players.
 
 Release manifests only when all referenced segments exist and required checks pass. Preserve the previous good generation during a failed update. Measure source-hour compute, queue age, failure rate and rendition utilization; remove little-used formats only after checking device coverage.
 
@@ -220,11 +263,11 @@ The final publisher writes a manifest containing only verified objects, then con
 
 **Problem:** full model inference on every page is expensive, while cached rows can contain stale progress or unavailable titles.
 
-- **Regional popularity only:** cheap and useful for new profiles, with limited personalization.
-- **Full online ranking:** freshest inputs, with greater compute and dependency cost.
-- **Prepared candidates plus online assembly:** cached heavier retrieval, current filters and selective reranking.
+- **Regional popularity:** serve prepared popular titles for each region. Reads are cheap and cold profiles get a fallback, but individual interests and new progress are weakly represented.
+- **Full online ranking:** retrieve features and run heavy personalization on every request. Inputs are fresh, but model/dependency cost and tail latency grow with candidate count.
+- **Prepared candidates plus online assembly:** cache expensive retrieval and apply current progress, rights and bounded reranking at request time. Heavy work is amortized while eligibility stays current; candidates can age and need refresh/degraded fallback.
 
-**Recommendation:** prepare profile/cohort candidates on a bounded refresh schedule and assemble rows online. Overlay progress, deduplicate titles, maintain row diversity and apply live rights/maturity policy.
+**Recommendation:** prepare profile/cohort candidates on a bounded refresh schedule and assemble rows online. Overlay progress, deduplicate titles, maintain row diversity and apply live rights/maturity policy. Prepared candidates with live overlays fit repeated homepage reads and rapidly changing progress/rights. We accept a bounded candidate age while ensuring cached recommendations remain inputs to current authorization, not authority themselves.
 
 If recommendations are unavailable, use authorized regional/popularity rows. Evaluate engagement and discovery quality alongside P99 latency, stale-candidate age and filter-removal rate. A cache hit is an input to assembly, not permission to show every cached title.
 
@@ -238,11 +281,11 @@ Pin the candidate/model generation in a short-lived pagination token so row orde
 
 **Problem:** heartbeat retries arrive out of order, and two devices can start concurrently.
 
-- **Arrival-time last-write-wins:** simple, but delayed packets may restore an older position.
-- **Maximum watched position:** resists backward updates but breaks intentional seeking.
-- **Session epochs and sequences:** explicitly orders accepted updates and supports cross-device policy.
+- **Arrival-time last-write-wins:** accept the most recently received heartbeat. Storage is simple, but a delayed old packet can move progress backward or replace another device's newer session.
+- **Maximum watched position:** keep the greatest offset. Reordered forward progress is harmless, but an intentional backward seek cannot become the canonical resume position.
+- **Session epochs and sequences:** select an authorized session epoch and accept only newer sequence values within it. Intentional seeks and retries remain ordered; session handoff policy, lease expiry and failover fencing require explicit state.
 
-**Recommendation:** assign an epoch on session creation and apply sequence-conditioned progress writes. [DynamoDB conditional expressions](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Expressions.ConditionExpressions.html) provide the required compare-and-update mechanism within an item.
+**Recommendation:** assign an epoch on session creation and apply sequence-conditioned progress writes. [DynamoDB conditional expressions](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Expressions.ConditionExpressions.html) provide the required compare-and-update mechanism within an item. Epochs and sequences fit both intentional seeking and concurrent device sessions. We accept an account-scoped transactional admission boundary and lease recovery delay; asynchronous heartbeats are never used as proof that a new stream slot is free.
 
 Concurrent-stream admission uses a transactional account lease registry; heartbeats renew leases and expired sessions release slots. Fence old epochs and make start retries idempotent. Test pause/end delivery, delayed packets, clock skew and region failover; avoid promising uninterrupted playback beyond token/license validity.
 

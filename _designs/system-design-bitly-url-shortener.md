@@ -5,7 +5,7 @@ category: system-design
 date: 2026-07-23
 tags: [System Design, URL Shortener]
 thumbnail: /images/posts/system-design-bitly-url-shortener.svg
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-07
 description: "This document describes the design of a Bitly-style URL-shortening service."
 notion_source: https://app.notion.com/p/3a6d865005a881f9baf3e69e01195f14
 ---
@@ -196,6 +196,15 @@ flowchart TB
     Redirect -.->|Record click| Clicks
     Clicks -->|Write totals| Rollups
     Safety -->|Update verdict| Links
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class User,Web,CDN,API,Shorten request
+  class Redirect,Safety,Clicks,Links,Rollups background
+  class Allocator control
+  style Entry fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  style Services fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  style Data fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
 ```
 
 When a safety result changes, the worker invalidates the affected service and CDN caches. The click pipeline collects events from requests handled by the redirect service; collection for CDN-served redirects remains an open design choice.
@@ -214,7 +223,7 @@ The design uses Bigtable for link records, PostgreSQL for organizations and ID a
 - **Bigtable:** each row stores a Link record and a permanent code-reservation marker. The row key is `reverse(short_code):domain`; reversing the code distributes sequential writes across key ranges. A [conditional write](https://docs.cloud.google.com/bigtable/docs/writes#conditional-writes) creates the row only when the reservation marker is absent. Writes and redirect reads use the same authoritative cluster for read-after-write consistency. [Failover](https://docs.cloud.google.com/bigtable/docs/routing) must preserve acknowledged reservations before another cluster accepts creations. An organization/time listing index supports browsing links; failed index updates are retried, and ownership is checked against the Link record.
 - **PostgreSQL:** stores Organization and IDSequence records. The allocator advances `next_id` in a transaction and returns the reserved range after commit. Acknowledged reservations must survive failover. PostgreSQL is also a simpler alternative for link storage at smaller scale: a unique `(domain, short_code)` constraint and an `(org_id, created_at)` index support creation and listing. See [PostgreSQL](/designs/tech-postgresql/).
 - **Local cache:** holds copies of Link records, including expiration and safety status. LRU eviction removes the least recently used entries when memory fills up; expiration and invalidation control freshness. A shared Redis cache is an alternative when reuse across instances matters more than avoiding a network lookup. Redis offers [LRU/LFU eviction](https://redis.io/docs/latest/develop/reference/eviction/) and TTLs; see [Redis](/designs/tech-redis/).
-- **ClickHouse:** its [column-oriented storage](https://clickhouse.com/docs/get-started/about/intro) supports batched ingestion and reports grouped by link, time, country and referrer. Raw events retain stable IDs for deduplication; saved hourly totals serve dashboard queries. Retain event IDs for the replay window and restrict raw-IP access and retention.
+- [**ClickHouse**](/designs/tech-clickhouse/)**:** its [column-oriented storage](https://clickhouse.com/docs/get-started/about/intro) supports batched ingestion and reports grouped by link, time, country and referrer. Raw events retain stable IDs for deduplication; saved hourly totals serve dashboard queries. Retain event IDs for the replay window and restrict raw-IP access and retention.
 
 Cassandra is another option for distributed link storage when an existing cluster or portability favors it. Alias creation requires [`IF NOT EXISTS`](https://cassandra.apache.org/doc/latest/cassandra/developing/cql/dml.html#insert)[ with a lightweight transaction](https://cassandra.apache.org/doc/latest/cassandra/developing/cql/dml.html#insert), plus consistency settings that preserve uniqueness and immediate reads. See [Cassandra](/designs/tech-apache-cassandra/).
 
@@ -234,10 +243,14 @@ The new link must work immediately after creation. Redirect reads therefore need
 
 ```mermaid
 sequenceDiagram
-    participant W as Web client
-    participant S as Link creation service
-    participant D as Link database
-    participant B as Safety worker
+  box rgb(232,240,254) Request path
+  participant W as Web client
+  participant S as Link creation service
+  end
+  box rgb(230,244,234) Background processing
+  participant D as Link database
+  participant B as Safety worker
+  end
     W->>S: POST /v4/shorten via gateway
     Note over S: Validate URL, alias and expiry
     Note over S: Use alias or ID from a reserved range
@@ -246,6 +259,8 @@ sequenceDiagram
     S-->>W: Short link
     S-->>B: Request background scan
 ```
+
+The committed Link record makes the short code usable; the background scan updates the later safety verdict under the page's first-scan policy.
 
 Calling the allocator for every link would add a network round trip and make creation depend on its availability. Reserving ID ranges moves most allocation work into the service instance; the code-generation deep dive covers durable reservations, refill and collision handling.
 
@@ -292,11 +307,17 @@ When a user follows `https://bit.ly/abc123X`, the web client sends `GET /abc123X
 
 ```mermaid
 sequenceDiagram
-    participant W as Web client
-    participant R as Redirect service
-    participant D as Link database
-    participant P as Click pipeline
-    participant T as Destination server
+  box rgb(232,240,254) Request path
+  participant W as Web client
+  participant R as Redirect service
+  end
+  box rgb(230,244,234) Durable state
+  participant D as Link database
+  end
+  box rgb(232,240,254) External participants
+  participant P as Click pipeline
+  participant T as Destination server
+  end
     W->>R: GET /abc123X on bit.ly
     Note over R: Check local record cache
     opt Cache miss
@@ -313,6 +334,8 @@ sequenceDiagram
     end
     Note over R,P: Event can be lost before queue acknowledgment
 ```
+
+The redirect and destination-page request are separate HTTP exchanges. The click pipeline records collected service events under its asynchronous acknowledgment/loss policy.
 
 With the proposed `Cache-Control: private` policy, cached HTTP redirects are limited to private caches such as the browser. CDN-served redirects require the separate shared-cache policy described in the cache deep dive. Reusing an HTTP redirect bypasses the service's current expiration and safety checks and its click collection; caching a Link record keeps those checks in the request path.
 
@@ -364,6 +387,11 @@ flowchart TB
     Visits --> Worker --> Totals
     API -->|"Read hourly totals"| Totals
     Totals --> Report["Dashboard report<br>Counts and freshness"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class Visits,User,Web,API request
+  class Worker,Totals,Report background
 ```
 
 The freshness target is to include 98% of events within 90 seconds after durable queue acknowledgment. Each collected click event contributes once after deduplication; separate requests by the same user count as separate clicks. Reports cover requests handled by the redirect service, with browser- and CDN-cached redirects outside that collection path.
@@ -400,7 +428,7 @@ Several creation-service instances can generate links at the same time. Their ID
 - **Random codes or a truncated URL hash:** each instance generates a candidate independently and attempts a uniqueness-checked insert. Collisions require a retry with another candidate. A URL-hash strategy also needs a way to assign distinct codes to separate campaign links that share the same destination. At 40B assignments in a seven-character base62 space, random generation would require roughly 200M collision retries.
 - **Allocated ID ranges:** the allocator durably reserves a distinct range for each instance, which generates codes locally from that range. One reservation supports many creations. Durable, non-overlapping reservations preserve uniqueness across crashes.
 
-**Recommended:** reserve ID ranges to keep allocation local for most creation requests. An instance with unused IDs can continue creating links during a short allocator outage. A central sequence remains a simpler alternative at the assumed 580 creates/s.
+**Recommended:** reserve ID ranges to keep allocation local for most creation requests. An instance with unused IDs can continue creating links during a short allocator outage. A central sequence remains a simpler alternative at the assumed 580 creates/s. Ranges fit the proposed local generation path and let an instance use its remaining allocation during a short outage. We accept wasted IDs after crashes, allocator refill coordination and final uniqueness checks against custom aliases; at the assumed create rate, the simpler central sequence is still a credible alternative.
 
 [Base62](https://en.wikipedia.org/wiki/Base62) represents a numeric ID using letters and digits. We use the alphabet `0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ`, with uppercase and lowercase treated as distinct characters. ID `62` becomes `10`, then `0000010` when padded to seven characters. Each instance encodes the next ID from its reserved range:
 
@@ -412,6 +440,11 @@ flowchart TB
     A -->|"Encode in base62"| Insert["Atomic insert<br>if code is absent"]
     B -->|"Encode in base62"| Insert
     Alias["Custom alias"] --> Insert
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class A,B,Insert,Alias request
+  class Allocator control
 ```
 
 The allocator uses the IDSequence row with `sequence_id = "generated_links"`. In one PostgreSQL transaction, it advances `next_id` by the range size and returns the previous interval after commit. All instances reserve ranges through this shared row, so their allocations cannot overlap. Acknowledged reservations must survive database failover. After an instance crashes, unused IDs from its range stay reserved because some may already have been issued. [PostgreSQL's atomic updates](https://www.postgresql.org/docs/current/sql-update.html) provide the transaction mechanism; its [sequence documentation](https://www.postgresql.org/docs/current/functions-sequence.html) explains why gaps are acceptable. [Designing Data-Intensive Applications](https://dataintensive.net/) covers the broader coordination.
@@ -438,7 +471,7 @@ When a link is shared with a large audience, many users request the same destina
 - **A shared Redis cache:** all instances reuse the same cached record, reducing database reads even when requests land on different instances. Each cache lookup still crosses the network, and the shared cache needs enough capacity and availability to serve the redirect traffic.
 - **A local LRU cache with shared in-flight lookups:** each instance serves cached records from its own memory and combines simultaneous misses for the same code into one database lookup. Hits avoid a network call, but every instance has its own cache to warm and must remove stale entries when links change.
 
-**Recommended:** use a local record cache in the scaled redirect service. LRU eviction removes the least recently used records when memory fills up. On a cache miss, the first request starts the database lookup and other requests for that key on the same instance wait for its result instead of starting their own lookups. This coordination is called singleflight:
+**Recommended:** use a local record cache in the scaled redirect service. LRU eviction removes the least recently used records when memory fills up. On a cache miss, the first request starts the database lookup and other requests for that key on the same instance wait for its result instead of starting their own lookups. This coordination is called singleflight: Local caching fits repeated reads of a small popular-link set and removes the cache-network hop from hits. We accept independent warm-up and invalidation on each instance; singleflight is scoped to one instance, so a fleet-wide cold burst can still produce one lookup per instance.
 
 ```text
 resolve(domain, short_code):
@@ -470,7 +503,7 @@ The three places to cache have different controls:
 | CDN | HTTP redirect | Purge where configured; cache only where policy permits. |
 | Browser | HTTP redirect | Remains under browser control until expiry; may bypass safety checks and click collection. |
 
-**Recommended:** cache Link records inside the service to reduce database reads while checking expiration and safety on each request. Browser and CDN caching eliminate the request to the service, so their freshness policy must account for destination or verdict changes and analytics coverage.
+**Recommended:** cache Link records inside the service to reduce database reads while checking expiration and safety on each request. Browser and CDN caching eliminate the request to the service, so their freshness policy must account for destination or verdict changes and analytics coverage. Record caching fits links whose expiry and safety must be checked by the redirect service. It accepts one service request per visit and controllable invalidation work. Edge-response caching saves that request but depends on purge propagation, while browser caching saves both edge/origin work at the cost of an unrevokeable cached response until its deadline and less complete click coverage.
 
 The proposed `private, max-age=90` policy permits browser reuse for up to 90 seconds, bounded by link expiration, and restricts storage to private caches ([HTTP cache rules](https://www.rfc-editor.org/rfc/rfc9111.html#name-private)). A redirect with less than one second remaining uses `no-store`. The CDN hit-rate estimates describe a separate shared-caching scenario, which also requires expiration-bounded freshness and a purge mechanism for destination or safety changes.
 
@@ -490,7 +523,7 @@ Returning a redirect response requires a destination lookup and the expiration a
 - **Buffer events and publish asynchronously:** return the redirect promptly, then batch click events into a durable queue. Analytics processing runs independently of the response. Events awaiting queue acknowledgment remain vulnerable to a process crash.
 - **Wait for durable recording before responding:** the service waits for the queue to confirm that it has saved the event before returning the redirect. This removes the pre-acknowledgment loss window for successful responses, but adds queue latency to every visit and makes navigation depend on the queue's availability.
 
-**Recommended:** buffer click events in the redirect service and publish them to Kafka asynchronously. Analytics workers store them in ClickHouse and build hourly totals separately. This keeps analytics latency off the redirect path, with possible click loss before Kafka acknowledges storage. Billing-grade records would require stronger durability guarantees.
+**Recommended:** buffer click events in the redirect service and publish them to Kafka asynchronously. Analytics workers store them in ClickHouse and build hourly totals separately. This keeps analytics latency off the redirect path, with possible click loss before Kafka acknowledges storage. Billing-grade records would require stronger durability guarantees. Asynchronous publication fits best-effort product analytics and the redirect latency target. We accept a bounded pre-Kafka loss window and expose collected-click coverage; a billing-grade click contract would instead justify durable acknowledgment on the request path.
 
 ```mermaid
 flowchart TB
@@ -498,6 +531,11 @@ flowchart TB
     Buffer -->|"Publish"| Queue["Queue confirms<br>durable storage"]
     Queue --> Worker["Worker updates<br>hourly totals"]
     Buffer -.-> Loss["Crash before<br>acknowledgment:<br>event may be lost"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class Response,Loss request
+  class Buffer,Queue,Worker background
 ```
 
 #### Technologies and event flow
@@ -542,7 +580,7 @@ A destination can change after the short link is created—for example, a harmle
 - **Check externally on every redirect:** request the freshest available verdict before returning a redirect. Navigation then depends on the scanner's latency and availability. Detection is limited to threats already known to the provider.
 - **Rescan in the background and cache results:** check destinations periodically and update cached records when a verdict changes. Each redirect uses the saved verdict, keeping external scanner latency off the request path. Visits between scans may use an older verdict after a destination changes.
 
-**Recommended:** scan destinations in the background and store `safe`, `warn` or `blocked` results with the link. When a verdict changes, clear the cached copies so new requests can use it. This keeps external checks out of the redirect path, but the protection still depends on scan frequency and the policy used while the scanner is unavailable.
+**Recommended:** scan destinations in the background and store `safe`, `warn` or `blocked` results with the link. When a verdict changes, clear the cached copies so new requests can use it. This keeps external checks out of the redirect path, but the protection still depends on scan frequency and the policy used while the scanner is unavailable. Background rescans fit a responsive redirect path with an external scanner whose latency is variable. We accept the interval between checks and incomplete verification during failures; the pending/first-scan policy remains an explicit unresolved safety limit, not an implied guarantee.
 
 A scan follows up to five redirect hops and collects the destination's title and content type, combining those signals with threat intelligence before writing a verdict to the Link record. The starting scan budget is 1–5s. After a crawl timeout, the worker consults the threat API and schedules another scan, leaving verification incomplete. It rescans links visited in the previous 30 days once a day, focusing recurring work on recently active destinations.
 

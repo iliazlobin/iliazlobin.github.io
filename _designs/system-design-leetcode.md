@@ -7,7 +7,7 @@ tags: [Distributed-Systems, Interview-Prep, Security, Real-Time, Sandbox, Scalab
 thumbnail: /images/posts/2026-07-02-system-design-leetcode.svg
 redirect_from:
   - /2026/07/02/system-design-leetcode.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-07
 description: "Design of an online coding platform with searchable problems, isolated solution judging and live contest standings."
 notion_source: https://app.notion.com/p/38fd865005a881538614e0b53039e116
 ---
@@ -151,17 +151,55 @@ flowchart TB
   S -->|standings| R[(Redis)]
   S -->|updates| U
   API -->|read standings| R
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class U,API,D,VM,S request
+  class DB,Q,W,O,R background
 ```
 
 ## Storage
 
-- **PostgreSQL:** owns problems, submissions, contests, registrations, results and outbox rows. Use `(user_id, accepted_at, submission_id)` for history and a unique user/idempotency-key record for submission retries.
+- **[PostgreSQL](/designs/tech-postgresql/):** owns problems, submissions, contests, registrations, results and outbox rows. Use `(user_id, accepted_at, submission_id)` for history and a unique user/idempotency-key record for submission retries.
 - **Submission partitions:** time partitioning supports retention and recent-history scans. A separate unpartitioned identity registry or a partition-aware key enforces submission identity; a global unique index cannot simply omit the partition key.
 - **Object storage:** contains source archives and immutable test/checker bundles. Workers verify bundle versions and cache approved tests locally. Cold archives need an explicit retrieval service rather than assuming `postgres_fdw` reads object storage directly.
-- **Kafka or another durable work queue:** absorbs bursts and redelivers work after failures. Contest and practice pools have reserved capacity and separate backlog metrics.
-- **Redis:** stores versioned contest score projections and sorted sets. Durable results can rebuild standings; the cache is not the authority for contest eligibility or accepted submissions.
+- **[Kafka](/designs/tech-kafka/) or another durable work queue:** absorbs bursts and redelivers work after failures. Contest and practice pools have reserved capacity and separate backlog metrics.
+- **[Redis](/designs/tech-redis/):** stores versioned contest score projections and sorted sets. Durable results can rebuild standings; the cache is not the authority for contest eligibility or accepted submissions.
 
 ## From request to response
+
+### One end-to-end request
+
+The submission ID is returned after durable acceptance, before code execution.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as User
+    participant A as Submission API
+  end
+  box rgb(230,244,234) Durable state
+    participant D as Submission database
+  end
+  box rgb(232,240,254) Execution
+    participant W as Judge host
+    participant C as Contest projector
+  end
+  rect rgb(232,240,254)
+    U->>A: Submit source and language
+    A->>D: Commit submission and outbox
+    A-->>U: Submission ID
+    D->>W: Lease attempt and pinned bundles
+  end
+  rect rgb(230,244,234)
+    W->>W: Compile and run under host limits
+    W->>D: Commit verdict under current token
+    D->>C: Recompute ordered contest score
+    C-->>U: Verdict and versioned standings
+  end
+```
+
+The trusted judge leases an attempt and runs pinned artifacts in a disposable sandbox; only its current attempt token can commit a verdict and update standings.
 
 ### Browsing and submitting a solution
 
@@ -203,7 +241,11 @@ History queries are limited to the authenticated user and use cursor pagination 
 | User-space kernel sandbox | Reduces direct host-kernel interaction | Compatibility and performance depend on workload |
 | MicroVMs | Separate guest kernel and hardware virtualization | Requires host hardening and image/pool operations |
 
-**Recommendation:** compile and execute in disposable Firecracker microVMs on dedicated judge hosts. Follow the project's [production host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md), use the jailer and keep the host, KVM, guest kernel and language images patched.
+- **Ordinary containers:** isolate processes/files while sharing the host kernel. Startup and tooling are familiar, but a kernel exploit from untrusted code threatens other executions and host state.
+- **User-space kernel sandbox:** intercept guest system calls through a restricted implementation. Host-kernel exposure is reduced; compiler/runtime compatibility and syscall-heavy performance depend on the selected sandbox.
+- **MicroVMs:** execute inside a separate guest kernel using hardware virtualization. The boundary suits hostile submissions, but clean images, patched KVM/hosts, pool startup and bounded result channels require dedicated operations.
+
+**Recommendation:** compile and execute in disposable Firecracker microVMs on dedicated judge hosts. Follow the project's [production host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md), use the jailer and keep the host, KVM, guest kernel and language images patched. Disposable Firecracker microVMs fit intentionally untrusted code better than a convenience container boundary. We accept dedicated host/image operations and prewarm cost; host-enforced resource and network limits remain necessary even with virtualization.
 
 The trusted host controls VM resources, egress and deadlines. Guest-side restrictions are additional defense, not the enforcement boundary after a guest compromise. Give the guest only its input and required files; compare output with hidden expected results in the trusted judge control plane. Authenticate result channels and cap output bytes.
 
@@ -231,9 +273,11 @@ The result identifies S, T and every bundle version. The database accepts it onl
 
 **Problem.** A slow early submission can finish after a fast later one. Scoring in completion order could select the wrong solve time or penalty.
 
-**Options:** serialize all judging per user; increment counters as results arrive; or derive a versioned score from the ordered submission record.
+- **Serialize judging per user:** finish one submission before running the next. Completion order follows acceptance, but one slow program delays all later feedback for that user.
+- **Increment counters on completion:** update solves/penalties as verdicts arrive. Processing is cheap, but an earlier failed submission arriving later can change the correct first-solve penalty and duplicate deliveries can drift totals.
+- **Versioned projection from ordered submissions:** recompute a user's score from durable acceptance order and result versions. Rejudges and late verdicts produce reproducible standings; reads are provisional while judging remains incomplete and projection work must be bounded.
 
-**Recommendation:** derive the score from durable acceptance order. Judge executions can run independently, while each user's contest projection is recomputed when relevant results change. Publish solved count, penalty and projection version together.
+**Recommendation:** derive the score from durable acceptance order. Judge executions can run independently, while each user's contest projection is recomputed when relevant results change. Publish solved count, penalty and projection version together. Versioned projections fit parallel judging and rejudges while preserving contest rules based on submission order. We accept brief standings lag and provisional labels rather than serializing execution or treating completion order as contest order.
 
 For a bounded contest rule, an integer score such as `solved × M - penalty` fits a Redis sorted set if M exceeds maximum penalty and the largest value remains within exact integer precision of the double score. Keep tie-breaking in explicit fields or a deterministic member ordering; avoid arbitrary fractional hash adjustments.
 
@@ -250,6 +294,11 @@ flowchart TB
   D --> P["Recompute user contest score"]
   P --> V["Versioned standing projection"]
   V --> C["Public contest generation"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class S,J,P,V,C request
+  class D background
 ```
 
 Publish the user's whole solved/penalty state conditionally by projection version. Replaying an older projection cannot restore the wrong score. Contest freeze and disclosure policy apply at response assembly, while the authority retains the complete underlying records.
@@ -258,9 +307,11 @@ Publish the user's whole solved/penalty state conditionally by projection versio
 
 **Problem.** Reactive scaling can arrive after the first submission wave. A queue prevents loss but cannot guarantee a short verdict time without sufficient execution capacity.
 
-**Options:** rely on reactive scaling; prewarm the entire peak pool; or combine scheduled reserved capacity with queue-age scaling.
+- **Reactive scaling:** start workers after queue age or load rises. Idle cost is low, but image startup arrives after a synchronized contest wave and early users wait.
+- **Prewarm the full peak:** reserve all expected capacity before the event. Initial latency is predictable if the estimate is right; unused slots and language-specific pools cost money.
+- **Scheduled reserve plus queue-age scaling:** prewarm the modeled baseline, retain practice capacity and scale additional slots from queued work. This balances startup and cost; forecasts can still miss the peak, so admission limits and explicit overload remain necessary.
 
-**Recommendation:** prewarm the modeled contest capacity before the event, including language images and test bundles. Then scale from oldest queued age, execution duration and free slots. Maintain a practice reservation so one contest does not indefinitely starve ordinary users.
+**Recommendation:** prewarm the modeled contest capacity before the event, including language images and test bundles. Then scale from oldest queued age, execution duration and free slots. Maintain a practice reservation so one contest does not indefinitely starve ordinary users. Scheduled prewarming fits known contest start times, while queue-age scaling handles uncertain submission mix. We accept reserved idle capacity before the event and a bounded queue when demand exceeds the verified pool.
 
 ```text
 Required slots ≈ arrival rate × average occupied time / target utilization

@@ -7,7 +7,7 @@ tags: [Social-Media, Read-Heavy, Media, Interview-Prep]
 thumbnail: /images/posts/2026-07-02-system-design-instagram.svg
 redirect_from:
   - /2026/07/02/system-design-instagram.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-07
 description: "Design of a photo and video sharing service with media publishing, follow relationships and a personalized feed."
 notion_source: https://app.notion.com/p/390d865005a881e7ae2aed6fe0f04f8c
 ---
@@ -151,19 +151,57 @@ flowchart TB
   DB --> F
   U --> D[Media CDN]
   D --> O
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class U,API,P,DB,O,F,D request
+  class Q,W,C background
 ```
 
 ## Storage
 
-- **PostgreSQL shards by author/user:** own posts, media ownership, follow state and outbox events. Author-time indexes support profile and recent-post reads. Follow edges are keyed by follower; a versioned reverse view supports fan-out.
-- **Redis:** holds candidate timelines, shared recent-author lists, post caches and short-lived ranking sessions. Values are rebuildable from durable records.
+- **[PostgreSQL](/designs/tech-postgresql/) shards by author/user:** own posts, media ownership, follow state and outbox events. Author-time indexes support profile and recent-post reads. Follow edges are keyed by follower; a versioned reverse view supports fan-out.
+- **[Redis](/designs/tech-redis/):** holds candidate timelines, shared recent-author lists, post caches and short-lived ranking sessions. Values are rebuildable from durable records.
 - **Object storage:** stores originals and immutable prepared variants, partitioned by object key rather than author popularity. A CDN absorbs repeated reads.
-- **Kafka:** carries committed processing and graph events. Media tasks and fan-out jobs retain progress and idempotent identities.
+- **[Kafka](/designs/tech-kafka/):** carries committed processing and graph events. Media tasks and fan-out jobs retain progress and idempotent identities.
 - **Model/feature storage:** supplies the bounded feed ranker. Media processing and model serving have separate capacity budgets.
 
 A [TAO-style graph model](https://www.usenix.org/system/files/conference/atc13/atc13-bronson.pdf) is a useful reference for association access. The chosen implementation uses explicit forward/reverse records rather than assuming both directions are a cross-shard atomic write. [Haystack](https://www.usenix.org/legacy/events/osdi10/tech/full_papers/Beaver.pdf) illustrates specialized object storage; managed object storage avoids building that subsystem in this proposal.
 
 ## From request to response
+
+### One end-to-end request
+
+A media upload and a published post have separate durable states.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as User
+    participant A as Post API
+  end
+  box rgb(230,244,234) Background processing
+    participant D as Metadata database
+    participant W as Media worker
+  end
+  box rgb(232,240,254) Feed service
+    participant C as Feed service
+  end
+  rect rgb(232,240,254)
+    U->>A: Complete resumable media upload
+    A->>W: Process pinned media generation
+    W->>D: Commit verified baseline manifest
+    U->>A: Publish ready media
+  end
+  rect rgb(230,244,234)
+    A->>D: Commit post and outbox event
+    D->>C: Fan out or update shared author list
+    U->>C: Read feed
+    C-->>U: Eligible posts and authorized media URLs
+  end
+```
+
+Workers verify a usable baseline rendition before publication; fan-out then prepares feed candidates, while readers apply current visibility checks before receiving media access.
 
 ### Publishing media
 
@@ -193,11 +231,11 @@ Profile reads use author-time pagination and current visibility checks. Approxim
 
 **Problem.** Writing to every follower's timeline makes a popular post expensive, while rebuilding from all followed authors on every read increases latency.
 
-- **Push:** prepared candidates for each follower, with high write amplification.
-- **Pull:** recent-author queries at read time, with high merge cost.
-- **Hybrid:** push ordinary authors to active followers; merge shared recent-post lists for high-fan-out authors.
+- **Push:** append each new post ID to active followers' timelines. Reads start from prepared candidates; large follower sets amplify one post into many writes and create projection lag.
+- **Pull:** merge followed authors' recent posts when the user reads. Publication is cheap, but users following many authors pay repeated lookup/merge cost on every request.
+- **Hybrid:** push ordinary authors and keep one shared recent-post list for high-fan-out authors. It controls both extremes; readers deduplicate two sources and mode changes need a generation/cutover protocol.
 
-**Recommendation.** Use hybrid delivery with a measured cutoff based on active followers, posting rate and feed-request cost. Writing one shared popular-author list is a pull-on-read source, not per-follower push.
+**Recommendation.** Use hybrid delivery with a measured cutoff based on active followers, posting rate and feed-request cost. Writing one shared popular-author list is a pull-on-read source, not per-follower push. Hybrid delivery fits a skewed follower distribution with many ordinary authors and a few very large ones. We accept projection lag and bounded read merges; the cutoff is chosen from actual fan-out and request costs rather than follower count alone.
 
 Fan-out jobs operate in resumable batches, and inserting the same post ID twice is harmless. During a policy transition, readers merge old and new sources and deduplicate. Current follow checks handle unfollows immediately; TTL merely reclaims old cache entries. Track fan-out lag, writes/post, merge latency and rebuild rate.
 
@@ -214,6 +252,12 @@ flowchart TB
   T --> M["Merge and deduplicate"]
   A --> M
   M --> R["Eligibility and ranking"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class P,D,T,A,M request
+  class F background
+  class R control
 ```
 
 Choose thresholds from active followers and request cost rather than total follower count alone. A rarely viewed author with many inactive followers need not generate millions of writes. Returning inactive users rebuild a recent window, leaving older history in authoritative profile reads.
@@ -222,11 +266,11 @@ Choose thresholds from active followers and request cost rather than total follo
 
 **Problem.** Different clients need different sizes and bitrates, but preparing every possible variant multiplies processing and storage.
 
-- **Transform on demand:** flexible, with extra CPU and first-request latency.
-- **Fixed common variants:** predictable reads and a bounded preparation cost.
-- **Progressive or layered formats:** useful where decoder support and range-caching behavior are proven.
+- **Transform on demand:** generate the requested size or bitrate on its first read. Unused variants cost little storage, but popular first requests compete for CPU and experience processing delay.
+- **Fixed common variants:** prepare a bounded thumbnail/feed/baseline set before publication. Common devices get predictable reads; rarely viewed media still pays preparation and storage cost.
+- **Progressive or layered formats:** let compatible clients fetch increasing quality from one representation. Some duplication is reduced, but decoder support and range/CDN behavior constrain coverage and must be validated.
 
-**Recommendation.** Prepare a small common set: thumbnail, feed image and an initial playable video rendition. Add higher-quality or uncommon variants asynchronously or on measured demand. Video uses an adaptive-bitrate manifest; image formats are negotiated by client support.
+**Recommendation.** Prepare a small common set: thumbnail, feed image and an initial playable video rendition. Add higher-quality or uncommon variants asynchronously or on measured demand. Video uses an adaptive-bitrate manifest; image formats are negotiated by client support. A small common set fits the feed's common display sizes and prompt first render. We accept baseline preparation before publishing, then add optional quality only where demand and client support justify it.
 
 ```text
 Upload complete → validate / scan → generate required variants
@@ -245,11 +289,11 @@ A failed generation stays unpublished while the previous good generation remains
 
 **Problem.** A popular post can receive many simultaneous cache misses, while a removal must change eligibility even if cached copies remain.
 
-- **TTL-only caches:** simple, with stale-data and stampede windows.
-- **Single-flight refresh plus versioned invalidation:** limits repeated loads and orders changes.
-- **Read from the primary for every object:** current, with heavy database load.
+- **TTL only:** reuse post records until expiry. Operation is simple, but simultaneous expiry causes stampedes and removed posts can remain cached until the deadline.
+- **Single-flight plus versioned invalidation:** let one fill serve concurrent misses and reject fills older than a committed tombstone. Origin amplification and stale resurrection are controlled; fill leases, generations and invalidation delivery require recovery logic.
+- **Primary reads for every object:** fetch current records directly. Staleness is easier to reason about, but repeated hot-post reads concentrate load and couple feed latency to storage.
 
-**Recommendation.** Use per-key single-flight refresh, jittered expiries and versioned values. Separate feed, graph and object cache budgets so one surge cannot evict every workload. [Scaling Memcache at Facebook](https://www.usenix.org/system/files/conference/nsdi13/nsdi13-final170_update.pdf) provides a historical reference for lease-based cache coordination.
+**Recommendation.** Use per-key single-flight refresh, jittered expiries and versioned values. Separate feed, graph and object cache budgets so one surge cannot evict every workload. [Scaling Memcache at Facebook](https://www.usenix.org/system/files/conference/nsdi13/nsdi13-final170_update.pdf) provides a historical reference for lease-based cache coordination. Versioned coalesced caches fit popular immutable media and mutable post eligibility. We accept invalidation lag in derived caches, protecting it with current access checks and bounded private-media tokens rather than relying on TTL for revocation.
 
 Removal increments the post version and publishes a tombstone. Serving validates current policy, invalidates controllable caches and denies renewed media access. Short-lived private-media tokens bound already-issued access; downloaded copies cannot be recalled. Monitor invalidation lag, coalesced requests and denied stale objects.
 
@@ -263,11 +307,11 @@ Jitter expiry times across keys and keep separate memory budgets for timelines a
 
 **Problem.** Nearby replicas improve latency, but asynchronous copies may lag both new posts and privacy changes.
 
-- **Single home-region writer:** simple ordering, with remote-read freshness tradeoffs.
-- **Synchronous cross-region replication:** stronger acknowledged durability, with network latency and availability cost.
-- **Active-active writes:** local writes, with substantially harder conflict resolution for relationships and deletion.
+- **One home-region writer:** serialize each shard's writes and replicate elsewhere. Ordering is clear and zone-local commits are fast; distant reads can lag and regional loss may lose asynchronously copied updates.
+- **Synchronous cross-region replication:** acknowledge after a remote durable copy/quorum participates. Regional recovery can protect acknowledged writes more strongly, but WAN latency and remote failures enter the write path.
+- **Active-active writers:** accept writes locally in several regions. Remote users avoid a home-region hop, but graph changes, deletion and conflicting edits need explicit conflict rules and globally unique versioning.
 
-**Recommendation.** Use one writer per shard, synchronous zone replicas for acknowledged metadata and asynchronous region replicas for disaster recovery. Route read-your-write requests to the authoritative shard until a replica reaches the required version. Security-sensitive eligibility uses authoritative or freshness-validated state.
+**Recommendation.** Use one writer per shard, synchronous zone replicas for acknowledged metadata and asynchronous region replicas for disaster recovery. Route read-your-write requests to the authoritative shard until a replica reaches the required version. Security-sensitive eligibility uses authoritative or freshness-validated state. One writer with synchronous zone replicas fits ordered metadata changes and the proposed asynchronous disaster-recovery policy. We accept remote freshness routing and the stated regional recovery point; zero-loss regional requirements would change the acknowledgment protocol and latency budget.
 
 Regional promotion requires fencing the previous writer and measuring recovered log position. If zero-loss regional failover is required, adopt synchronous cross-region acknowledgment and budget its latency explicitly. Test recovery of metadata, media manifests, outbox positions and derived caches together; replicas alone do not establish a verified recovery procedure.
 

@@ -7,7 +7,7 @@ tags: [Distributed-Systems, Caching, Event-Driven]
 thumbnail: /images/posts/2026-07-02-system-design-dropbox.svg
 redirect_from:
   - /2026/07/02/system-design-dropbox.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-07
 description: "Design of a cloud file service that synchronizes files across devices, supports sharing and preserves version history."
 notion_source: https://app.notion.com/p/390d865005a8810ba966d9daa17dc78f
 ---
@@ -151,19 +151,57 @@ flowchart TB
   N --> U
   G["Garbage collection"] --> IDX
   G --> O
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class U,API,M,DB,B,E,N,G request
+  class IDX,O background
 ```
 
 ## Storage
 
-- **PostgreSQL shards by namespace:** file entries, revisions, memberships and an ordered change journal. Unique `(namespace_id, parent_id, name)` entries prevent conflicting paths; conditional version updates protect edits.
+- **[PostgreSQL](/designs/tech-postgresql/) shards by namespace:** file entries, revisions, memberships and an ordered change journal. Unique `(namespace_id, parent_id, name)` entries prevent conflicting paths; conditional version updates protect edits.
 - **Content-addressed object storage:** immutable verified blocks, with compression codec and original-size metadata.
 - **Partitioned block index:** `(dedup_scope, content_hash)` identifies durable blocks and locations. A transactional block service owns upload pins and reclamation state.
 - **Client SQLite:** local, remote and last-synced tree state, unfinished transfers and journal cursors.
-- **Redis:** bounded metadata caches and notification routing. Current authorization and revision commit use the metadata authority.
+- **[Redis](/designs/tech-redis/):** bounded metadata caches and notification routing. Current authorization and revision commit use the metadata authority.
 
 [Dropbox's Magic Pocket](https://dropbox.tech/infrastructure/inside-the-magic-pocket) illustrates a dedicated large-scale block store; this design can begin with managed object storage.
 
 ## From request to response
+
+### One end-to-end request
+
+Blocks upload independently, but a revision becomes visible only after every referenced block is verified and the metadata transaction commits.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as Device
+    participant A as Upload API
+  end
+  box rgb(230,244,234) Durable state
+    participant D as Block store
+    participant W as Metadata database
+  end
+  box rgb(232,240,254) Client delivery
+    participant C as Other device
+  end
+  rect rgb(232,240,254)
+    U->>A: Submit base revision and block manifest
+    A->>D: Pin reusable blocks, identify missing blocks
+    U->>D: Upload missing checksummed blocks
+    A->>D: Verify complete manifest
+  end
+  rect rgb(230,244,234)
+    A->>W: Compare base, commit revision and journal
+    W-->>U: Committed revision and sequence
+    W-->>C: Change hint
+    C->>W: Read journal after durable cursor
+  end
+```
+
+Notifications then tell other devices to catch up from the durable namespace journal.
 
 ### Uploading and committing
 
@@ -189,9 +227,11 @@ A shared namespace gives all members one authoritative tree and journal. Grantin
 
 **Problem.** A small edit should transfer fewer bytes, while each block adds metadata and request overhead.
 
-**Options.** Whole-file hashing, fixed-size blocks or content-defined chunking. Content-defined boundaries can survive insertions; their target average size is configurable, rather than inherently smaller.
+- **Whole-file transfer:** hash and upload one object whenever content changes. The protocol and reconstruction are simple, but a small edit can resend the whole file.
+- **Fixed-size blocks:** split at known offsets and upload only changed block hashes. Metadata and parallel transfer are predictable; an insertion near the beginning can shift later boundaries and make many blocks appear changed.
+- **Content-defined chunking:** derive boundaries from local content so unchanged regions can retain their hashes after insertions. This reduces transfer for insertion-heavy edits, but rolling-boundary computation, variable block sizes and larger manifests add CPU and operational cost.
 
-**Recommendation.** Use fixed blocks around 4 MiB initially, batch manifest checks and parallelize bounded transfers. Evaluate content-defined chunking on representative workloads before adding it.
+**Recommendation.** Use fixed blocks around 4 MiB initially, batch manifest checks and parallelize bounded transfers. Evaluate content-defined chunking on representative workloads before adding it. Fixed blocks around 4 MiB fit a first implementation with bounded manifests and parallel multipart transfer. We accept poor reuse after some insertions; content-defined chunking is added only when representative transfer savings justify its additional CPU and metadata.
 
 Hash canonical uncompressed bytes, record the compression format, and verify reconstructed bytes. Skip compression when it increases size. Delta transfer is useful when both sides have an authorized base block; fall back to full-block transfer when the base is unavailable.
 
@@ -206,6 +246,11 @@ flowchart TB
   C --> U["Upload missing blocks"]
   U --> V["Verify complete manifest"]
   V --> R["Commit file revision"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class F,C,U,R request
+  class M,V background
 ```
 
 Reconstruction follows manifest order, verifies each block, decompresses with recorded limits and checks the resulting file. A list of hashes alone is insufficient without lengths/order and a committed revision binding them together.
@@ -214,9 +259,11 @@ Reconstruction follows manifest order, verifies each block, decompresses with re
 
 **Problem.** Two devices can edit or move the same file while disconnected.
 
-**Options.** Last-write-wins, application-specific merging or a common-base reconciliation model.
+- **Last-write-wins:** accept the latest revision according to the server's order. Convergence is simple, but an offline user's valid edits can be silently replaced.
+- **Application-specific merge:** combine changes using a format-aware editor. Compatible text or structured edits may merge well, but arbitrary binary formats need separate semantics and an invalid merge can corrupt content.
+- **Common-base reconciliation:** compare each device's local and remote state with the last synced tree. Independent moves/edits can be combined and conflicting contents preserved; clients retain base state and users may need to resolve conflict copies.
 
-**Recommendation.** Compare the local tree and remote tree with the last-synced tree. Apply independent changes; preserve both contents when edits conflict. Stable file IDs distinguish moves from unrelated deletes and additions.
+**Recommendation.** Compare the local tree and remote tree with the last-synced tree. Apply independent changes; preserve both contents when edits conflict. Stable file IDs distinguish moves from unrelated deletes and additions. Common-base reconciliation fits arbitrary files and long offline periods without assuming every format has a safe merge algorithm. We accept conflict copies and extra client state to preserve both users' data; stable file IDs separate a rename from deletion/recreation.
 
 ```text
 last synced tree ── local changes ──► local tree
@@ -238,9 +285,11 @@ Commit the reconciled change with the expected remote base revision. If the remo
 
 **Problem.** Shared folders create high read fan-out and occasional concurrent writes.
 
-**Options.** One database, namespace-sharded transactions or a globally transactional metadata store.
+- **One database:** keep all trees and journals in one transactional authority. Cross-folder operations are easy to express, but one write/metadata capacity ceiling limits growth and hot folders compete with unrelated users.
+- **Namespace-sharded transactions:** colocate a namespace's tree and journal and commit its mutations locally. Most sync work scales by namespace; hot namespaces still serialize and cross-namespace moves need a recoverable coordinator.
+- **Globally transactional store:** transact across namespace boundaries through distributed coordination. Atomic multi-namespace changes are easier for callers, but network/quorum work adds latency, availability coupling and operating cost to ordinary mutations.
 
-**Recommendation.** Keep one namespace's tree and journal on the same shard. Serve read-after-write requests from the leader or a replica proven to have reached the returned sequence; use immutable version-keyed caches for older revisions.
+**Recommendation.** Keep one namespace's tree and journal on the same shard. Serve read-after-write requests from the leader or a replica proven to have reached the returned sequence; use immutable version-keyed caches for older revisions. Namespace sharding fits sync operations whose normal consistency boundary is one shared tree. We accept explicit coordination for cross-namespace moves and a hot-namespace limit rather than charging every small metadata edit for global coordination.
 
 A user's joined namespaces can reside on different shards. Cross-namespace moves need a durable coordinator or distributed transaction with a persisted decision and recovery; prepare acknowledgements alone do not make all shards visible simultaneously. Bound hot-namespace writes and cache journal pages by sequence.
 
@@ -254,9 +303,11 @@ For a cross-namespace move, the coordinator records a durable operation and deci
 
 **Problem.** Uploaded or old blocks may appear unreferenced while a revision commit or reference update is still in flight.
 
-**Options.** Immediate reference-count deletion, delayed counters or mark-and-sweep with upload pins.
+- **Immediate reference-count deletion:** delete a block when its count reaches zero. Space returns quickly, but a delayed reference update or concurrent revision can make a still-needed block appear unused.
+- **Delayed counters:** wait before acting on zero counts. A grace period absorbs some lag, but lost or misordered updates can still make the count wrong, so delay alone is not a proof of safety.
+- **Mark-and-sweep with pins:** mark references from a complete checkpoint and protect active uploads with durable pins before reclaiming candidates. This handles retained revisions and in-flight commits; scans, grace periods and pin recovery keep more storage live and require a coordinated deletion state.
 
-**Recommendation.** Use upload pins, durable revision references and a reclamation grace period. A block-service state transition coordinates new pins with pending deletion. Sweep only from a complete reference snapshot/checkpoint, and preserve references from retained revisions.
+**Recommendation.** Use upload pins, durable revision references and a reclamation grace period. A block-service state transition coordinates new pins with pending deletion. Sweep only from a complete reference snapshot/checkpoint, and preserve references from retained revisions. Pins plus complete reference snapshots fit immutable blocks shared by uploads and retained revisions. We accept delayed reclamation and scan cost to protect acknowledged data; the final deletion transition rechecks references and pins.
 
 Replay reference updates idempotently, audit missing blocks and test interrupted commits, restore-versus-GC races and concurrent uploads. Expired uploads can release pins; an acknowledged revision must keep its blocks reachable.
 
