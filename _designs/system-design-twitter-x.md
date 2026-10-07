@@ -4,206 +4,308 @@ title: "SD: Twitter/X"
 category: system-design
 date: 2026-07-02
 tags: [Distributed-Systems, Social-Media, Caching, Fan-Out, Real-Time, Timeline, Search]
-description: "Design a real-time social platform supporting 330M MAU that lets users post tweets (text + media), build timelines of tweets from followed users, search across all public tweets in real time, and discover trending topics."
 thumbnail: /images/posts/2026-07-02-system-design-twitter-x.svg
 redirect_from:
   - /2026/07/02/system-design-twitter-x.html
-mvp_repo: https://github.com/iliazlobin/sd-twitter-x-backend-mvp
+last_modified_at: 2026-10-06
+description: "A microblogging service for publishing short posts, following users and reading a chronological home timeline."
+notion_source: https://app.notion.com/p/390d865005a8818880ded2b0779e5891
 ---
 
-Design a real-time social platform supporting 330M MAU that lets users post tweets (text + media), build timelines of tweets from followed users, search across all public tweets in real time, and discover trending topics.
+A microblogging service for publishing short posts, following users and reading a chronological home timeline.
 
 <!--more-->
 
-## 1. Problem
+## Problem
 
-Design a real-time social platform supporting 330M MAU that lets users post tweets (text + media), build timelines of tweets from followed users, search across all public tweets in real time, and discover trending topics. The system must handle Twitter's extreme read-write asymmetry (~50:1), the celebrity problem (a single user with 100M+ followers), and sub-second timeline delivery latency.
+Users publish short updates and follow other users to keep up with their posts. The service needs to make new posts available quickly, even when an author has millions of followers. Search and trending topics provide another way to discover public posts.
 
-## 2. Requirements
+The main challenge is timeline delivery: preparing every follower's timeline makes reads simple, but popular authors can generate far more background writes than ordinary authors. This design combines prepared timelines with read-time merging for those high-fan-out authors.
 
-**Functional**
+## Requirements
 
-- FR1: Post a tweet with text and optional media
-- FR2: View a home timeline of tweets from followed users
-- FR3: View a user's profile timeline
-- FR4: Search tweets by keyword and hashtag
-- FR5: Follow/unfollow other users
-- FR6: Return trending topics
+### Functional requirements
 
-**Non-functional**
+- **Publish posts:** create a post of up to 280 characters, with optional replies, reposts and ready-to-serve media.
+- **Read a home timeline:** show recent posts from followed users with cursor-based pagination.
+- **Follow users:** add or remove a follow; enforce blocks and private-account permissions.
+- **Search public posts:** search text, hashtags and authors, ordered by relevance or recency.
+- **Engage with posts:** like or unlike a post and display eventually updated engagement counts.
+- **Discover trends:** show recent topics by region, with controls for repetitive and abusive activity.
 
-- NFR1: Timeline delivery P99 < 1s for 99% of users
-- NFR2: Tweet write P99 < 200ms
-- NFR3: 99.99% durability for accepted tweets
-- NFR4: Read-heavy 50:1 — optimize for reads
+### Non-functional requirements
 
-*Out of scope: DMs, Spaces, X Premium subscriptions, Grok integration, Circles, monetization*
+- **Scale:** design for 500M new posts/day, 300M daily users making 50 timeline reads/day, and bursts of 150K post writes/s.
+- **Latency:** home timeline P99 below 500ms; search P99 below 1s, measured at the API within the serving region.
+- **Availability:** target 99.99% for posting and timeline reads, 99.9% for search.
+- **Durability:** acknowledge posts after the authoritative database transaction and configured synchronous replication complete.
+- **Freshness:** target timeline propagation and public search indexing within 5s at P99 under provisioned load.
+- **Consistency:** a user's follow changes are authoritative immediately; materialized timelines and counts update asynchronously.
+- **Security:** check current visibility and blocks before returning content; authenticated writes are rate-limited.
 
-## 3. Back of the envelope
+Direct messaging, ads and ML feed ranking are outside this design. Workload figures are planning assumptions, not measurements of X.
 
-- **Write peak:** 600M tweets/day ÷ 86.4k s × 3 (morning spike) ≈ 21,000 writes/s → ~20K sustained TPS; the write path is throughput-bound but horizontally scalable
-- **Read peak (timeline):** 330M MAU × 100 timeline views/day ÷ 86.4k s × 3 ≈ 1.15M reads/s → 1M+ timeline QPS is the real bottleneck; a celebrity tweet fanned out to 100M+ followers is the hardest sub-problem
-- **Storage (5y):** 600M tweets/day × 1 KB × 365 × 5 ≈ 1.1 PB → text fits in hot storage; media pushes cold storage to dozens of PB
+## Back-of-the-envelope calculations
 
-## 4. Entities
+- **Posts:** 500M/day ÷ 86,400 ≈ 5.8K writes/s average; 150K/s is a roughly 26× burst.
+- **Timeline:** 300M × 50/day ≈ 174K reads/s average. At 20 posts/page, hydration can exceed 3.4M object reads/s before caching.
+- **Storage:** 1KB/post gives 500GB/day or 183TB/year before indexes and replicas. An assumed 1.5TB/day of media adds 548TB/year.
+- **Fan-out:** background writes/s = sum of each author's post rate × active followers receiving push delivery. Measure this distribution; average follower count alone hides popular-author bursts.
 
+## Core entities
+
+- **Post** stores the author, content and references to replies, reposts or media.
+- **Follow** records who a user follows; the reverse follower list is a derived index for fan-out.
+- **Engagement** stores a user's like state; displayed counts are derived.
+- **Media** tracks upload ownership and whether processing has completed.
+
+```protobuf
+message Post {
+  string post_id;
+  string author_id;
+  string body;
+  Timestamp created_at;
+  string reply_to;
+  string repost_of;
+  repeated string media_ids;
+  int64 version;                 // Orders edits and deletion events.
+}
+message Follow {
+  string follower_id;            // Partition key for a user's follows.
+  string followee_id;
+  Timestamp created_at;
+}
+message Engagement {
+  string user_id;
+  string post_id;                // Unique with user_id and kind.
+  string kind;
+  bool active;
+}
+message Media {
+  string media_id;
+  string owner_id;
+  string object_key;
+  string processing_status;
+}
 ```
-User {
-  user_id:       uuid        PK
-  username:      text        ← unique, max 15 chars
-  display_name:  text
-  follower_cnt:  integer     ← denormalized for profile display
-  following_cnt: integer
-  created_at:    timestamp
-}
 
-Tweet {
-  tweet_id:      uuid        PK
-  author_id:     uuid        FK → User.user_id
-  text:          text        ← max 280 chars (originally)
-  media_ids:     uuid[]?     ← references to Media table
-  created_at:    timestamp
-  is_deleted:    boolean     ← soft delete
-}
+Post IDs are returned as strings so JavaScript clients preserve 64-bit values. Timeline order uses `(created_at, post_id)` as a stable tie-breaker.
 
-Follow {
-  follower_id:   uuid        FK → User.user_id
-  followee_id:   uuid        FK → User.user_id
-  created_at:    timestamp
-  CK(follower_id, followee_id)
-}
+## API
 
-TimelineEntry {
-  user_id:       uuid        PK, FK → User.user_id
-  tweet_id:      uuid        PK, FK → Tweet.tweet_id
-  author_id:     uuid        FK → User.user_id
-  tweeted_at:    timestamp
-  CK(user_id, tweeted_at)   ← sorted set key for pagination
-}
+```yaml
+POST /posts:
+  headers: {Idempotency-Key: client-request}
+  body: {body: text, media_ids: [], reply_to: optional-post}
+  result: {status: 201, post_id: id}
+GET /timeline/home:
+  query: {limit: 20, cursor: opaque}
+  result: {posts: [], next_cursor: opaque, generated_at: timestamp}
+PUT /me/follows/{user_id}:
+  result: {status: 204}
+DELETE /me/follows/{user_id}:
+  result: {status: 204}
+PUT /posts/{post_id}/like:
+  result: {status: 204}
+DELETE /posts/{post_id}/like:
+  result: {status: 204}
+GET /search:
+  query: {q: text, sort: recent-or-relevant, cursor: opaque}
+  result: {posts: [], next_cursor: opaque, partial: false}
+POST /media/uploads:
+  body: {type: image-or-video, size_bytes: integer}
+  result: {media_id: id, upload_url: signed-url}
+GET /trends:
+  query: {region: region-id}
+  result: {topics: [], window_end: timestamp}
 ```
 
-### API
+Writes require authentication and permission checks. Invalid input returns 400; throttled requests return 429 with `Retry-After`.
 
-- `POST /tweets` — post a tweet, returns tweet_id
-- `GET /timeline/home` — home timeline, paginated by cursor
-- `GET /users/{id}/tweets` — user's profile timeline
-- `GET /search?q=` — search tweets by keyword
-- `POST /following` — follow a user
-- `DELETE /following/{id}` — unfollow
-- `GET /trends` — current trending topics
+## High-level design
 
-## 5. High-Level Design
-
-### Overview
+The post service commits posts and events together. Background consumers prepare timelines, update search and compute trends. Timeline reads merge prepared entries with recent posts from high-fan-out authors, then load the post objects.
 
 ```mermaid
-flowchart TD
-    Client["Mobile / Web Client"]
-    LB["Load Balancer"]
-
-    subgraph api["API Layer"]
-        TS["Tweet Service"]
-        FS["Feed / Timeline Service"]
-        SS["Search Service"]
-        US["User Service"]
-    end
-
-    subgraph data["Data Layer"]
-        MySQL[("MySQL<br/>(Users / Follows)")]
-        KV[("Redis Cluster<br/>(Timeline cache)")]
-        MQ[("Kafka<br/>(Async fanout)")]
-        ES[("Earlybird<br/>(Real-time search)")]
-    end
-
-    Client --> LB --> TS & US & FS & SS
-    TS --> MySQL & MQ
-    FS --> KV & MySQL
-    SS --> ES
-    US --> MySQL
-    MQ -.-> FS
-
-    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a
-    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a
-    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a
-    classDef async fill:#ffe8cc,stroke:#e8590c,color:#1a1a1a
-    class Client,LB,US edge
-    class TS,FS,SS svc
-    class MySQL,KV,ES store
-    class MQ async
+flowchart TB
+  U["Web / mobile user"] --> API["API gateway"]
+  API --> WRITE["Post and follow services"]
+  WRITE --> DB[("Authoritative records")]
+  DB --> EVENTS["Committed event stream"]
+  EVENTS --> DERIVED["Timeline, search<br/>and trend workers"]
+  DERIVED --> VIEWS[("Timeline and search views")]
+  API --> READ["Timeline / search services"]
+  READ --> VIEWS
+  READ --> DB
+  U --> MEDIA["Media pipeline"]
+  MEDIA --> CDN["Object storage / CDN"]
 ```
 
-### FR1: Post a tweet
+## Storage
 
-The client sends `POST /tweets` to the Tweet Service. It validates length and rate-limits, writes the Tweet row to MySQL, then publishes a `tweet_created` event to Kafka with `{author_id, tweet_id, created_at}`. Returns `201` with the tweet_id immediately — fan-out is async. The Kafka publish is synchronous from the service to avoid losing the fanout event on crash: the write is accepted only when both MySQL and Kafka succeed.
+- **PostgreSQL shards:** durable posts, follows, engagements and transactional outbox events. Route post writes by author and time bucket; keep a write and its outbox event on the same shard. Index `(author_id, created_at, post_id)` for author histories. Follow records are partitioned by follower; reverse follower indexes are built from committed events.
+- **Redis:** bounded home timelines, recent-author lists and hydrated objects. Store post IDs rather than complete objects in each timeline. Missing cache entries can be reconstructed from durable author histories.
+- **Elasticsearch:** text, hashtag and author indexes, partitioned by time with controlled shard fan-out. Index versions and deletion tombstones prevent replay from restoring older content.
+- **Kafka and object storage:** committed events for fan-out, indexing and replay; originals and processed media in object storage, delivered through a CDN. Consumers checkpoint progress and deduplicate repeated events.
 
-### FR2: View home timeline
+Each database shard has a single write leader and configured synchronous replicas across zones. A regional failover requires fencing the former leader; this design does not use concurrent cross-region writes.
 
-The client sends `GET /timeline/home?cursor=X`. The Feed Service checks Redis: each user's timeline is a sorted set `timeline:{user_id}` with score = `tweeted_at`, value = `tweet_id`. Cache hit → return paginated results. Cache miss → fall back to MySQL query of TimelineEntry rows for the user's followees. For regular users (< 1k followees) we push tweets at write time; for celebrities with 10M+ followers we pull — the follower's timeline request merges celebrity tweets at read time.
+## From request to response
 
-### FR3: View profile timeline
+### Publishing a post
 
-The client sends `GET /users/{author_id}/tweets?cursor=X`. The Tweet Service queries MySQL tweets WHERE `author_id = :id` ORDER BY `created_at DESC`, paginated. Profile timelines are simple range reads on a secondary index — no fan-out needed. We cache the last N tweets per user in Redis to absorb repeated profile views.
+The API authenticates the user, checks text length and media ownership, then reserves the idempotency key with a hash of the submitted request. It creates the post and outbox event in one transaction. A retry with the same key returns the same post; changed input with that key returns a conflict.
 
-### FR4: Search tweets
+After commit, event consumers update the author history, prepared timelines and search index. The author can read their committed post directly while those views catch up. Publishing synchronously to every follower would make posting depend on the largest fan-out; background delivery removes that work from the request.
 
-The client sends `GET /search?q=keyword&cursor=X`. The Search Service fans out the query to all Earlybird partitions. Each partition searches its in-memory inverted index — per-partition posting lists scored by TF-IDF, recency boost, and author reputation. Results are merged, ranked, and a cursor returned for pagination. Every tweet is indexed within seconds — real-time search, not batch.
+### Reading the home timeline
 
-### FR5: Follow/unfollow
+The timeline service reads prepared IDs and recent posts from followed high-fan-out authors. It merges them by `(created_at, post_id)`, removes duplicates and batch-loads post objects. Current follows, privacy, deletions and blocks are checked before response.
 
-The client sends `POST /following {followee_id}`. The User Service writes the Follow row to MySQL. If the followee is NOT a celebrity (< 1M followers), it triggers pre-population of the follower's timeline cache from Kafka. For a celebrity follow, we just update the Follow table; timeline merging happens at read time.
+The cursor carries the ordering boundary and a snapshot cutoff so new posts appear on refresh instead of shifting later pages. A missing prepared timeline triggers bounded reconstruction from author histories. Following thousands of authors still makes merging expensive; the fan-out deep dive controls that cost.
 
-### FR6: Trending topics
+### Following and engaging
 
-Tweet Service emits hashtags to a Kafka `hashtag_events` topic. Trending Service consumes them and increments ZINCRBY on Redis sorted sets per time window (1h, 24h). `GET /trends` returns top-N from the active window. Velocity-based scoring: `rate = count_last_15min / count_prior_15min` × base_count, so a sudden spike outranks a steady baseline.
+A follow or unfollow updates the user's authoritative follow records and emits an event in the same transaction. Follow events backfill a bounded recent history; unfollow events purge prepared entries. Read-time membership checks enforce the change while the derived view updates.
 
-## 6. Deep dives
+Like requests set a desired state under a unique `(user_id, post_id, kind)` key. Only a state transition emits a count delta. Reposts and replies create posts with references to the original; deleted or inaccessible originals remain subject to visibility checks.
 
-### DD1: Hybrid feed fan-out (push/pull)
+### Searching and viewing trends
 
-**Problem:** Serving 1M+ timeline reads per second while a single tweet from a 100M+ follower account generates 100M timeline inserts. Pushing to every follower overwhelms the write path; pulling every read from a social graph scan overwhelms the read path.
+Search queries select relevant time shards, retrieve candidate IDs and load currently visible posts. If an optional shard times out, the response marks results as partial; authorization checks still run for every returned post. Search freshness includes event lag, indexing and index refresh.
 
-**Approach 1: Pure push.** Every follower's timeline is pre-populated at write time. Reads are O(1) Redis ZREVRANGE — fast. But a Justin Bieber tweet fans out to 100M+ Redis writes; the POST takes minutes and the service DoSes itself. 95% of users have < 100 followers — the 0.001% with > 10M account for most write amplification.
+Trend workers normalize topics and aggregate regional time buckets. Results include their window end so users can distinguish a recent trend from an older cached response.
 
-**Approach 2: Pure pull.** No fan-out on write. Each timeline read scans the follow graph and merges recent tweets. The tweet POST is fast (single MySQL write). But a user following 1,000 accounts generates 1,000 range queries per refresh — the read path collapses.
+### Attaching media
 
-**Approach 3: Hybrid push/pull (chosen).** A fan-out service classifies each user at follow time. ≤ 1M followers ("regular") → tweets are pushed to all followers' timelines at write time. > 1M followers ("celebrity") → tweets are NOT pushed; followers read the celebrity's tweets from a separate ZSET and merge client-side. Each timeline read fetches the personal timeline + N celebrity ZSETs (usually < 20) and merges chronologically.
+The user uploads directly to a signed object-storage destination. Workers validate and scan the upload, create an initial playable rendition or image variant and mark it ready. A post references only media owned by its author and ready under the publication policy. Additional video renditions can follow asynchronously.
 
-> [!TIP]
-> **Key insight:** The celebrity threshold is an operational lever. Twitter ran it at 1M for years and moved it adaptively. The 2023 Fanout Service retirement pushed more accounts toward pull as Redis clusters grew to 10K+ instances, making per-followee ZSETs cheap enough for mid-tier accounts.
+Preparing the first usable variant before publication gives the first reader a predictable response; transcoding on that reader's request would add a substantial delay.
 
-**Edge cases:**
+## Deep dives
 
-- **New follower:** one-time backfill of last 200 celebrity tweets into the user's merged timeline
-- **Unfollow:** remove celebrity ZSET from the merge set on next read — lazy cleanup
-- **Deactivated account:** skip the celebrity's ZSET with a lazy tombstone check
+### How should we deliver timelines for popular authors?
 
-### DD2: Real-time search with Earlybird
+**Problem:** one post from an author with millions of followers can dominate the fan-out queue.
 
-**Problem:** Users expect a tweet to appear in search within seconds — not minutes. But building a real-time inverted index supporting 600M tweets/day at 20K writes/s and 10K+ queries/s on constrained hardware is the core tension.
+- **Push on write:** prepare every follower's timeline. Reads are cheap, but unused timelines and popular authors consume write capacity.
+- **Pull on read:** merge all followed authors' histories when requested. Writes are cheap; users following many authors create expensive reads.
+- **Hybrid:** push for ordinary authors and active followers; merge high-fan-out authors at read time.
 
-**Approach 1: Batch indexing (MapReduce).** Tweets land in HDFS nightly, MapReduce builds an inverted index, replaces yesterday's. A 9 AM tweet doesn't appear until next morning — unacceptable for real-time.
+**Recommendation:** use hybrid delivery, choosing thresholds from measured fan-out cost and read latency rather than a fixed celebrity label. Split large follower lists into checkpointed jobs; writing the same post ID twice must preserve one timeline entry. Cache recent high-fan-out author lists and batch hydration.
 
-**Approach 2: Elasticsearch.** Every tweet indexed at write time. But ES at 20K writes/s + 10K queries/s needs a large cluster (Twitter had ~600 ES nodes in 2020 for secondary use cases). Each index write adds 100ms+ to the write path from segment merges, refresh intervals, and replication.
+A transition between push and pull can overlap safely when reads deduplicate by post ID. Monitor oldest pending fan-out event, writes/post, reconstruction load and P99 merge latency. Under overload, reduce backfill and precomputation for inactive users before delaying committed-post reads.
 
-**Approach 3: Earlybird — per-partition in-memory inverted index (chosen).** The corpus is partitioned across ~100 index nodes, each hosting ~2M tweets in memory. The index is a sparse forward index (tweet ID → terms + metadata) and an inverted index (term → sorted tweet IDs with skip pointers). A new tweet arrives via Kafka → the assigned partition appends the new ID to the posting list and updates the forward index in-place.
+**A hybrid timeline and its transition**
 
-Scoring: `score(doc) = TF-IDF × recency_boost × author_reputation`. Recency uses logarithmic decay: `1 / (1 + log(1 + hours_since_tweet))`. Concurrency uses read-copy-update with a per-partition write lock — reads proceed on a snapshot while the index updates.
+A post commit emits one event. The fan-out consumer pages through active followers for push-mode authors and inserts the post ID into their bounded candidate timelines. Pull-mode authors retain shared recent-post lists that feed reads merge with pushed IDs.
 
-> [!TIP]
-> **Key insight:** The real-time index isn't a batch pipeline — it's a streaming data structure treating every arriving tweet as a direct index mutation. The tweet_id serves as both storage key and sort dimension for posting lists, keeping the index append-friendly.
+```mermaid
+flowchart TB
+    P["Committed post"] --> F["Fan-out policy"]
+    F --> A["Push to active follower candidates"]
+    F --> B["Shared recent-author list"]
+    A --> M["Read-time merge and deduplication"]
+    B --> M
+    M --> V["Current visibility and ranking"]
+```
 
-**Edge cases:**
+A post from a high-degree author can generate millions of candidate writes; represent that work as checkpointed follower-range jobs and cap its queue share. Retry inserts are keyed by timeline/post ID.
 
-- **Fan-out query:** A query fans out to all 100 partitions; each returns top-N. The Search Service merges up to 10,000 candidates and returns top 20 — milliseconds because each partition pre-sorts
-- **Hot keyword:** A term appears in 1M tweets within an hour — posting lists stay sorted by ID with compressed blocks and skip pointers for fast OR queries
-- **Delete:** A tombstone list is applied lazily before returning results; tweets stay in posting lists but are filtered from responses
-- **Index corruption:** Rebuild from a Manhattan KV checkpoint + Kafka log replay (~5 minutes per partition)
+When policy switches an author from push to pull, record a cutover watermark. During overlap, the read merge checks both sources and deduplicates. End overlap only after old fan-out work and the recent-author source cover the transition. The threshold depends on actual active followers and posting/read rates, not follower count alone.
 
-## 7. References
+### How do posts become searchable quickly?
 
-1. [Raffi Krikorian — Timelines at Scale (QCon 2012)](https://www.infoq.com/presentations/Twitter-Timeline-Scalability/)
-1. [Earlybird — Real-Time Search at Twitter (ICDE 2012)](https://ieeexplore.ieee.org/document/6228482)
-1. [twitter/the-algorithm — Open-source recommendation algorithm (2023)](https://github.com/twitter/the-algorithm)
-1. [xai-org/x-algorithm — X's open recommendation pipeline (2026)](https://github.com/xai-org/x-algorithm)
-1. [HighScalability — Twitter Architecture 2020](https://highscalability.com/twitter-architecture-2020/)
-1. [Twitter Engineering Blog — Fan-out Service Retirement (2023)](https://blog.twitter.com/engineering/en_us/topics/insights/2023/fanout-service-retirement)
+**Problem:** new posts arrive continuously while queries compete with indexing and segment merges.
+
+- **Batch rebuild:** operationally simple, but freshness follows the rebuild interval.
+- **Lucene-based incremental indexing:** configurable refreshes, replication and mature text-query support.
+- **Custom real-time index:** more control over recency and memory layout, with greater engineering and recovery cost.
+
+**Recommendation:** use incremental Elasticsearch indexing with a measured refresh and indexing budget. [Elastic's near-real-time search documentation](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search) explains how refresh exposes new segments. Keep recent time partitions hot and route older queries explicitly. Twitter's [Earlybird paper](https://ieeexplore.ieee.org/document/6228426) is a useful specialized alternative, not a capacity guarantee for this deployment.
+
+Use post ID and version for idempotent index updates. Rebuild a failed shard from a snapshot plus event offsets, and replay deletions as well as creates. Observe indexing lag, shard timeouts, merge pressure and partial-result rate.
+
+**Index progress includes refresh**
+
+The post outbox emits ID, content version, creation/deletion state and event sequence. An indexer writes it with an external version condition, so a delayed update cannot replace a later delete. A successful index write is not yet search visibility; refresh makes the new segment queryable.
+
+```text
+Post commit → event delivery → index write → refresh → searchable
+```
+
+Measure each stage. Choose refresh frequency under combined write, search and segment-merge load; more frequent refresh can increase overhead. Queries default to recent time partitions, expanding only for the requested history.
+
+A failed shard loads a snapshot and replays events after its checkpoint, including tombstones. Publish the rebuilt generation before routing reads to it. Track searchable watermark per shard so a response can disclose lag/partial coverage instead of treating a healthy HTTP response as proof of complete fresh search.
+
+### How do we keep IDs unique and pagination stable?
+
+**Problem:** independent write shards need unique IDs, while timeline pages need deterministic ordering.
+
+- **Database sequences:** straightforward within a shard, with coordinated ranges across shards.
+- **UUIDs:** decentralized uniqueness; time-ordered variants improve locality.
+- **Snowflake-style IDs:** compact timestamp, worker and sequence fields, with worker ownership and clock constraints.
+
+**Recommendation:** use a Snowflake-style generator with uniquely leased worker IDs, fencing on reassignment and a defined response to clock rollback. Stop that worker's issuance while its clock is behind the last issued timestamp; serve writes through healthy workers.
+
+Timestamp-based IDs do not establish a global causal order. Store the post timestamp separately and use a stable tie-breaker in pagination. The [archived Snowflake repository](https://github.com/twitter-archive/snowflake) provides historical context; generation rate and worker count must be sized for this service.
+
+**Worker ownership and cursor order**
+
+Lease each generator's worker ID with a fencing epoch. The generator persists/retains its last issued timestamp and advances a local sequence within that timestamp. On sequence exhaustion it waits for the next allowed tick; on backward time it pauses issuance under the defined policy.
+
+A partitioned controller must not assign the same worker ID concurrently. Expiry alone is insufficient if a paused worker can resume issuing IDs; it checks the fenced ownership epoch before continued issuance.
+
+```text
+ID uniqueness: timestamp + exclusively owned worker ID + sequence
+Page order: stored publication timestamp + post ID tie-breaker
+```
+
+A cursor records the last ordering tuple and feed snapshot/session, not just a timestamp. Equal timestamps then paginate deterministically. Edits and deletions may change visibility, so every page still filters current state. A time-shaped ID helps locality but does not prove that two cross-shard actions occurred in causal order.
+
+### How should trending topics be counted?
+
+**Problem:** exact counters for every regional topic can consume substantial memory, while repeated posts can distort the ranking.
+
+- **Exact keyed counters:** clear semantics; memory grows with active topic cardinality.
+- **Count-Min sketches:** small approximate counters, but overestimation and candidate discovery need separate handling.
+- **Sampled events:** lower cost, with sampling error and coverage tradeoffs.
+
+**Recommendation:** first use partitioned exact counters over five-minute buckets with a cardinality budget. Count at most one contribution per author/topic/bucket, then sum buckets for recent-activity ranking. That sum measures contributions, not distinct authors across the entire combined window.
+
+For regions exceeding the budget, a sketch can identify candidate frequencies alongside an explicit bounded candidate tracker. Validate the final candidates against retained events or exact candidate counters; a sketch alone cannot enumerate every topic or guarantee an exact top-K. Replayed events use stable IDs, expired buckets are removed, and bot policy is applied before contribution counting.
+
+**Count a topic contribution once**
+
+The stream normalizes the hashtag, applies eligibility/abuse policy and maps an event into an event-time bucket. A durable contribution key `(region, topic, author, bucket)` admits one counted contribution, even if the same author posts repeatedly or an event is retried.
+
+Sum bucket counts for a rolling contribution total. If one author appears in two buckets, they contribute twice to that sum; exact distinct authors across the window require unioning identities or a suitable distinct-count representation.
+
+```text
+Post → normalized eligible topics → deduplicated author/bucket contributions
+     → per-topic bucket counts → window sum → regional ranking
+```
+
+For a popular topic, aggregate salted partials before updating its final owner. Expiration subtracts or drops the oldest bucket under the same replay-safe checkpoint. A sketch supplies frequency estimates only for known queried candidates; keep a bounded candidate tracker and measure its recall against exact retained events.
+
+### How do counts and deletions survive retries?
+
+**Problem:** an event may be delivered more than once, and cached posts may outlive a deletion.
+
+- **Direct cache increments:** fast, but duplicate delivery inflates counts.
+- **Transactional state plus derived aggregates:** more durable work, with rebuildable display values.
+- **Recount on every read:** accurate to its snapshot, but expensive for popular posts.
+
+**Recommendation:** persist engagement state, emit transition events and have consumers deduplicate event IDs before applying deltas. Reconcile cached counts against durable state and return a version or update time when freshness matters.
+
+Deletion increments the post version and emits a tombstone. Serving checks the authoritative deletion/visibility state before returning content; caches and search consume that versioned change. Track purge lag and replay retention, and rebuild derived views when event gaps exceed the supported replay window.
+
+**An engagement transition, not a repeated increment**
+
+A like request creates the unique user/post relationship transactionally. Only a real state change emits a `liked` event. Retrying the request returns the same relationship and emits no additional logical transition.
+
+A consumer records event identity/version with the resulting aggregate update or derives absolute versioned counts from retained relationship state. A blind repeated increment would double-count at-least-once delivery.
+
+Deletion commits a higher post version and a tombstone. Search, caches and timeline hydration reject older visible versions. Rebuilds carry the deletion state through the replay horizon; a fresh cache filled from an old snapshot must still apply current authority checks.
+
+Expose count age when relevant and reconcile derived counts periodically. Count cache loss reduces display freshness, whereas post/relationship authority remains durable.

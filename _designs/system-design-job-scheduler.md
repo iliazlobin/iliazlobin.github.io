@@ -4,364 +4,261 @@ title: "SD: Job Scheduler"
 category: system-design
 date: 2026-06-29
 tags: [Distributed-Systems, Interview-Prep, Scheduling]
-description: "A job scheduler accepts one-shot and scheduled job submissions, executes them at the specified time, retries on failure, and surfaces execution history. Users submit, cancel, and monitor jobs through an API with no infrastructure management."
 thumbnail: /images/posts/2026-06-29-system-design-job-scheduler.svg
 redirect_from:
   - /2026/06/29/system-design-job-scheduler.html
-mvp_repo: https://github.com/iliazlobin/sd-job-scheduler-backend-mvp
+last_modified_at: 2026-10-06
+description: "Design of a job scheduler that accepts work for a future time, executes it and records each attempt."
+notion_source: https://app.notion.com/p/390d865005a881d6bd39e10b3c575fed
 ---
 
-A job scheduler accepts one-shot and scheduled job submissions, executes them at the specified time, retries on failure, and surfaces execution history. Users submit, cancel, and monitor jobs through an API with no infrastructure management.
+Design of a job scheduler that accepts work for a future time, executes it and records each attempt.
 
 <!--more-->
 
-## 1. Problem
+## Problem
 
-A job scheduler accepts one-shot and scheduled job submissions, executes them at the specified time, retries on failure, and surfaces execution history. Users submit, cancel, and monitor jobs through an API with no infrastructure management. The system must handle ~10K jobs/s sustained with sub-2s scheduling precision and 30-day history retention — 864M jobs/day generating ~13 TB of state.
+A service may need to send a reminder tomorrow or process a report after a delay. The scheduler stores that request durably and makes it eligible for execution when its scheduled time arrives.
 
-```mermaid
-graph LR
-    Client["Client"]
-    Gateway["API Gateway"]
-    Scheduler["Scheduler"]
-    Workers["Worker Pool"]
-    DB[("Primary Store")]
+Workers can fail during execution, and clients can retry submissions after losing a response. The design handles both cases through durable job state, retry-safe submission and explicit ownership of each execution attempt.
 
-    Client --> Gateway
-    Gateway --> Scheduler
-    Scheduler --> DB
-    Scheduler --> Workers
-    Workers --> DB
+## Requirements
 
-    classDef edge fill:#fff3bf,stroke:#f08c00,color:#1a1a1a;
-    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
-    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
-    class Client,Gateway,Scheduler,Workers svc;
-    class DB store;
-```
+### Functional requirements
 
-## 2. Requirements
+- **Schedule a job:** submit a registered task type, payload and execution time.
+- **Cancel pending work:** cancel a job before a worker claims it.
+- **Execute and retry:** run eligible jobs and retry transient failures within configured limits.
+- **Inspect progress:** list jobs and read their status, attempt history and results.
 
-**Functional**
+Recurring schedules, task dependencies and preemption are outside this design.
 
-- FR1: Schedule a job to run at a specified time.
-- FR2: Cancel a scheduled job before execution.
-- FR3: Execute jobs reliably; retry on failure.
-- FR4: List jobs filtered by status and time range.
-- FR5: Retrieve execution history for any job.
+### Non-functional requirements
 
-**Non-functional**
+Design targets:
 
-- NFR1: 99.9% availability with PostgreSQL HA.
-- NFR2: Submission latency under 200 ms p99.
-- NFR3: Once acknowledged, a job is never lost.
-- NFR4: Failed jobs retained for operator review.
+- **Throughput:** 10K submissions/s and 10K starts/s, with separate capacity for retries.
+- **Scheduling delay:** p95 below two seconds from the scheduled time to execution start under the admitted workload.
+- **Availability:** 99.9% for submission and status APIs.
+- **Durability:** acknowledged jobs survive a worker failure and a database-node failure within the configured replication model.
+- **Execution:** at-least-once attempts; task handlers support idempotent external effects.
+- **Isolation:** tenant quotas, bounded task runtimes and authenticated access to jobs.
 
-*Out of scope: recurring cron schedules, workflow DAGs, multi-region disaster recovery, priority queues with preemption, sub-second precision guarantees.*
+## Back-of-the-envelope calculations
 
-## 3. Back of the envelope
+- **Daily volume:** 10K jobs/s × 86,400 ≈ 864M jobs/day.
+- **History:** 864M × 30 days × 500 bytes ≈ 13 TB before attempt records, indexes and replicas.
+- **Worker concurrency:** 10K starts/s × two seconds average runtime ≈ 20K active executions.
+- **Claiming:** batches of 100 require at least 100 successful claims/s at that load; polls and retries add overhead.
+- **Polling delay:** a one-second interval contributes roughly 0.5 seconds average waiting time before queueing and execution.
 
-- **Daily volume:** 10K jobs/s × 86.4K s ≈ 864M jobs/day → ~13 TB over 30-day retention; storage volume is the binding constraint.
-- **Per-shard throughput:** 10K/s ÷ 512 shards ≈ 20 jobs/s/shard → scheduling overhead is negligible at ~5 ms per claim query.
-- **Precision:** Sub-2s scheduling target → 1s poll cycle gives ~1s average latency; DB poll tail latency drives the P99 gap.
+Partition the working set and archive terminal jobs; the workload is a sharded-system target, rather than a measured single-PostgreSQL capacity.
 
-## 4. Entities
+## Core entities
 
-```
-Job {
-  job_id:           uuid      PK
-  status:           string    ← scheduled | running | completed | failed | cancelled
-  run_at:           timestamp
-  started_at:       timestamp?
-  completed_at:     timestamp?
-  payload:          jsonb
-  max_retries:      integer   ← default 3
-  retry_count:      integer   ← default 0
-  last_error:       string?
-  idempotency_key:  string    CK ← unique; client-supplied, blocks duplicate submission
-  created_at:       timestamp
+```protobuf
+message Job {
+  string job_id;
+  string tenant_id;
+  string task_type;
+  string payload_key;
+  Timestamp run_at;
+  string status; // Scheduled, running, completed, failed or cancelled.
+  int32 attempt_count;
+  int32 max_attempts;
+  string lease_token; // Identifies the current execution attempt.
+  Timestamp lease_expires_at;
+  string result_key;
 }
 
-JobRun {
-  run_id:           bigint    PK
-  job_id:           uuid      FK → Job.job_id
-  attempt:          integer
-  status:           string    ← started | completed | failed
-  worker_id:        string?
-  started_at:       timestamp
-  ended_at:         timestamp?
-  error:            jsonb?
+message JobAttempt {
+  string attempt_id;
+  string job_id;
+  string worker_id;
+  Timestamp started_at;
+  Timestamp finished_at;
+  string outcome;
+  string error_code;
+}
+
+message Submission {
+  string tenant_id;
+  string idempotency_key; // Unique together with tenant_id.
+  string request_hash;
+  string job_id;
 }
 ```
 
-### API
+The lease token changes for each attempt. Completion and heartbeat writes must match the current token.
 
-- `POST /jobs` — schedule a job; returns `job_id`
-- `GET /jobs/{id}` — job status and details
-- `DELETE /jobs/{id}` — cancel a scheduled job
-- `GET /jobs` — list jobs with status and time filters
-- `GET /jobs/{id}/history` — execution event log
+## API
 
-## 5. High-Level Design
+```yaml
+schedule:
+  method: POST
+  path: /jobs
+  headers: {Idempotency-Key: string}
+  body: {task_type: string, payload: object, run_at: timestamp, max_attempts: integer}
+  response: {job_id: string, status: scheduled}
+  errors: {409: key_reused_with_different_request, 429: tenant_limit}
 
-The scheduler is a single FastAPI service with three logical components sharing one PostgreSQL database.
+cancel:
+  method: POST
+  path: /jobs/{job_id}/cancel
+  response: {job_id: string, status: cancelled}
+  errors: {409: already_running_or_terminal}
+
+status:
+  method: GET
+  path: /jobs/{job_id}
+  response: {status: string, attempts: array, result_url: string}
+
+list:
+  method: GET
+  path: /jobs
+  query: {status: string, from: timestamp, to: timestamp, cursor: string}
+```
+
+The authenticated tenant scopes every request. Retrying an identical submission returns the existing job.
+
+## High-level design
+
+The API writes jobs to PostgreSQL. Pollers claim due jobs in short transactions and dispatch them to workers with available capacity. Heartbeats extend execution leases; recovery workers reschedule attempts whose leases expire.
 
 ```mermaid
-graph TB
-    subgraph Client
-        C["Client"]
-    end
-    subgraph Services
-        SH["Submission Handler<br/>POST /jobs"]
-        SC["Schedule Coordinator<br/>poller loop"]
-        ED["Execution Dispatcher<br/>invoke + record"]
-    end
-    subgraph Stores
-        PG[("PostgreSQL<br/>jobs + runs + leases")]
-    end
-
-    C -->|POST /jobs| SH
-    SH -->|INSERT| PG
-    SC -->|SELECT FOR UPDATE<br/>SKIP LOCKED| PG
-    SC -->|claim| ED
-    ED -->|UPDATE status| PG
-
-    classDef svc fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
-    classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
-    class C,SH,SC,ED svc;
-    class PG store;
+flowchart TB
+  U["User / calling service"] --> API["Job API"]
+  API --> DB[("Job shards")]
+  P["Due-job pollers"] -->|claim| DB
+  P --> W["Task workers"]
+  W -->|heartbeat / result| DB
+  W --> T["Registered task targets"]
+  W --> O[("Payload / result storage")]
+  R["Lease recovery"] --> DB
+  DB --> A["History archive"]
 ```
 
-#### FR1: Schedule a job
+## Storage
 
-- **Components:** Client → API Gateway → Submission Handler → PostgreSQL.
-- **Flow:**
-  1. Client sends `POST /jobs` with `{run_at, payload, idempotency_key}`.
-  1. Submission Handler validates `run_at` is in the future; rejects with 422 if missing or in the past.
-  1. Inserts row into `Job` table with `status = 'scheduled'`.
-  1. Returns `201` with `{job_id, status: 'scheduled'}`.
-- **Design consideration:** the `idempotency_key` column carries a `UNIQUE` constraint. A retried `POST` with the same key hits the constraint and returns `409`, preventing duplicate jobs. The application-level `SELECT`-before-`INSERT` provides a clear error message but the database constraint is the real guard against TOCTOU races.
+- **PostgreSQL shards:** Job and JobAttempt records, with a partial index on `(run_at, job_id)` for scheduled jobs and an index on lease expiry for running jobs. Tenant-scoped submission keys remain on the same shard as their jobs.
+- **Object storage:** large immutable payloads and results referenced by key; keep access tenant-scoped.
+- **History storage:** time-partitioned attempt records and terminal jobs, archived under a defined retention policy.
+- **Redis, if needed:** rate-limit counters and cached status responses. PostgreSQL remains the authority for execution state.
 
-```sql
-INSERT INTO job (job_id, status, run_at, payload, idempotency_key, max_retries, created_at)
-VALUES ($1, 'scheduled', $2, $3, $4, 3, now())
-ON CONFLICT (idempotency_key) DO NOTHING
-RETURNING job_id, status;
-```
+The [PostgreSQL SKIP LOCKED mechanism](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE) allows competing pollers to claim different rows. SQS or another durable queue is an alternative execution transport, but scheduled state and queue publication would then need an outbox and duplicate-safe consumers.
 
-#### FR2: Cancel a job
+## From request to response
 
-- **Components:** Client → API Gateway → Submission Handler → PostgreSQL.
-- **Flow:**
-  1. Client sends `DELETE /jobs/{id}`.
-  1. Handler reads the job row. If `status` is not `'scheduled'`, returns `409` — too late to cancel.
-  1. Updates `status = 'cancelled'`, `completed_at = now()`.
-  1. Returns `200`.
-- **Design consideration:** cancellation is a simple status transition with no side effects — the poller skips non-`scheduled` rows. No need to dequeue from a message broker because there is no separate queue; the poller reads directly from the table.
+### Scheduling and cancellation
 
-#### FR3: Execute jobs reliably
+The API validates the task type, payload size, tenant quota and execution time. It writes the Job and Submission record in one transaction. A duplicate submission key returns the original job when the request hash matches; different input returns HTTP 409.
 
-- **Components:** Schedule Coordinator → Execution Dispatcher → PostgreSQL.
-- **Flow:**
-  1. Schedule Coordinator polls every 1s: `SELECT ... WHERE status = 'scheduled' AND run_at <= now() ORDER BY run_at LIMIT 50 FOR UPDATE SKIP LOCKED`.
-  1. For each claimed row, the Coordinator transitions `status = 'running'` and hands off to the Execution Dispatcher.
-  1. Dispatcher invokes the registered handler function for the job type.
-  1. On success: sets `status = 'completed'`, writes result to `payload.result`.
-  1. On failure with retries remaining: increments `retry_count`, computes backoff `run_at`, resets `status = 'scheduled'`, writes `last_error`.
-  1. On failure with retries exhausted: sets `status = 'failed'`.
-- **Design consideration:** the `FOR UPDATE SKIP LOCKED` query is the concurrency primitive. Multiple replicas polling the same table skip rows already locked by another replica — no external lock service, no duplicate execution. A crashed worker that claimed but never executed leaves a row stuck at `running`. A secondary reaper scans for rows with `status = 'running'` and `started_at < now() - 5 min`, resetting them to `scheduled`.
+Cancellation uses a conditional update from scheduled to cancelled. A worker claim competes with that update in the database: whichever commits first determines whether the job can still be cancelled.
+
+### Claiming and executing
+
+A poller selects due jobs using row locks, assigns each a fresh lease token and attempt record, and commits before dispatching. Workers invoke only registered task handlers and report heartbeats while running.
+
+A successful result transitions the job to completed only when its lease token still matches. A failed attempt either schedules a retry or marks the job failed after its attempt limit.
+
+Polling all rows would become expensive as history grows. Partial indexes and archiving keep scans focused on due work; sharding and admission limits keep the execution backlog within worker capacity.
+
+## Deep dives
+
+### Claiming work across multiple pollers
+
+**Problem.** Concurrent pollers may find the same due job.
+
+**Options.** A single leader, a distributed lock per job, or transactional row claims. A leader simplifies ownership but adds failover coordination; individual distributed locks add another state system.
+
+**Recommendation.** Use short PostgreSQL transactions with SKIP LOCKED. Claim only as much work as available workers can accept.
 
 ```sql
-UPDATE job SET status = 'running', started_at = now()
-WHERE job_id IN (
-  SELECT job_id FROM job
+WITH due AS (
+  SELECT job_id
+  FROM jobs
   WHERE status = 'scheduled' AND run_at <= now()
-  ORDER BY run_at
-  LIMIT 50
+  ORDER BY run_at, job_id
   FOR UPDATE SKIP LOCKED
+  LIMIT 100
 )
-RETURNING *;
+UPDATE jobs AS j
+SET status = 'running',
+    lease_token = gen_random_uuid(),
+    lease_expires_at = now() + interval '30 seconds',
+    attempt_count = attempt_count + 1
+FROM due
+WHERE j.job_id = due.job_id
+RETURNING j.*;
 ```
 
-#### FR4: List jobs
+Insert attempt records in the same transaction. A crash before commit releases the locks; a crash after commit leaves a lease for recovery. Tune batch size using transaction duration, database contention and dispatch delay.
 
-- **Components:** Client → API Gateway → Submission Handler → PostgreSQL.
-- **Flow:**
-  1. Client sends `GET /jobs?status=scheduled&from=<ISO>&to=<ISO>&cursor=<id>`.
-  1. Handler builds a filtered query on the `Job` table, ordered by `created_at DESC`.
-  1. Returns paginated results with a `next_cursor` for the next page.
-  1. Invalid `status` values return `422`.
-- **Design consideration:** listing is a direct read on the `Job` table with no joins. An index on `(status, created_at)` covers the common filter shape. For high-throughput deployments, a read replica offloads listing queries from the write path.
+**Claim, dispatch and completion.** The claim transaction assigns a fresh lease token and creates the attempt record before dispatch. Once committed, the scheduler sends the job ID and token to a worker. The worker completes only through a conditional update matching that token, so an older attempt cannot overwrite its replacement.
 
-#### FR5: Retrieve execution history
-
-- **Components:** Client → API Gateway → Submission Handler → PostgreSQL.
-- **Flow:**
-  1. Client sends `GET /jobs/{id}/history`.
-  1. Handler queries `JobRun` rows for the given `job_id`, ordered by `attempt ASC`.
-  1. Returns the list: each entry has `attempt`, `status`, `started_at`, `ended_at`, `error`, `worker_id`.
-- **Design consideration:** `JobRun` is an append-only log per job — one row per execution attempt. The first attempt is `attempt = 0`; each retry increments by 1. This gives operators a complete audit trail: when each attempt started, which worker ran it, what error it hit, and whether it eventually succeeded.
-
-```sql
-SELECT attempt, status, worker_id, started_at, ended_at, error
-FROM job_run
-WHERE job_id = $1
-ORDER BY attempt;
+```mermaid
+flowchart TB
+  D["Due-job index"] --> C["Short claim transaction"]
+  C --> L["Attempt and lease committed"]
+  L --> W["Dispatch to worker"]
+  W --> H["Renew matching lease"]
+  W --> F["Conditional completion"]
+  L --> E["Expiry recovery"]
+  E --> C
 ```
 
-## 6. Deep dives
+If dispatch fails after claim, the lease eventually expires and recovery requeues the job. This adds delay but preserves discoverability. Keep the claim batch no larger than available dispatch capacity: preclaiming thousands of jobs makes them appear running while they wait locally. Due-job scans and expiry scans use separate indexes and bounded pages. Under many tenants, per-tenant quotas prevent one large due backlog from consuming every claim.
 
-### DD1: Job polling at scale
+### Preventing duplicate submissions
 
-**Problem.** Multiple scheduler replicas poll the same table for due jobs. Without coordination, every replica picks up the same batch, wastes work on duplicate claims, and risks double-execution. The coordination primitive must be fast, PostgreSQL-native, and degrade gracefully under replica churn.
+**Problem.** The job may be stored successfully even when the client receives a timeout.
 
-**Approach 1: Leader-elected polling**
+**Options.** Compare payloads, accept duplicates or require an idempotency key. Payload equality alone can merge intentional repeated work.
 
-A single leader replica does all polling and dispatches work to followers. Leader election runs through a separate coordination service — etcd, ZooKeeper, or a PostgreSQL advisory lock.
+**Recommendation.** Enforce a unique `(tenant_id, idempotency_key)` constraint and store a hash of the validated request. Concurrent submissions converge on one job; retries read that record and compare its hash.
 
-- **Pro:** Zero contention on the jobs table — only one poller.
-- **Con:** Leader is a SPOF with failover latency. Leader election adds infrastructure and operational complexity. Followers are idle outside failover windows, wasting capacity.
+Retain the mapping through the promised retry window. Document what happens after that window and keep keys tenant-scoped so a collision cannot expose another tenant's job.
 
-**Approach 2:** **`FOR UPDATE SKIP LOCKED`**
+**Submission race.** Two requests with the same tenant/key arrive together. Both validate and hash the canonical input. One inserts the job and idempotency mapping; the other's insert conflicts and reads the winner. Matching input returns the original job ID; changed input returns a conflict.
 
-Every replica runs an identical poller loop. The claim query atomically locks rows and skips those already locked by another replica:
+Do not use the payload hash as the job identity. A user can intentionally run identical work twice under different keys. Scope keys to the tenant and operation, and normalize only fields whose semantic equivalence is defined—silently dropping a parameter while hashing can merge different requests.
 
-```sql
-UPDATE job SET status = 'running', started_at = now()
-WHERE job_id IN (
-  SELECT job_id FROM job
-  WHERE status = 'scheduled' AND run_at <= now()
-  ORDER BY run_at
-  LIMIT 50
-  FOR UPDATE SKIP LOCKED
-)
-RETURNING *;
-```
+Store the job and mapping in the same shard transaction. After an ambiguous response, the client queries or retries that same key. If the promised retry window has expired, the API says that a new submission may create new work. Retaining terminal job history does not automatically retain a reusable idempotency contract forever.
 
-- **Pro:** No leader election, no external coordination service. PostgreSQL-native since 9.5. Replicas self-balance — each grabs an independent batch of up to 50 rows per tick. Adding or removing replicas requires zero reconfiguration.
-- **Con:** Poller overhead scales linearly with replica count — N replicas each issue one query per second. At 512 replicas, this is 512 queries/s, negligible against a 10K/s write throughput. `SKIP LOCKED` guarantees no duplicate claims but does not guarantee fairness — a fast replica may claim more rows per tick than a slow one.
+### Recovering from worker failures
 
-**Decision:** `FOR UPDATE SKIP LOCKED` with a 50-row batch limit per tick and a 1s poll interval. The batch size caps lock-hold duration; the interval keeps poller queries at a fraction of total DB capacity.
+**Problem.** A worker may crash, lose connectivity or keep running after the scheduler has reassigned its job.
 
-**Rationale:** PostgreSQL row-level locking with `SKIP LOCKED` eliminates the need for a separate queue system. The job table doubles as the queue — no consistency gap between a queue and a state store, no dual-write atomicity problems. This pattern is proven at throughput well above 10K jobs/s on modern PostgreSQL instances.
+**Options.** A fixed execution timeout, renewable leases or a workflow engine with durable execution history. A fixed timeout is simpler for tightly bounded jobs but can reassign legitimate long-running work.
 
-**Edge cases:**
+**Recommendation.** Use renewable leases and a separate maximum runtime. A recovery transaction checks the expired token, records the attempt outcome, and reschedules the job or marks it failed. Stale workers cannot update the new attempt's state.
 
-- **Empty poll:** Replicas that find no unlocked rows return an empty result set and sleep until the next tick — no wasted work beyond the query itself.
-- **Replica crash mid-claim:** Rows locked by a crashed replica are released when PostgreSQL detects the connection drop. The next poll cycle picks them up.
-- **Batch sizing:** Too small (1 row/tick) under-utilizes the poll cycle; too large (1000 rows/tick) holds locks too long and starves other replicas. 50 is a balanced default for sub-200ms query times.
+A lease protects scheduler state; an external operation still needs an idempotency key based on the logical job and operation, rather than the attempt ID. After an ambiguous external timeout, query the target's operation status or retry with that same key. Track expired leases, rejected stale results and recovery delay.
 
-### DD2: Idempotent submission
+**Expired lease and stale worker.** Attempt A holds token T1 and renews every ten seconds. Its network fails; the 30-second lease expires. Recovery conditionally marks T1 expired and reschedules the job. Attempt B later receives T2. When A eventually reports success with T1, the scheduler rejects it rather than replacing B's state.
 
-**Problem.** A client's `POST /jobs` succeeds on the server but the response is lost to a network timeout. The client retries, creating a second identical job — causing duplicate execution at the scheduled time.
+The harder case is A having already called an external payment or email service. Use a stable logical operation ID, such as job ID plus operation name, across both attempts. Where supported, pass that identity to the external service and query its outcome after a timeout. Fencing only the scheduler database cannot retract an external side effect.
 
-**Approach 1: Client-supplied idempotency key with application-level check**
+Heartbeat and completion requests compare the exact token and use server-side time. A maximum runtime bounds repeatedly renewed but stuck jobs. Keep expired-attempt evidence so operators can distinguish a failed process, a scheduler reassignment and an external outcome still awaiting reconciliation.
 
-Before inserting, the handler queries for an existing row with the same `idempotency_key`. If found, returns the existing `job_id` as `200` instead of `201`.
+### Retrying without overloading dependencies
 
-- **Pro:** Simple to implement — a single `SELECT` before `INSERT`.
-- **Con:** TOCTOU race. Two concurrent `POST` requests with the same key both pass the `SELECT` check, both proceed to `INSERT`, and the second one either creates a duplicate or hits the constraint — the race window is the gap between the `SELECT` and the `INSERT`.
+**Problem.** An outage can make thousands of jobs retry together.
 
-**Approach 2: Database unique constraint as the guard**
+**Options.** Fixed delays, exponential backoff or exponential backoff with jitter. Fixed delays synchronize retries; plain exponential backoff can preserve that synchronization.
 
-The `idempotency_key` column carries a `UNIQUE` constraint. The handler does a `SELECT`-then-`INSERT`, but the constraint is the real defense — a concurrent duplicate insert is rejected by the database:
-
-```sql
-INSERT INTO job (job_id, status, run_at, payload, idempotency_key, max_retries, created_at)
-VALUES ($1, 'scheduled', $2, $3, $4, 3, now())
-ON CONFLICT (idempotency_key) DO NOTHING
-RETURNING job_id, status;
-```
-
-- **Pro:** No TOCTOU race — the database enforces uniqueness atomically at commit time. `ON CONFLICT DO NOTHING` returns zero rows for a duplicate, so the handler can detect the conflict and re-query for the existing row.
-- **Con:** Requires the client to generate and store a unique key per submission. A client that reuses the same key for different jobs will see its second submission silently absorbed — this is a client bug, not a scheduler defect.
-
-**Decision:** `UNIQUE(idempotency_key)` with `ON CONFLICT DO NOTHING`. The application-level `SELECT` before `INSERT` is an optimization to return a clear `409` with the existing `job_id` in the response body; the constraint is the correctness guard.
-
-**Rationale:** This is the same pattern used by payment APIs — the idempotency key is the client's contract with the server. The database constraint is the only primitive that closes the TOCTOU window without distributed locking.
-
-**Edge cases:**
-
-- **Key collision across clients:** Two clients accidentally generate the same key. The second submission is rejected and the client receives the first client's `job_id` — the key should be a UUIDv4 or a hash of `(client_id, request_id)` to make collision astronomically unlikely.
-- **Idempotency key TTL:** Keys accumulate indefinitely if never pruned. A 30-day TTL matching the retention window — expired keys are irrelevant because the job itself is gone.
-
-### DD3: Stale-worker recovery
-
-**Problem.** A worker claims a job (sets `status = 'running'`, `started_at = now()`) but crashes before executing it. The job stays `running` forever — a zombie blocking its slot indefinitely.
-
-**Approach 1: Heartbeat with lease expiration**
-
-Every worker heartbeats on a `ScheduleLease` row for each claimed job. A reaper scans for leases whose `expires_at < now()` and resets the associated jobs to `scheduled`.
-
-- **Pro:** Fine-grained — each job has its own lease. Workers can heartbeat at different intervals for different job types.
-- **Con:** Requires a `ScheduleLease` table and per-job heartbeat writes, doubling the write volume on the claim path. If a worker is slow but alive, a misconfigured lease TTL can trigger false-positive resets.
-
-**Approach 2: Timeout-based reaper**
-
-No per-job lease. A secondary reaper scans for `status = 'running'` rows where `started_at < now() - execution_timeout` and resets them:
-
-```sql
-UPDATE job SET status = 'scheduled', retry_count = retry_count + 1, last_error = 'stale worker timeout'
-WHERE status = 'running' AND started_at < now() - interval '5 minutes'
-RETURNING *;
-```
-
-- **Pro:** Zero additional writes on the claim path. One reaper query per cycle covers all stale jobs. The timeout is a global constant — easy to tune.
-- **Con:** Coarse granularity. A job that completed in 2 minutes but the worker crashed before writing the result waits the full 5-minute timeout before re-scheduling. A job that legitimately runs for 6 minutes gets falsely reset unless the timeout exceeds the max expected execution time.
-
-**Decision:** Timeout-based reaper scanning every 30s with a 5-minute execution timeout. The timeout is generous enough to cover realistic job durations and short enough that a crash is detected within a few poll cycles.
-
-**Rationale:** The simplicity of a single reaper query outweighs the precision of per-job leases for this scale. At 10K jobs/s, a lease-based approach adds 10K writes/s for heartbeats — nearly doubling the write path. The 5-minute re-scheduling delay after a crash is acceptable because (a) worker crashes are rare, and (b) jobs that miss their `run_at` by 5 minutes are re-scheduled and still execute.
-
-**Edge cases:**
-
-- **Long-running jobs:** A job that legitimately needs 7 minutes gets falsely reaped at the 5-minute mark. The counter: `max_execution_seconds` on the job config overrides the global timeout per-job.
-- **Reaper replica coordination:** The reaper uses `FOR UPDATE SKIP LOCKED` like the poller — multiple replicas' reapers claim non-overlapping slices of stale rows.
-
-### DD4: Exponential backoff for retries
-
-**Problem.** A downstream service outage causes all jobs that depend on it to fail simultaneously. Retrying them all at fixed intervals reproduces the same failure at the same time — a retry storm that extends the outage.
-
-**Approach 1: Fixed-interval retry**
-
-On failure, re-schedule the job `run_at = now() + fixed_delay`. Every job retries at the same cadence.
-
-- **Pro:** Simplest possible retry logic. Predictable timing.
-- **Con:** A downstream outage at T+0 means every affected job retries at T+fixed_delay, fails again, retries at T+2*fixed_delay — the retry storm never dissipates. The downstream sees correlated spikes at every retry interval.
-
-**Approach 2: Exponential backoff with jitter**
-
-Each retry multiplies the wait by a base, capped at a maximum. A random jitter of ±10% staggers jobs so they spread across the retry window:
+**Recommendation.** Use capped backoff with full jitter, per-target concurrency limits and a retry budget, following the [AWS backoff-and-jitter guidance](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/).
 
 ```python
-def next_retry_at(retry_count: int, base_s: int = 2, max_s: int = 3600) -> datetime:
-    delay = min(base_s ** retry_count, max_s)
-    jitter = random.uniform(0.9, 1.1)
-    return datetime.utcnow() + timedelta(seconds=delay * jitter)
+def retry_delay(attempt, base_seconds=2, cap_seconds=300):
+    ceiling = min(cap_seconds, base_seconds * 2 ** (attempt - 1))
+    return random.uniform(0, ceiling)
 ```
 
-- **Pro:** Retry storms dissipate naturally — after the third retry, jobs that started together are spread across an ~8s window. The jitter ensures no two jobs land on the same second. The 1-hour cap prevents unbounded growth.
-- **Con:** Cumulative recovery time grows exponentially. A job that exhausts 3 retries waits ~14s total before failing permanently. A downstream recovering in 10s still sees failures from jobs retrying at 16s — wasteful but harmless.
+Retry transient failures within the job's deadline; invalid payloads fail immediately. Persist the chosen next execution time. Track queue age by tenant and target, and reduce admission when healthy work is waiting behind retries.
 
-**Decision:** Exponential backoff with base=2s, max=3600s, ±10% jitter, cap of 3 retries by default.
+**Retry scheduling and isolation.** For attempt four with a two-second base, the full-jitter ceiling is 16 seconds; persist one sampled next-run time rather than resampling on every scheduler scan. Respect a dependency's Retry-After and the job's overall deadline.
 
-**Rationale:** The backoff gives transient failures time to recover. The jitter breaks correlation between jobs that failed together. The cap prevents a single stuck job from consuming poller attention for hours — after 3 retries (~14s cumulative), the job is marked `failed` and operators triage it directly.
+Separate first attempts from retries using quotas or fair queues. During a provider outage, a circuit breaker stops most calls and allows a small probe budget; queued work remains durable. Per-target concurrency limits bound the number of blocked workers, while per-tenant admission prevents a retrying tenant from starving others.
 
-**Edge cases:**
-
-- **Max retries exhausted:** The job lands in `failed` state with `last_error` set. An operator can manually re-schedule it with `POST /jobs` or reset `retry_count` and `status = 'scheduled'` via a database command.
-- **Clock skew during DST transitions:** `run_at` is stored as a UTC timestamp. The backoff computation uses `utcnow()`. DST transitions have no effect on retry timing.
-
-> [!TIP]
-> **Key insight:** the exponential backoff + jitter pattern is load-bearing not for correctness but for system stability. Without jitter, N jobs failing together retry together indefinitely — the downstream sees a spike at every retry interval. With jitter, the spike flattens into a continuous low-level retry rate within 2–3 cycles.
-
-## 7. References
-
-1. [PostgreSQL Documentation — SELECT FOR UPDATE / SKIP LOCKED](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE)
-1. [PostgreSQL Documentation — Advisory Locks](https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS)
-1. [PostgreSQL Documentation — INSERT ON CONFLICT](https://www.postgresql.org/docs/current/sql-insert.html#SQL-ON-CONFLICT)
-1. [Stripe API Reference — Idempotent Requests](https://stripe.com/docs/api/idempotent_requests)
-1. [AWS Architecture Blog — Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/)
-1. [Google SRE Book — Handling Overload](https://sre.google/sre-book/handling-overload/)
-1. [PostgreSQL Documentation — MVCC and Row-Level Locking](https://www.postgresql.org/docs/current/mvcc.html)
-1. [Shopify Engineering — Resilient Job Scheduling at Scale](https://shopify.engineering/building-resilient-job-scheduler)
+Classify errors before retrying. A temporary transport failure is different from invalid input, permission denial or a confirmed business rejection. When the deadline or attempt budget is exhausted, store the terminal reason and any unresolved external operation. Monitor queue age and successful completion rate by class; a falling queue length caused by permanent failures is not recovery.
