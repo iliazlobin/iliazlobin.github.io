@@ -189,7 +189,7 @@ sequenceDiagram
   end
   rect rgb(232, 240, 254)
     Q->>W: Compatible batch with pinned tokenizer
-    W->>W: Encode source; decode target tokens
+    W->>W: Encode source, decode target tokens
     W-->>A: Completed text or ordered deltas
     A-->>U: Translation and bundle ID
   end

@@ -197,7 +197,7 @@ sequenceDiagram
     S-->>U: Negotiated transport information
   end
   rect rgb(232, 240, 254)
-    U->>F: Establish secure media transport; publish layers
+    U->>F: Establish secure media transport, publish layers
     R->>F: Subscribe to selected tracks
     F-->>R: Forward selected encoded layers
     R-->>F: Loss and bitrate feedback

@@ -193,7 +193,7 @@ sequenceDiagram
   end
   rect rgb(230, 244, 234)
     L-->>W: Replay events
-    W->>W: Validate counting policy; deduplicate; aggregate
+    W->>W: Validate counting policy, deduplicate, aggregate
     W->>S: Publish complete versioned generation
   end
   rect rgb(232, 240, 254)

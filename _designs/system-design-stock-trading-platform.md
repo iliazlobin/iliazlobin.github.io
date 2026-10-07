@@ -222,7 +222,7 @@ sequenceDiagram
   participant V as Venue
   rect rgb(254, 247, 224)
     U->>A: Order and idempotency key
-    A->>D: Check resources; reserve and persist order/command
+    A->>D: Check resources, reserve and persist order/command
     D-->>A: Committed local acceptance
     A-->>U: Order ID and accepted state
   end
@@ -232,7 +232,7 @@ sequenceDiagram
     V-->>R: Acceptance or execution evidence
   end
   rect rgb(230, 244, 234)
-    R->>D: Deduplicate execution; apply ledger and position change
+    R->>D: Deduplicate execution, apply ledger and position change
     D-->>U: Versioned order status
   end
 

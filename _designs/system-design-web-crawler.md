@@ -192,7 +192,7 @@ sequenceDiagram
   rect rgb(232, 240, 254)
     W->>P: Bounded permitted fetch
     P-->>W: Response
-    W->>W: Parse without scripts; deduplicate content
+    W->>W: Parse without scripts, deduplicate content
   end
   rect rgb(230, 244, 234)
     W->>D: Commit output shard and manifest

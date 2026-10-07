@@ -197,11 +197,11 @@ sequenceDiagram
   end
   rect rgb(230, 244, 234)
     D-->>W: Committed post event
-    W->>W: Push ordinary fan-out; update shared author lists
+    W->>W: Push ordinary fan-out, update shared author lists
   end
   rect rgb(232, 240, 254)
     U->>T: Home page and cursor
-    T->>T: Merge prepared IDs; check current visibility
+    T->>T: Merge prepared IDs, check current visibility
     T-->>U: Hydrated posts and stable cursor
   end
 

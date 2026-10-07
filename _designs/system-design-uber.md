@@ -219,13 +219,13 @@ sequenceDiagram
     D-->>M: Dispatch committed request
   end
   rect rgb(232, 240, 254)
-    M->>M: Gather nearby drivers; rank pickup estimates
+    M->>M: Gather nearby drivers, rank pickup estimates
     M->>D: Reserve waiting trip and available driver
     D-->>A: Versioned offer notification
     A->>T: Accept exact offer before deadline
   end
   rect rgb(254, 247, 224)
-    T->>D: Verify offer ownership; commit assignment
+    T->>D: Verify offer ownership, commit assignment
     D-->>T: Assigned trip version
     T-->>U: Driver assignment and tracking state
   end

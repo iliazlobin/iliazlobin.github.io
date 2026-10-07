@@ -191,7 +191,7 @@ sequenceDiagram
     A->>R: Action ID and action context
     R->>F: Read bounded request-time features
     F-->>R: Features, age and missingness
-    R->>M: Run fast score; escalate uncertain band
+    R->>M: Run fast score, escalate uncertain band
     M-->>R: Calibrated risk evidence
   end
   rect rgb(254, 247, 224)

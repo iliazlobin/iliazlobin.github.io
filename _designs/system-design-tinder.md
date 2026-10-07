@@ -212,7 +212,7 @@ sequenceDiagram
   participant E as Event consumers
   rect rgb(254, 247, 224)
     U->>A: Like target and command ID
-    A->>D: Lock canonical pair; write actor decision
+    A->>D: Lock canonical pair, write actor decision
     D->>D: If mutually eligible likes, create one match and outbox
     D-->>A: Committed decision and optional match
     A-->>U: Recorded result

@@ -195,7 +195,7 @@ sequenceDiagram
   participant E as Enforcement consumers
   rect rgb(232, 240, 254)
     P->>M: Assess content version
-    M->>S: Screen; score uncertain cases
+    M->>S: Screen, score uncertain cases
     S-->>M: Scores and check completeness
   end
   rect rgb(254, 247, 224)

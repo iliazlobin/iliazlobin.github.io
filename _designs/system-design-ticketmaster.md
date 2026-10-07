@@ -217,7 +217,7 @@ sequenceDiagram
   participant P as Payment provider
   rect rgb(254, 247, 224)
     U->>A: Admission grant, seat set and request key
-    A->>D: Lock seats; atomically commit complete hold
+    A->>D: Lock seats, atomically commit complete hold
     D-->>A: Reservation and expiry
     A-->>U: Held seats
   end
@@ -227,7 +227,7 @@ sequenceDiagram
     D-->>W: Committed workflow command
     W->>P: Authorize with stable operation key
     P-->>W: Authorization evidence
-    W->>D: Verify ownership; persist pending capture assignment
+    W->>D: Verify ownership, persist pending capture assignment
     W->>P: Capture authorization
     P-->>W: Confirmed capture
     W->>D: Confirm order and ticket issuance

@@ -188,7 +188,7 @@ sequenceDiagram
     P->>A: Transaction and idempotency key
     A->>F: Read request-time feature snapshot
     F-->>A: Features with age and availability
-    A->>M: Fast scoring; full scoring when required
+    A->>M: Fast scoring, full scoring when required
     M-->>A: Risk score and model version
   end
   rect rgb(254, 247, 224)
