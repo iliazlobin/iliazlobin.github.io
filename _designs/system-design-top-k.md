@@ -218,7 +218,6 @@ Updating a database counter for every event would amplify writes and create hot 
 - **Salted lanes with local top-K union only:** Split hot items across lanes and union each lane's strongest IDs. Work is balanced, but an item strong globally can remain below every local cutoff, so a naive union can miss the true heavy hitter.
 
 - **Salted partial aggregation with mergeable candidate summaries — recommended:** Distribute hot-item contributions, retain bounded candidate evidence and combine lane estimates at publication. Ingest balance improves; candidate coverage and approximation error need explicit bounds and reconciliation.
-**Options.** Video-ID ownership, randomly salted partial counters or hierarchical aggregation.
 **Recommendation.** Use salted partial aggregation for hot traffic, then combine counts/summaries at publication time. Stable event IDs retain retry deduplication even when routing changes. Viral traffic needs more than one worker without losing global ranking candidates. We accept summary merge work and approximate discovery limits, preserving the lane example below to show why a plain local-top-K union is insufficient.
 Exact per-video ownership permits merging local top-K lists into an exact global list. Salted partitions split a video's count, so local top-K unions alone are insufficient: a globally popular item may be absent locally. Approximate candidate summaries need explicit coverage/error accounting and evaluation.
 **Why partial rankings can miss the winner.** For K=1, imagine two salted lanes. Lane one has A=12 and H=11; lane two has B=12 and H=11. Their local winners are A and B, but H has 22 total views and is the global winner.
@@ -241,7 +240,6 @@ The approximate path retains broader heavy-hitter candidates with stated error/c
 - **Coarse fixed buckets:** Store aggregates for a few larger intervals. State is smaller, but a sliding boundary can include or exclude up to one bucket of contributions.
 
 - **Tiered time buckets — recommended:** Keep fine summaries for recent windows and coarser ones for longer periods. Work and retention are bounded; declared boundary precision and late-event correction require separate handling.
-**Options.** Exact per-minute counts, incremental exact totals with retained bucket deltas, or bounded bucket summaries.
 **Recommendation.** Keep minute-level summaries for the hour and coarser summaries for longer windows. Combine the buckets for each publication; retain finer boundary buckets when the promised precision requires them. Top-K requests repeat standard windows, so minute-level recent summaries can amortize event processing. We accept bucket-boundary approximation where the contract permits it and retain finer boundary state when exactness is required.
 
 ```text
@@ -265,7 +263,6 @@ Watermarks determine when the system considers a bucket complete under its laten
 - **Count-Min Sketch alone:** Update fixed-size hashed counters and query an item's estimated frequency. Memory is bounded, but collisions overestimate counts and the sketch does not enumerate candidate IDs.
 
 - **Space-Saving candidates with compatible Count-Min estimates — recommended:** Maintain candidate identities separately, then estimate their totals across mergeable bucket sketches. State stays bounded; discovery omissions and sketch error remain distinct limits and close ranks need exact reconciliation.
-**Options.** Exact counters, Count-Min Sketch with candidate tracking, or Space-Saving candidate summaries.
 **Recommendation.** Use Space-Saving for candidate identities and compatible Count-Min Sketches for estimating candidate totals. [Redis's Count-Min explanation](https://redis.io/blog/count-min-sketch-the-art-and-science-of-estimating-stuff/) describes collision-based count overestimation. The API needs item IDs as well as frequency estimates. We accept explicit approximation bounds and occasional exact checks, because a small count sketch alone cannot produce the ranking it promises.
 For nonnegative streams, choose sketch width and depth from the required additive error and failure probability. Space-Saving retains items above its documented frequency threshold; an untracked item may still have nonzero frequency.
 Merge sketches only with identical hashes and dimensions. Combine candidate summaries using an algorithm preserving error bounds; do not treat an ordinary heap union as a proof of top-K completeness. Near ties require wider candidate sets or exact recounts.
@@ -282,7 +279,6 @@ Publish approximate counts with the window/cutoff and error policy. If candidate
 - **Checkpoint aggregation only:** Recover worker state and source offsets consistently. Processing replay is controlled, but a partially written serving generation still needs independent publication protection.
 
 - **Checkpointed state with immutable generations — recommended:** Recover input positions with state, write absolute outputs under a generation ID and switch a pointer only after completeness checks. Reads are consistent; old generations and publication manifests add storage and cleanup work.
-**Options.** Increment Redis directly, replay from raw events, or checkpoint state and publish versioned results.
 **Recommendation.** Deduplicate logical view IDs, checkpoint aggregation state with source offsets, and write absolute versioned outputs. Atomically switch the serving pointer after the generation is complete. Retries and partition lag are normal at ingest volume. We accept a publication interval and generation-retention cost so queries receive a complete snapshot rather than a partly updated ranking.
 Restoring from a checkpoint replays only later events under the same deduplication contract. Missing dimensions or lagging partitions are reported explicitly. Track duplicate rate, watermark lag, checkpoint age, top-K recall and exact-versus-approximate count drift.
 **Checkpoint to serving generation.** A checkpoint contains bucket counters, candidate/deduplication state and source positions. Restoring it resumes the same logical aggregation; events replayed after the checkpoint are deduplicated by their stable view identity within the supported replay window.

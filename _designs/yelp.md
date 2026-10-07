@@ -240,7 +240,6 @@ The user uploads to a signed object-storage URL. A completion request verifies t
 - **Independent replica mutations:** Send changes directly to every query replica. Updates can appear quickly, but partial application and replay divergence make versions difficult to reconcile.
 
 - **Ordered primary builds with committed segment replication — recommended:** Apply versioned changes to the index builder and serve complete replicated generations. Query replicas share a recoverable state; indexing lag and segment-publication work remain explicit freshness costs.
-**Options.** Query PostgreSQL directly, refresh a search index periodically, or consume changes continuously. Direct queries simplify consistency; periodic refreshes provide a predictable but larger delay.
 **Recommendation.** Consume an ordered, replayable change stream and update Nrtsearch documents by business version. Publish completed segment generations to replicas; only advance the durable replay checkpoint after the corresponding index state is committed. A replica uses a complete generation while receiving the next one. Business metadata and reviewed contributions change continuously, while queries need consistent index generations. We accept near-real-time lag and current-field hydration rather than letting each replica independently interpret replayed changes.
 If a writer crashes, restore its durable index checkpoint and replay later changes. Track source-to-query visibility lag, replica generations and replay backlog. Critical detail fields can be rechecked in PostgreSQL while an index is catching up.
 **Index generation walkthrough.** A business update commits source version 42 and its outbox entry. The indexer builds document 42, rejecting a delayed version 41. It commits the corresponding Lucene segment state and replay checkpoint, then publishes the completed segment generation to query replicas.
@@ -273,8 +272,7 @@ Search retrieves candidates from the index, but time-sensitive fields such as to
 
 - **Rules-only screening:** Apply explicit text and account checks. Explanations are straightforward, but evolving coordination and nuanced policy violations can bypass fixed conditions.
 
-- **Separate authenticity and policy decisions — recommended:** Use evaluated signals for each question with human review for ambiguous or high-impact cases. Actions and labels remain interpretable; more decision state, reviewer criteria and operational queues are required.
-**Options.** Handwritten rules, supervised classifiers or a combined automated and human-review workflow. Rules are explainable but brittle; a model can use more signals but needs labelled data and error monitoring.
+- **Separate authenticity and policy decisions — recommended:** Use explicit rules and supervised models for each question, with human review for ambiguous or high-impact cases. Actions and labels remain interpretable; separately evaluated models, reviewer criteria and operational queues require more decision state.
 **Recommendation.** Use separate authenticity and content-policy decisions, with human review for ambiguous or high-impact cases. This distinction matches [Yelp's documented moderation process](https://www.yelp-support.com/article/How-we-moderate-content-at-Yelp?l=enUS). A rating contribution and visible text have different legitimacy requirements. We accept separately versioned judgments so later review can correct the affected contribution or policy action without conflating the two.
 Use versioned interaction and behavioural features, exclude advertising purchases from trust decisions, and record the reason and policy version. New-user status is a signal to evaluate, rather than an automatic rejection. Measure false positives, appeals and detection rates across cohorts; rate limits and coordinated-activity checks complement the models.
 **Two independent decisions.** A review's authenticity result estimates whether it reflects a genuine customer experience; its policy result checks whether its content is permitted. A genuine review containing prohibited personal information can fail policy. A politely written coordinated review can fail authenticity. Store both decisions and their evidence versions independently.
@@ -287,10 +285,11 @@ If a published five-star review becomes ineligible, remove its previous contribu
 
 - **Heavy model for every upload:** Run full image/OCR analysis consistently. Coverage is uniform, but cost and publication delay grow with all uploads.
 
+- **Manual inspection:** Have reviewers inspect every upload. Contextual judgment is available, but reviewer throughput, turnaround time and consistent policy application limit large-volume publication.
+
 - **File and hash checks only:** Validate formats and match known content. Work is cheap, but unfamiliar policy violations require semantic evidence.
 
 - **Bounded screening cascade — recommended:** Validate files, check duplicates and run a cheap screen before heavier image/text analysis or review. Expensive work is focused; early-exit mistakes cap recall and review capacity needs monitoring.
-**Options.** Manual inspection, one full classifier per image, or staged checks. A staged system can reserve expensive processing for cases requiring it, but an overly permissive first stage can miss harmful content.
 **Recommendation.** Run file validation and duplicate checks, followed by a lightweight risk model. Use image classification, OCR and text analysis where the initial signals require them, and route uncertain decisions to review. Photo publication is asynchronous and volume makes uniform heavy inference costly. We accept a tested cascade and pending-review states, measuring complete-pipeline quality rather than only the heavy model.
 
 ```mermaid
@@ -323,10 +322,11 @@ Persist the decision against the photo content version before publication. A rev
 
 - **Keyword/geo score only:** Order indexed matches with simple distance and rating features. Serving is fast, but synonyms and detailed intent are weakly represented.
 
+- **Gradient-boosted shortlist ranker:** Score a bounded candidate set with tabular query/business features. Batched CPU inference is practical and feature effects can be inspected, but feature quality and candidate recall limit relevance and complex semantic interactions need richer representations.
+
 - **Neural scoring of every business:** Evaluate rich query/business interactions across a broad set. Expressiveness increases, but feature and inference work can consume the search deadline.
 
 - **Indexed candidates with bounded learned ranking — recommended:** Retrieve text-and-geo candidates, batch features and score a measured shortlist, keeping ads separate. Relevance can improve within a budget; candidate omissions and biased impression labels still need evaluation.
-**Options.** Text-and-distance rules, gradient-boosted ranking, or a neural ranker using query, user and business features.
 **Recommendation.** Start with indexed retrieval and a measured ranker; batch feature reads for a bounded candidate set. Train on time-correct impression and interaction data, separating organic and sponsored examples. Profile data loading and feature computation before increasing model-training hardware. Nearby search needs a prompt organic result before optional ad work completes. We accept bounded candidate coverage and exposure-aware training, separating sponsored objectives and labels from organic relevance.
 An independent ad service evaluates eligible sponsored candidates and returns labelled results. Its timeout leaves organic search available. Assign stable impression and click IDs for deduplicated reporting and billing; monitor relevance, ad latency and offline-to-online feature consistency.
 **Retrieval, scoring and sponsored placement.** Retrieve a bounded set using text, geographic distance, category and open-now filters. Batch-load the ranker's features for that set, using the business timezone and holiday data for availability. The ranker selects organic results under an explicit relevance objective; deterministic tie-breaking keeps pagination stable.
