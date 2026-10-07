@@ -7,8 +7,9 @@ export function createDiagramConfig() {
     theme: "base",
     securityLevel: "strict",
     fontFamily: "Inter, -apple-system, Segoe UI, Roboto, sans-serif",
-    themeCSS: ".node rect { rx: 6px; ry: 6px; } .cluster rect { rx: 10px; ry: 10px; } .cluster-label { font-weight: 600; }",
+    themeCSS: ".label, .nodeLabel, .edgeLabel, .cluster-label { font-family: Inter, -apple-system, Segoe UI, Roboto, sans-serif; } .node rect { rx: 6px; ry: 6px; } .cluster rect { rx: 10px; ry: 10px; } .cluster-label { font-weight: 600; }",
     themeVariables: {
+      fontFamily: "Inter, -apple-system, Segoe UI, Roboto, sans-serif",
       background: "#ffffff",
       primaryColor: "#e8f0fe",
       primaryTextColor: "#202124",

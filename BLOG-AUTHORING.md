@@ -192,9 +192,10 @@ retains rendered SVGs, the shared configuration and a source/hash/fill manifest.
 Computed SVG fills are recorded, rather than treating unused palette CSS as proof
 that a diagram is styled.
 
-`--thumbnails` replaces only system-design assets, selecting the first Mermaid
-block under **High-level design** rather than an earlier functional sequence.
-Missing HLDs, invalid Mermaid or unsafe/shared destinations fail the operation.
+`--thumbnails` replaces only system- and low-level-design assets. It selects the
+flowchart under **High-level design** for SD/ML, or **From … to …** for LD, rather
+than an introductory sequence. Missing flowcharts, invalid Mermaid or
+unsafe/shared destinations fail the operation.
 No article source, metadata or Notion content is changed. Review and stage the
 generated SVGs with the article changes.
 

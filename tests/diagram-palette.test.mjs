@@ -15,6 +15,10 @@ test("unstyled flowcharts and sequences receive a shared pastel fallback, not se
   assert.equal(theme.actorBkg, "#e8f0fe");
   assert.equal(theme.primaryBorderColor, "#9aa0a6");
   assert.equal(theme.primaryTextColor, "#202124");
+  // Flowchart label CSS uses themeVariables; sequence text uses the top-level setting.
+  assert.equal(theme.fontFamily, createDiagramConfig().fontFamily);
+  // A per-diagram init can omit stock label typography in Mermaid 11.16.0 exports.
+  assert.match(createDiagramConfig().themeCSS, /\.label, \.nodeLabel, \.edgeLabel, \.cluster-label \{ font-family:.*sans-serif/);
   for (const source of ["flowchart TB\n A[Gateway] --> B[(Storage)]", "sequenceDiagram\n A->>B: Commit"]) {
     assert.equal(normalizeDiagramStyles(source), source);
   }

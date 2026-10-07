@@ -71,9 +71,36 @@ The flags and rules are data, not subclasses with separate evaluators. Equality 
 
 ## From flag to decision
 
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    accTitle: Feature flag request flow
+    accDescr: Capture one configuration and reuse it for every flag decision in the application request.
+participant A as Application request
+participant S as SnapshotStore
+participant E as EvaluationSession
+rect rgb(232, 240, 254)
+A->>S: session with stable identity and attributes
+S-->>A: Session capturing active snapshot
+A->>E: evaluate checkout_v2 with fallback
+end
+rect rgb(254, 247, 224)
+E->>E: Check off switch and ordered rules
+E->>E: If needed, compare stable bucket to threshold
+end
+rect rgb(230, 244, 234)
+E-->>A: Value, reason, version and matching rule
+A->>E: Evaluate another flag in the same request
+E-->>A: Decision from the same snapshot
+end
+```
+
+The application captures one session at request entry and passes it to every component that needs a decision. Evaluation reads only that session's immutable snapshot and context; returning the version makes several decisions in one request traceable to the same configuration.
+
 The order matters: the off switch overrides everything, targeting rules take precedence over the rollout, and missing identity uses the caller's fallback.
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
     accTitle: Feature flag evaluation
     accDescr: Capture one configuration, apply the off switch and targeting rules, then use a stable rollout if no rule matches.
@@ -98,9 +125,15 @@ flowchart TB
     E -->|"No"| F
     E -->|"Yes"| H
     H --> T
-    style Request fill:#fce8e6,stroke:#fce8e6,color:#3c4043
-    style Targeting fill:#e6f4ea,stroke:#e6f4ea,color:#3c4043
-    style Rollout fill:#e8f0fe,stroke:#e8f0fe,color:#3c4043
+    classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124
+    classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124
+    classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124
+    class A,B,D,H request
+    class F,OFF,R,T data
+    class C,E control
+    style Request fill:#e8f0fe,stroke:#e8f0fe,color:#202124
+    style Targeting fill:#fef7e0,stroke:#fef7e0,color:#202124
+    style Rollout fill:#e6f4ea,stroke:#e6f4ea,color:#202124
 ```
 
 Every return also carries a reason and the captured version. We can therefore distinguish a deliberate `false` from a missing-flag fallback, even though both might keep the old checkout visible.
@@ -297,12 +330,12 @@ The first customer stays in; the second joins when the threshold rises. The perc
 Choosing a random number on every call is tempting, but the same customer could alternate between two checkout experiences. We need assignment to depend on identity, not on the moment of evaluation.
 
 - **Random choice per call:** simple, but inconsistent across refreshes and services. Suitable only when each independent invocation really should be sampled.
-- **Remember an assignment:** store a customer-to-variant record. This supports explicit enrollment, but adds persistence, reads and rules for changing the rollout.
-- **Deterministic hashing:** derive a bucket from stable inputs and compare it with a threshold. No assignment database is needed, and the decision works locally.
+- **Remember an assignment:** persist a customer-to-variant record. This supports explicit enrollment, manual overrides and cohort history, but needs a durable authority and a cached copy for local evaluation. A stale assignment cache delays enrollment changes; an unavailable authority affects new assignments.
+- **Deterministic hashing:** derive a bucket from stable identity, flag key and salt, then compare it with the configured threshold. Evaluation stays local and repeatable, but changing identity, salt or algorithm reshuffles the cohort. It also gives a fraction of bucket space rather than an exact customer quota.
 
-For this library, use deterministic hashing. The code above gives an application a stable assignment as long as every participant uses the same identity, configuration and algorithm. Deterministic partitioning is also used by [LaunchDarkly's percentage rollouts](https://launchdarkly.com/docs/home/releases/percentage-rollouts); this example's 10,000-bucket algorithm is our own and is not compatible with its SDK.
+For this memory-only Boolean evaluator, use deterministic hashing because stable percentage rollout needs no per-customer enrollment workflow. We accept that membership is determined by the identity contract rather than an editable assignment ledger. Explicit customer exceptions belong in ordered targeting rules; audited enrollment or an exact cohort quota would justify a persisted assignment model outside this library. Deterministic partitioning is also used by [LaunchDarkly's percentage rollouts](https://launchdarkly.com/docs/home/releases/percentage-rollouts); this example's 10,000-bucket algorithm is our own and is not compatible with its SDK.
 
-If several languages evaluate the same flag, publish test vectors for the exact UTF-8 encoding, JSON representation, hash truncation and bucket formula. A different implementation that merely says “SHA-256” is not enough. [Python's hashlib](https://docs.python.org/3/library/hashlib.html) supplies the hash primitive, not the cross-language assignment contract.
+The assignment algorithm is a versioned contract: identical UTF-8 inputs, JSON encoding, SHA-256 truncation, byte order and bucket formula must produce the same test vectors in every language. Preserve it while changing rollout percentages. An algorithm migration needs an explicit new contract and coordinated SDK/configuration rollout; changing implementations silently can move customers between experiences. [Python's hashlib](https://docs.python.org/3/library/hashlib.html) supplies the hash primitive; the surrounding encoding and bucket rules define this evaluator's cohort.
 
 ### What happens when configuration changes during a request?
 
@@ -310,11 +343,12 @@ Suppose a checkout checks a flag when selecting the screen, then checks it again
 
 - **Mutate one shared dictionary:** cheap, but readers can see partially applied changes, and a request can observe different settings between calls.
 - **Lock every lookup:** protects each lookup, but does not give several lookups a common version. Holding the lock for an entire request would also delay refreshes behind application work.
-- **Capture an immutable snapshot:** construct a candidate separately, swap it into the store, and let each request keep one captured version.
+- **Capture an immutable snapshot:** construct and validate a candidate separately, swap the active pointer, and let each request retain one version. Evaluation avoids configuration locks and partial updates, at the cost of retaining old generations until their sessions finish; a long-running session delays off-switch adoption.
 
 Use the snapshot approach. It makes the consistency boundary explicit: one session, one version. The caller must reuse that session; repeatedly opening a session inside a request would discard the guarantee.
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 sequenceDiagram
     accTitle: Request-consistent configuration
     accDescr: Request A keeps version 12 after an update, while a new request captures version 13.
@@ -322,21 +356,23 @@ sequenceDiagram
     participant S as SnapshotStore
     participant U as Config updater
     participant B as Request B
-    rect rgb(252, 232, 230)
+    rect rgb(232, 240, 254)
         A->>S: Capture version 12
         S-->>A: Session with version 12
     end
-    rect rgb(230, 244, 234)
+    rect rgb(254, 247, 224)
         U->>S: Publish validated version 13
         A->>A: Evaluate again using version 12
     end
-    rect rgb(232, 240, 254)
+    rect rgb(230, 244, 234)
         B->>S: Capture active configuration
         S-->>B: Session with version 13
     end
 ```
 
-Old snapshots can be reclaimed when no session references them. Keep sessions request-scoped: a long-lived session would retain old settings and delay its response to an off switch. A request can stay consistent with version 12 while a new request correctly sees version 13.
+Each session holds an ordinary reference to its captured snapshot. Publication makes version 13 active for new sessions while requests on version 12 finish coherently. The runtime can reclaim version 12 after its last session releases it.
+
+This trades memory and update responsiveness for request consistency. Full-copy publication briefly retains the active and candidate configurations; frequent refreshes plus long-lived sessions can retain several generations. Memory is proportional to the live snapshots and their retained flag/rule data, while the oldest session bounds how long stale settings remain in use. Keep sessions request-scoped, release them at request completion and monitor retained generations, snapshot bytes and oldest-session age. An emergency off switch applies to new sessions after publication; immediate interruption of existing requests needs a separate application cancellation policy.
 
 ## Edge cases and tests
 

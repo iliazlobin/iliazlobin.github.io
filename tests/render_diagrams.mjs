@@ -1,4 +1,4 @@
-// Offline Mermaid verification. No source edits; --thumbnails explicitly updates SD card SVGs.
+// Offline Mermaid verification. No source edits; --thumbnails updates SD/LD card SVGs.
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -23,11 +23,12 @@ export function collectDiagrams(root, systemDesignsOnly = false) {
       const path = `${directory}/${name}`;
       const text = readFileSync(join(root, path), "utf8");
       const systemDesign = /^category: system-design(?:-ml)?\r?$/m.test(text);
+      const lowLevelDesign = /^category: low-level-design\r?$/m.test(text);
       if (systemDesignsOnly && !systemDesign) continue;
       const thumbnail = text.match(/^thumbnail:\s*["']?(\/images\/posts\/[^\s"']+\.svg)["']?\s*$/m)?.[1];
       for (const [index, diagram] of extractDiagrams(text).entries()) {
         diagrams.push({
-          ...diagram, path, index: index + 1, systemDesign, thumbnail,
+          ...diagram, path, index: index + 1, systemDesign, lowLevelDesign, thumbnail,
           sourceSha256: createHash("sha256").update(diagram.source).digest("hex"),
         });
       }
@@ -37,10 +38,13 @@ export function collectDiagrams(root, systemDesignsOnly = false) {
 }
 
 export function thumbnailTargets(diagrams, root) {
-  const paths = [...new Set(diagrams.filter(diagram => diagram.systemDesign).map(diagram => diagram.path))];
+  const paths = [...new Set(diagrams.filter(diagram => diagram.systemDesign || diagram.lowLevelDesign).map(diagram => diagram.path))];
   return paths.map(path => {
-    const diagram = diagrams.find(diagram => diagram.path === path && /^High-level design$/i.test(diagram.heading));
-    if (!diagram) throw new Error(`${path}: missing HLD Mermaid block`);
+    const lowLevelDesign = diagrams.find(diagram => diagram.path === path).lowLevelDesign;
+    const heading = lowLevelDesign ? /^From .+ to .+$/i : /^High-level design$/i;
+    const diagram = diagrams.find(diagram => diagram.path === path && heading.test(diagram.heading)
+      && /^(?:flowchart|graph)\s/m.test(diagram.source));
+    if (!diagram) throw new Error(`${path}: missing ${lowLevelDesign ? "decision-flow" : "HLD"} Mermaid flowchart`);
     if (!diagram.thumbnail || !/^\/images\/posts\/[a-zA-Z0-9_-]+\.svg$/.test(diagram.thumbnail)) {
       throw new Error(`${path}: missing or unsafe thumbnail path`);
     }
@@ -68,6 +72,9 @@ async function inspectRenderedSvgs(cli, outputDirectory, diagrams, browserPath) 
       diagram.renderedFills = await page.evaluate(() => [...new Set([...document.querySelectorAll(
         ".node rect, .node polygon, .node path, .node circle, .node ellipse, .cluster rect, rect.actor, rect.rect, rect.box",
       )].map(node => getComputedStyle(node).fill))].sort());
+      diagram.renderedFonts = await page.evaluate(() => [...new Set([...document.querySelectorAll(
+        ".nodeLabel, .cluster-label, .edgeLabel, .messageText, text.actor",
+      )].map(node => getComputedStyle(node).fontFamily))].sort());
     }
   } finally {
     await browser.close();
@@ -103,7 +110,7 @@ async function main() {
   if (!diagrams.length) throw new Error("No Mermaid diagrams found");
   const targets = thumbnails ? thumbnailTargets(diagrams, root) : [];
   if (new Set(targets.map(target => target.destination)).size !== targets.length) {
-    throw new Error("Two system designs share a thumbnail destination");
+    throw new Error("Two designs share a thumbnail destination");
   }
   const outputDirectory = mkdtempSync(join(tmpdir(), "site-diagrams-"));
   const input = join(outputDirectory, "diagrams.md");
@@ -126,7 +133,7 @@ async function main() {
   if (result.status !== 0) throw new Error(`Mermaid CLI failed (${result.status}); no thumbnails replaced`);
   await inspectRenderedSvgs(cli, outputDirectory, diagrams, browserPath);
   writeFileSync(join(outputDirectory, "manifest.json"), JSON.stringify(manifest, null, 2));
-  // No writes to article sources or metadata. Replace only validated, explicitly requested SD assets.
+  // No writes to article sources or metadata. Replace only validated, explicitly requested SD/LD assets.
   for (const { diagram, destination } of targets) copyFileSync(join(outputDirectory, diagram.svg), destination);
   console.log(`Verified ${diagrams.length} SVGs; refreshed ${targets.length} HLD thumbnails. Manifest: ${join(outputDirectory, "manifest.json")}`);
 }
