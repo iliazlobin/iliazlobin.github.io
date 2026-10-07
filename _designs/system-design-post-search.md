@@ -154,22 +154,29 @@ Post creation commits the source version and outbox once.
 sequenceDiagram
   box rgb(232,240,254) Request path
     participant U as User
+    participant P as Post API
     participant A as Search API
   end
   box rgb(230,244,234) Durable state
     participant D as Post database
-  end
-  box rgb(232,240,254) Index consumers / Search indexes
-    participant W as Index consumers
     participant C as Search indexes
   end
+  box rgb(230,244,234) Index processing
+    participant W as Index consumers
+  end
   rect rgb(232,240,254)
-    U->>D: Commit post version and outbox
-    D->>W: Deliver versioned change
-    W->>C: Update lexical and vector indexes independently
-    U->>A: Search query with filters
+    U->>P: Submit authenticated post
+    P->>D: Commit post version and outbox
+    D-->>P: Committed post
+    P-->>U: Created post identity
   end
   rect rgb(230,244,234)
+    W->>D: Read committed outbox changes
+    D-->>W: Versioned change
+    W->>C: Update lexical and vector indexes independently
+  end
+  rect rgb(232,240,254)
+    U->>A: Search query with filters
     A->>C: Retrieve lexical and semantic candidates
     C-->>A: Ranked lists and completeness status
     A->>D: Batch-check current visibility
@@ -177,7 +184,7 @@ sequenceDiagram
   end
 ```
 
-Text and embedding consumers advance independently; search retrieves both candidate lists, fuses them and checks current access before returning snippets and a stable search cursor.
+The Post API authorizes creation and commits the source record with its outbox event. Text and embedding consumers advance independently; the Search API retrieves both candidate lists, fuses them and checks current access before returning snippets and a stable cursor.
 
 ### Keyword and phrase search
 

@@ -177,6 +177,7 @@ sequenceDiagram
   rect rgb(232,240,254)
     U->>A: Submit job with tenant idempotency key
     A->>D: Commit job and request hash
+    D-->>A: Committed job identity
     A-->>U: Stable job ID
     W->>D: Claim due rows with SKIP LOCKED
   end
@@ -184,11 +185,16 @@ sequenceDiagram
     W->>C: Dispatch current attempt token
     C->>D: Renew lease while executing
     C->>D: Commit completion if token still owns job
-    D-->>U: Queryable terminal status
+  end
+  rect rgb(232,240,254)
+    U->>A: Get job status
+    A->>D: Read authorized job
+    D-->>A: Current execution state
+    A-->>U: Job status and result
   end
 ```
 
-Pollers claim only due work that available workers can accept; lease-conditioned completion rejects an obsolete attempt, and downstream effects reuse the logical job identity across retries.
+Pollers claim only due work that available workers can accept; lease-conditioned completion rejects an obsolete attempt, and downstream effects reuse the logical job identity across retries. Users read the durable outcome through the Job API, which checks access before returning status.
 
 ### Scheduling and cancellation
 

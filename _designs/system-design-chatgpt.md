@@ -194,6 +194,7 @@ The conversation API commits one generation identity and reserves quota before a
 sequenceDiagram
   box rgb(232,240,254) Request path
     participant U as User
+    participant G as Gateway
     participant A as Conversation API
   end
   box rgb(230,244,234) Background processing
@@ -202,19 +203,27 @@ sequenceDiagram
     participant C as Replay cache
   end
   rect rgb(232,240,254)
-    U->>A: Submit message with idempotency key
+    U->>G: Submit message with idempotency key
+    G->>A: Authorized conversation request
     A->>D: Commit message, generation and quota reservation
-    A->>W: Admit generation with context and output limit
+    D-->>A: Committed generation
+    A->>W: Dispatch through inference router
     W->>C: Append stable token event IDs
+    G->>C: Read events from generation cursor
+    C-->>G: Ordered text deltas
+    G-->>U: SSE text deltas
   end
   rect rgb(230,244,234)
-    C-->>U: Stream SSE events
-    W->>D: Save final message and settle quota
-    A-->>U: Terminal generation event
+    W->>A: Completed text and final usage
+    A->>D: Save final message and settle quota
+    D-->>A: Committed completion
+    A->>C: Append terminal generation event
+    C-->>G: Terminal event at current cursor
+    G-->>U: SSE terminal event
   end
 ```
 
-Tokens stream under that identity, and the final durable message is saved after generation completes; a reconnect uses the bounded replay path described below.
+The gateway reads ordered replay events from the cache and delivers them over SSE. The conversation API commits the final message and quota settlement before publishing the terminal event. A reconnect resumes through the same bounded replay path.
 
 ### Sending a prompt
 

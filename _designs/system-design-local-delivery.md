@@ -305,7 +305,7 @@ Before scoring and again before accepting an offer, compare position age and cur
 - **Separate stage estimates:** model preparation, courier arrival, handoff and travel, combining concurrent stages with an explicit timeline. Stage updates are interpretable and reusable; dependency error means adding stage quantiles does not yield a calibrated total interval.
 - **Multi-task probabilistic model:** learn related stage and end-to-end distributions together. Shared signals may improve sparse cases and uncertainty, but training, calibration and serving are more complex.
 
-**Recommendation.** Use stage estimates with an explicit timeline: Stage estimates with an explicit overlap timeline fit actionable dispatch and user progress updates. We accept stage-level prediction error and measure an end-to-end arrival interval separately; a shared probabilistic model must demonstrate improved coverage before replacing this baseline.
+**Recommendation.** Combine stage estimates on a timeline that accounts for overlapping work. Stage-level updates support dispatch decisions and user progress updates. We accept stage-level prediction error and measure an end-to-end arrival interval separately; a shared probabilistic model must demonstrate improved coverage before replacing this baseline.
 
 ```text
 remaining time =

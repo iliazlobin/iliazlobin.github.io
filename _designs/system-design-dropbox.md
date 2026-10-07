@@ -178,7 +178,7 @@ Blocks upload independently, but a revision becomes visible only after every ref
 sequenceDiagram
   box rgb(232,240,254) Request path
     participant U as Device
-    participant A as Upload API
+    participant A as Upload and sync APIs
   end
   box rgb(230,244,234) Durable state
     participant D as Block store
@@ -190,18 +190,24 @@ sequenceDiagram
   rect rgb(232,240,254)
     U->>A: Submit base revision and block manifest
     A->>D: Pin reusable blocks, identify missing blocks
-    U->>D: Upload missing checksummed blocks
+    A-->>U: Authorized block upload URLs
+    U->>D: Upload checksummed blocks using signed URLs
     A->>D: Verify complete manifest
+    U->>A: Commit verified upload and base revision
   end
   rect rgb(230,244,234)
     A->>W: Compare base, commit revision and journal
-    W-->>U: Committed revision and sequence
-    W-->>C: Change hint
-    C->>W: Read journal after durable cursor
+    W-->>A: Committed revision and sequence
+    A-->>U: Commit response
+    A-->>C: Change hint after committed journal entry
+    C->>A: Read journal after durable cursor
+    A->>W: Read authorized namespace changes
+    W-->>A: Journal page and next cursor
+    A-->>C: Authorized changes and next cursor
   end
 ```
 
-Notifications then tell other devices to catch up from the durable namespace journal.
+The API participant groups the upload, metadata and sync-notification services shown in the high-level design. Metadata commits the revision and journal entry before returning success; notifications prompt other devices to fetch authorized journal pages through the sync API. Signed URLs permit direct block transfers.
 
 ### Uploading and committing
 

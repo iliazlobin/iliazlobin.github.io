@@ -176,7 +176,7 @@ sequenceDiagram
   box rgb(230,244,234) Background processing
     participant D as Durable log
     participant W as Reporting worker
-    participant C as Billing ledger
+    participant R as Aggregate store
   end
   rect rgb(232,240,254)
     U->>A: Follow signed click URL
@@ -186,13 +186,11 @@ sequenceDiagram
   end
   rect rgb(230,244,234)
     D->>W: Replay click for deduplication and reporting
-    W-->>U: Provisional report bucket
-    D->>C: Accepted verdict and click identity
-    C->>C: Post charge once in transaction
+    W->>R: Publish provisional bucket version
   end
 ```
 
-Fraud approval controls the charge, while provisional reports can become visible before the verdict is final.
+Reporting workers publish versioned buckets for authorized dashboard queries; the clicking user receives only the advertiser redirect. Billing workers post a charge after fraud approval, while provisional report totals may be available before that verdict is final.
 
 ### Recording a click
 

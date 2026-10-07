@@ -181,26 +181,34 @@ sequenceDiagram
     participant A as Feed API
   end
   box rgb(230,244,234) Durable state
-    participant D as Article store
+    participant D as Article and feed stores
   end
-  box rgb(232,240,254) External participants
+  box rgb(230,244,234) Background processing
+    participant I as Crawl and ingestion
     participant W as Feed builder
+  end
+  box rgb(232,240,254) Publisher
     participant C as Publisher
   end
-  rect rgb(232,240,254)
-    C->>D: Accepted article update and ingestion event
-    D->>W: Normalize, deduplicate, group story
-    W->>D: Publish ranked feed generation
-    U->>A: Request regional or personalized feed
-  end
   rect rgb(230,244,234)
+    I->>C: Poll publisher feed and fetch article
+    C-->>I: Publisher content and source metadata
+    I->>I: Extract, deduplicate and group story
+    I->>D: Commit accepted article version
+    D-->>I: Committed article
+    W->>D: Read accepted article and story versions
+    D-->>W: Accepted article and story records
+    W->>D: Publish ranked feed generation
+  end
+  rect rgb(232,240,254)
+    U->>A: Request regional or personalized feed
     A->>D: Read generation and eligible story candidates
     A-->>U: Articles and generation-bound cursor
     U->>C: Follow selected publisher URL
   end
 ```
 
-Reading a feed pins its generation for pagination; opening an article follows the publisher's URL rather than loading a copy through the news service.
+Crawl and ingestion services fetch publisher content and save accepted article versions; feed builders use those versions to publish ranked snapshots. The Feed API pins a generation for pagination, and selecting an article opens the publisher's URL.
 
 ### Collecting and grouping articles
 
