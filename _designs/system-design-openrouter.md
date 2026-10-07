@@ -135,40 +135,34 @@ Stateless gateways handle authentication, routing and stream translation. A budg
 
 ```mermaid
 flowchart TB
-  C[Web client or application]
+  C[Web client]
   U[LLM providers]
   subgraph Request["Request handling"]
     G[Gateway]
-    A[Provider adapters]
-    R[(Redis routing cache)]
+    R[(Redis)]
   end
   subgraph Spending["Spending authority"]
     B[Budget service]
-    P[(PostgreSQL account shards)]
+    P[(PostgreSQL)]
   end
   subgraph Accounting["Background accounting"]
-    E[Durable event stream]
+    E[Event stream]
     H[(ClickHouse)]
-    X[Reconciliation workers]
+    X[Accounting workers]
   end
-  C -->|Model request| G
-  G -->|Policies and health| R
+  C -->|Request| G
+  G -->|Policy and health| R
   G -->|Reserve and settle| B
-  B -->|Budget transaction| P
-  G -->|Adapted request| A
-  A -->|Inference| U
-  U -->|Streaming response| A
-  A -->|Normalized events| G
-  G -->|SSE| C
-  G -->|Usage checkpoints| E
-  P -->|Committed outbox| E
-  E -->|Usage projections| H
-  X -->|Provider usage records| U
-  X -->|Finalize unknown outcomes| B
+  B -->|Commit| P
+  G <-->|Inference and tokens| U
+  G -->|Usage| E
+  P -->|Outbox| E
+  E -->|Consume| X
+  X -->|Projections| H
   classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
-  class C,G,A,U request
+  class C,G,U request
   class R,P,E,H,X background
   class B control
   style Request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
@@ -193,7 +187,7 @@ The gateway reserves enough budget before starting provider work. Tokens travel 
 
 ```mermaid
 sequenceDiagram
-  box rgb(232,240,254) External participants
+  box rgb(232,240,254) Request path
     participant C as Web client
     participant G as Gateway
     participant P as LLM provider
@@ -221,9 +215,7 @@ sequenceDiagram
   end
 ```
 
-The gateway dispatches only after the reservation commits. Token delivery uses the same logical request identity, while settlement and reporting retain their separate durable outcomes.
-
-A committed reservation establishes the spending limit before inference. Reporting consumes settlement events afterward, so a dashboard query or reporting backlog does not add latency to individual token frames.
+The committed reservation establishes the spending limit before inference. Streaming and settlement use one logical request identity; reporting consumes committed usage events independently of token delivery.
 
 ### Admitting a request
 
@@ -297,7 +289,7 @@ Use a measured first-token estimate to reject a provider that cannot fit the dea
 
 ```mermaid
 sequenceDiagram
-  box rgb(232,240,254) External participants
+  box rgb(232,240,254) Request path
     participant C as Client
     participant G as Gateway
     participant A as Provider A
