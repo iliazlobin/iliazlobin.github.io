@@ -201,7 +201,8 @@ generated SVGs with the article changes.
 
 - **The card reads `thumbnail` ONLY** — `blog.md` falls back to the gradient title-card, **never** to the
   site-wide OG image (`image:` / `og-default.png`). A post with **no `thumbnail:` shows the gradient card**, not
-  a diagram — so always run the script and confirm the `thumbnail:` line landed before publishing.
+  a diagram. Set `thumbnail:` explicitly, then verify that path and the rendered SVG before publishing.
+  The helper preserves this metadata and requires an existing path for design thumbnails.
 - If the diagram fails to render (a Mermaid syntax error), **fix the diagram** and rerun the helper —
   don't ship the post on the gradient fallback.
 - **Overwriting a thumbnail is cache-safe.** The helper writes the new SVG to the
