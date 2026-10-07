@@ -234,12 +234,15 @@ sequenceDiagram
   end
   rect rgb(230, 244, 234)
     R->>D: Deduplicate execution, apply ledger and position change
-    D-->>U: Versioned order status
+    U->>A: Read order status
+    A->>D: Read committed order state
+    D-->>A: Versioned order status
+    A-->>U: Authorized status response
   end
 
 ```
 
-Local acceptance reserves buying power before venue dispatch. Venue evidence determines routing and execution state afterward; an ambiguous send remains pending reconciliation under the same venue identity, and each execution changes the account ledger once.
+Local acceptance reserves buying power before venue dispatch. Venue evidence determines routing and execution state afterward; an ambiguous send remains pending reconciliation under the same venue identity, and each execution changes the account ledger once. The client reads order status through the authenticated Order API.
 
 ### Viewing quotes
 

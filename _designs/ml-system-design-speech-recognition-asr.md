@@ -211,18 +211,21 @@ sequenceDiagram
     G->>S: Pin complete ASR bundle and worker lease
   end
   rect rgb(232, 240, 254)
-    U->>S: Ordered audio chunks
-    S-->>U: Acknowledge audio sequence
-    S-->>U: Revised partial transcript
-    U->>S: End audio or VAD endpoint
+    U->>G: Ordered audio chunks
+    G->>S: Forward ordered chunks
+    S-->>G: Audio sequence and partial revision
+    G-->>U: Acknowledgement and partial transcript
+    U->>G: End audio
+    G->>S: Forward end-audio control
     S->>F: Utterance audio and candidate transcripts
     F-->>S: Final selected transcript
-    S-->>U: Final transcript and serving mode
+    S-->>G: Final transcript and serving mode
+    G-->>U: Forward final result
   end
 
 ```
 
-Partial messages replace the previous hypothesis rather than appending independent text. The worker retains acoustic and decoder state for the pinned session, then final rescoring uses the completed utterance; a missed final-pass deadline selects the explicitly labeled streaming-result fallback.
+The session gateway relays ordered audio, control messages and transcript revisions between the client and its assigned worker. Partial messages replace the previous hypothesis rather than appending independent text. The worker retains acoustic and decoder state for the pinned session, then final rescoring uses the completed utterance; a missed final-pass deadline selects the explicitly labeled streaming-result fallback.
 
 ### Transcribing live speech
 

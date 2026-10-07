@@ -213,6 +213,7 @@ sequenceDiagram
   participant T as Trip service
   participant M as Matcher
   participant D as Regional trip database
+  participant N as Outbox delivery worker
   participant A as Driver app
   rect rgb(254, 247, 224)
     U->>T: Confirm quote and request key
@@ -221,8 +222,10 @@ sequenceDiagram
   end
   rect rgb(232, 240, 254)
     M->>M: Gather nearby drivers, rank pickup estimates
-    M->>D: Reserve waiting trip and available driver
-    D-->>A: Versioned offer notification
+    M->>T: Propose eligible driver
+    T->>D: Reserve trip/driver and commit offer outbox
+    D-->>N: Committed offer event
+    N-->>A: Versioned offer notification
     A->>T: Accept exact offer before deadline
   end
   rect rgb(254, 247, 224)
@@ -233,7 +236,7 @@ sequenceDiagram
 
 ```
 
-Location search proposes candidates, while the regional transaction owns assignment. Acceptance checks the offer identity, version and deadline, so stale responses or overlapping matchers cannot independently assign the same driver; the first-offer target excludes human response time.
+The matcher proposes a driver, and the trip service reserves the trip and driver in a regional transaction. An outbox delivery worker sends the offer after commit. Acceptance checks the offer identity, version and deadline, so stale responses or overlapping matchers cannot independently assign the same driver; the first-offer target excludes human response time.
 
 ### Quoting and requesting a ride
 
