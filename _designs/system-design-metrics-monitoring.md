@@ -150,7 +150,7 @@ This separation follows the ingest-storage option in [Mimir's architecture](http
 - **[Prometheus](/designs/tech-prometheus-grafana/)-style TSDB blocks:** maintain recent chunks locally, then publish immutable chunks and label indexes to object storage. [Prometheus storage](https://prometheus.io/docs/prometheus/latest/storage/) documents WAL-backed heads, time blocks and background compaction.
 - **Object storage:** durable historical blocks, manifests and compaction outputs. Delete source blocks only after the replacement manifest is committed and readers can switch safely.
 - **[PostgreSQL](/designs/tech-postgresql/):** tenant configuration, versioned rules, notification routing and quotas.
-- **Memcached/Redis:** derived query/index caches. Cache keys include tenant, query, step, time range and relevant data/rule versions.
+- **[Memcached](/designs/tech-memcached/)/[Redis](/designs/tech-redis/):** derived query/index caches. Cache keys include tenant, query, step, time range and relevant data/rule versions.
 
 PostgreSQL is suitable for control-plane transactions; a specialized TSDB is selected for the high-volume series/index workload. [Redis](/designs/tech-redis/) holds derived state rather than the sole retained metric history.
 

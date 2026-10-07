@@ -137,7 +137,7 @@ flowchart TB
 ## Storage
 
 - **[PostgreSQL](/designs/tech-postgresql/) shards:** authoritative posts, versions, visibility and outbox events. Commit the post change and event on the same shard. The search system can hydrate by post ID using the post service's batch interface.
-- **Elasticsearch/Lucene:** compressed term postings, term positions, filter fields and ANN vector indexes on SSD, with a memory/filesystem cache. Use time partitions plus fixed logical shards; avoid application-managed [Redis](/designs/tech-redis/) posting lists.
+- **[Elasticsearch](/designs/tech-elasticsearch/)/Lucene:** compressed term postings, term positions, filter fields and ANN vector indexes on SSD, with a memory/filesystem cache. Use time partitions plus fixed logical shards; avoid application-managed [Redis](/designs/tech-redis/) posting lists.
 - **[Kafka](/designs/tech-kafka/):** ordered changes by post ID, with consumer checkpoints and sufficient retention for replay.
 - **Object storage:** index snapshots and versioned embedding artifacts. An embedding model rollout builds a compatible vector index before query traffic switches.
 - **Redis:** bounded query/session caches. Cache keys include query, filters, index/model generation and authorization scope; permission checks still occur on response.
