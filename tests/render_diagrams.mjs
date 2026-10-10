@@ -8,6 +8,59 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { MERMAID_VERSION, createDiagramConfig, normalizeDiagramStyles } from "../assets/js/diagram-palette.mjs";
 
+const compactColor = color => color.toLowerCase().replace(/\s+/g, "");
+const googleFills = new Set([
+  "rgb(232,240,254)", "rgb(230,244,234)", "rgb(254,247,224)",
+  "rgb(254,239,227)", "rgb(252,232,230)", "rgb(243,232,253)",
+  "rgb(228,247,251)", "rgb(241,243,244)",
+]);
+const isWhiteStyle = styles =>
+  /(?:^|,)\s*fill\s*:\s*(?:#fff(?:fff)?|white)\s*(?=[,;]|$)/i.test(styles);
+
+function explicitlyWhiteNodes(source) {
+  const classes = new Set(), nodes = new Set();
+  for (const [, names, styles] of source.matchAll(/^\s*classDef\s+(\S+)\s+([^\n]+)/gm)) {
+    if (isWhiteStyle(styles)) names.split(",").forEach(name => classes.add(name));
+  }
+  for (const [, ids, names] of source.matchAll(/^\s*class\s+([^\s;]+)\s+([^\s;]+)/gm)) {
+    if (names.split(",").some(name => classes.has(name))) ids.split(",").forEach(id => nodes.add(id));
+  }
+  for (const [, id, styles] of source.matchAll(/^\s*style\s+(\S+)\s+([^\n]+)/gm)) {
+    if (isWhiteStyle(styles)) nodes.add(id);
+  }
+  return nodes;
+}
+
+export function assertGoogleDiagramStyles(diagram, appearance) {
+  const fail = message => { throw new Error(`${diagram.path} diagram ${diagram.index}: ${message}`); };
+  const checkFills = (fills, kind) => {
+    for (const fill of fills) {
+      if (!googleFills.has(compactColor(fill))) fail(`${kind} has non-palette fill ${fill}`);
+    }
+  };
+  if (/^(?:flowchart|graph)\b/m.test(diagram.source)) {
+    if (!appearance.nodes.length) fail("no rendered flowchart nodes");
+    checkFills(appearance.clusters, "cluster");
+    const whiteNodes = explicitlyWhiteNodes(diagram.source);
+    for (const node of appearance.nodes) {
+      if (!node.fills.length) fail(`node ${node.id} has no visible fill`);
+      for (const fill of node.fills) {
+        // White components are intentional only in explicitly styled, grouped diagrams.
+        if (compactColor(fill) === "rgb(255,255,255)"
+          && whiteNodes.has(node.id) && appearance.clusters.length) continue;
+        checkFills([fill], `node ${node.id}`);
+      }
+    }
+  } else if (/^sequenceDiagram\b/m.test(diagram.source)) {
+    if (!appearance.actors.length) fail("no rendered sequence actors");
+    checkFills(appearance.actors, "actor");
+    checkFills(appearance.phases, "phase");
+    const bands = [...diagram.source.matchAll(/^\s*(?:rect|box)\s+rgb\(/gm)].length;
+    const minimum = Math.max(bands, diagram.systemDesign || diagram.lowLevelDesign ? 1 : 0);
+    if (appearance.phases.length < minimum) fail(`missing sequence phases: expected ${minimum}, rendered ${appearance.phases.length}`);
+  } else fail("unsupported diagram type");
+}
+
 export function extractDiagrams(text) {
   return [...text.matchAll(/```mermaid\r?\n([\s\S]*?)\r?\n```/g)].map(match => ({
     source: match[1],
@@ -69,6 +122,24 @@ async function inspectRenderedSvgs(cli, outputDirectory, diagrams, browserPath) 
         throw new Error(`${diagram.path} diagram ${diagram.index}: invalid SVG`);
       }
       await page.goto(pathToFileURL(svgPath).href);
+      diagram.renderedAppearance = await page.evaluate(() => {
+        const fills = elements => [...elements].filter(element => {
+          const style = getComputedStyle(element), bounds = element.getBBox();
+          return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) > 0
+            && bounds.width > 0 && bounds.height > 0 && style.fill !== "none" && style.fill !== "transparent"
+            && !/rgba\([^)]*,\s*0\)$/.test(style.fill);
+        }).map(element => getComputedStyle(element).fill);
+        return {
+          nodes: [...document.querySelectorAll(".node")].map(node => ({
+            id: node.id.replace(/^.*?flowchart-(.*)-\d+$/, "$1"),
+            fills: fills(node.querySelectorAll("rect, polygon, path, circle, ellipse")),
+          })),
+          clusters: fills(document.querySelectorAll(".cluster rect")),
+          actors: fills(document.querySelectorAll("rect.actor")),
+          phases: fills(document.querySelectorAll("rect.rect, rect.box")),
+        };
+      });
+      assertGoogleDiagramStyles(diagram, diagram.renderedAppearance);
       diagram.renderedFills = await page.evaluate(() => [...new Set([...document.querySelectorAll(
         ".node rect, .node polygon, .node path, .node circle, .node ellipse, .cluster rect, rect.actor, rect.rect, rect.box",
       )].map(node => getComputedStyle(node).fill))].sort());

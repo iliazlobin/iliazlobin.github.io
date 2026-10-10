@@ -1,7 +1,35 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { collectDiagrams, extractDiagrams, thumbnailTargets } from "./render_diagrams.mjs";
+import { assertGoogleDiagramStyles, collectDiagrams, extractDiagrams, thumbnailTargets } from "./render_diagrams.mjs";
+
+const blue = "rgb(232, 240, 254)", green = "rgb(230, 244, 234)", white = "rgb(255, 255, 255)";
+const appearance = (overrides = {}) => ({ nodes: [], clusters: [], actors: [], phases: [], ...overrides });
+const example = source => ({ path: "_designs/example.md", index: 1, source });
+
+test("rendered flowcharts require pastel nodes or explicitly grouped white components", () => {
+  const flow = example("flowchart TB\nA --> B");
+  assertGoogleDiagramStyles(flow, appearance({nodes: [{id: "A", fills: [blue]}, {id: "B", fills: [green]}]}));
+  for (const fills of [[white], ["rgb(129, 212, 250)"], []]) {
+    assert.throws(() => assertGoogleDiagramStyles(flow, appearance({nodes: [{id: "A", fills}]})),
+      /non-palette fill|no visible fill/);
+  }
+  const grouped = example("flowchart TB\nclassDef component fill:#ffffff,stroke:#9aa0a6;\nclass A component;");
+  assertGoogleDiagramStyles(grouped, appearance({nodes: [{id: "A", fills: [white]}], clusters: [blue]}));
+  assert.throws(() => assertGoogleDiagramStyles(grouped, appearance({nodes: [{id: "A", fills: [white]}]})), /non-palette fill/);
+  assert.throws(() => assertGoogleDiagramStyles(flow, appearance({nodes: [{id: "A", fills: [white]}], clusters: [blue]})), /non-palette fill/);
+});
+
+test("rendered sequence actors and phases are checked independently", () => {
+  const sequence = {...example("sequenceDiagram\nrect rgb(232,240,254)\nA->>B: Commit\nend"), systemDesign: true};
+  const valid = appearance({actors: [blue, blue], phases: [green]});
+  assertGoogleDiagramStyles(sequence, valid);
+  for (const broken of [
+    {...valid, actors: [white]}, {...valid, actors: []}, {...valid, phases: []},
+    {...valid, phases: [white]}, {...valid, phases: ["rgb(129, 212, 250)"]},
+  ]) assert.throws(() => assertGoogleDiagramStyles(sequence, broken));
+  assertGoogleDiagramStyles(example("sequenceDiagram\nA->>B: Commit"), appearance({actors: [blue, blue]}));
+});
 
 test("thumbnail selection uses the HLD heading, not the first functional sequence", () => {
   const text = "## Functional scenarios\n\n```mermaid\nsequenceDiagram\n A->>B: Submit\n```\n"
