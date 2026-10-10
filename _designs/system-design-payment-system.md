@@ -7,7 +7,7 @@ tags: [Interview-Prep, Distributed-Systems, Fintech]
 thumbnail: /images/posts/2026-07-02-system-design-payment-system.svg
 redirect_from:
   - /2026/07/02/system-design-payment-system.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-07
 description: "Design of a payment service with safe retries, provider integration, a balanced ledger and settlement reconciliation."
 notion_source: https://app.notion.com/p/391d865005a8810a97d2c11a3162b469
 ---
@@ -149,18 +149,57 @@ flowchart TB
     S --> L[("Balanced journal")]
     X --> R["Settlement reconciliation"]
     L --> R
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class U,P,D,X,H,S,L request
+  class Q,W,R background
 ```
 
 ## Storage
 
-- **PostgreSQL:** payments, operations, idempotency records, journal postings and outbox rows. Unique merchant/operation keys prevent duplicate local operations; locks or versions serialize captures and refunds.
+- **[PostgreSQL](/designs/tech-postgresql/):** payments, operations, idempotency records, journal postings and outbox rows. Unique merchant/operation keys prevent duplicate local operations; locks or versions serialize captures and refunds.
 - **Durable queue:** provider work is delivered at least once. Expiring worker leases recover crashes; each delivery carries the stable operation ID.
 - **Object storage:** original settlement files and normalized import manifests, with checksums and access controls.
-- **Redis:** optional status caching and rate limits. PostgreSQL remains authoritative for identity and outcomes.
+- **[Redis](/designs/tech-redis/):** optional status caching and rate limits. PostgreSQL remains authoritative for identity and outcomes.
 
 Postings are append-only. Corrections use linked reversals or adjustments. Retention follows legal and operational policy rather than a cache TTL.
 
 ## From request to response
+
+### One end-to-end request
+
+The service commits one payment operation and provider key before making an external call.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as Merchant
+    participant A as Payment API
+  end
+  box rgb(230,244,234) Durable state
+    participant D as PostgreSQL
+  end
+  box rgb(232,240,254) External participants
+    participant W as Provider
+  end
+  box rgb(230,244,234) Background processing
+    participant C as Webhook worker
+  end
+  rect rgb(232,240,254)
+    U->>A: Confirm payment under idempotency key
+    A->>D: Commit pending operation and provider key
+    A->>W: Submit operation with stable provider key
+    W-->>A: Confirmed result or ambiguous timeout
+  end
+  rect rgb(230,244,234)
+    A->>D: Record outcome, post confirmed ledger entries
+    D->>C: Committed state-change outbox
+    C-->>U: Signed versioned payment event
+  end
+```
+
+A timeout preserves an unknown outcome for recovery; a confirmed result advances the ledger and webhook outbox in a transaction, using the same identities on every retry.
 
 ### Creating and authorizing a payment
 
@@ -200,9 +239,11 @@ Provider cutoffs determine the pending window. Unmatched records remain visible 
 
 The database and external provider have separate transactional boundaries.
 
-- **Cache-only deduplication:** fast, but eviction and crashes can erase identity.
-- **Database-only deduplication:** preserves local identity, with uncertain external outcomes after lost responses.
-- **Durable operation plus provider idempotency — recommended:** keep one local operation and reuse its provider key throughout recovery.
+- **Cache-only deduplication:** remember request keys in memory/Redis. Duplicate requests are rejected quickly, but eviction, failover or TTL expiry can erase the identity of an existing charge.
+- **Database-only deduplication:** retain one operation under a unique local request key. Local retries recover safely, but a provider accepting before a lost response leaves the external outcome unknown.
+- **Durable operation plus provider idempotency:** persist one operation/key before dispatch and reuse the provider key through status queries/retries. Both boundaries retain identity; provider retention/scope limits and delayed reconciliation still require a pending state.
+
+**Recommendation.** The combined identity fits irreversible external money movement. We accept unresolved pending operations and recovery work rather than creating a second charge to resolve a timeout; local retention deliberately outlives the provider's retry window.
 
 [Stripe](https://docs.stripe.com/api/idempotent_requests) and [Adyen](https://docs.adyen.com/development-resources/api-idempotency/) document their key scope and retention. Adyen uses an idempotency header; a merchant reference alone is not equivalent. Provider retention differs from the local 30-day client replay window.
 
@@ -222,10 +263,16 @@ Create one durable payment operation and provider key before dispatch. If the pr
 
 ```mermaid
 sequenceDiagram
-    participant C as Client
-    participant P as Payment service
-    participant D as Database
-    participant X as Provider
+  box rgb(232,240,254) Request path
+  participant C as Client
+  participant P as Payment service
+  end
+  box rgb(230,244,234) Durable state
+  participant D as Database
+  end
+  box rgb(232,240,254) External participants
+  participant X as Provider
+  end
     C->>P: Submit with idempotency key
     P->>D: Commit operation and work
     P->>X: Execute with stable provider key
@@ -244,9 +291,11 @@ A webhook and synchronous response can race. Both converge on the same provider 
 
 A database write followed by publication can fail between steps.
 
-- **Publish after commit:** simple, with a lost-work window.
-- **Distributed transaction:** requires cooperation the external API usually cannot provide.
-- **Transactional outbox — recommended:** commit the pending operation and work row together.
+- **Publish after commit:** save a payment, then enqueue work in a separate call. The normal path is simple, but a crash between steps leaves durable pending work without a queue record.
+- **Distributed transaction:** coordinate database and external participants into one commit. Supported databases can align writes, but payment APIs generally do not participate and long coordination reduces availability.
+- **Transactional outbox:** commit the operation and dispatch intent together, then publish under leases. Recovery always finds pending work; delivery can duplicate and the outbox does not itself prove that an external charge happened only once.
+
+**Recommendation.** An outbox fits the local operation-to-work boundary without requiring cooperation from a payment network. We accept at-least-once dispatch and pair it with provider idempotency and reconciliation rather than keeping a database transaction open over the network call.
 
 Workers claim bounded batches with leases, call the provider outside a long database transaction and record confirmed outcomes in a new transaction. The outbox preserves work; provider idempotency and reconciliation handle duplicate delivery and uncertain results.
 
@@ -271,9 +320,11 @@ The result transaction updates business state and creates its downstream event t
 
 A payment status alone does not explain account balances.
 
-- **Mutable balances:** efficient reads, weak auditability on their own.
-- **Application-paired entries:** clear postings, but every writer must honor the invariant.
-- **Restricted journal-posting transaction — recommended:** validate a whole batch and commit all entries together.
+- **Mutable balances:** update each account total in place. Reads are inexpensive, but the final number alone cannot explain or audit prior money movements.
+- **Application-paired entries:** have each writer insert debit/credit rows. History is explicit, but one buggy or partial writer can violate balance equality unless the whole posting is checked atomically.
+- **Restricted journal transaction:** validate a complete posting batch under a stable source identity and commit all entries together. Currency balance and retry invariants are centralized; writers must use the posting interface and balance queries may need derived projections.
+
+**Recommendation.** A restricted immutable journal fits auditable captures, refunds and fees. We accept a stricter write interface and derived balance reads to make every correction a traceable balanced posting instead of editing history.
 
 Within each currency, total debits equal total credits. Each entry names an account; each posting references its source operation. Enforce idempotent posting, valid accounts, positive amounts and balance equality through the database's posting interface and constraints.
 
@@ -305,9 +356,11 @@ The posting interface checks source-operation uniqueness, account/currency valid
 
 Authorization, capture and bank payout are different stages of money movement.
 
-- **Payment totals:** cheap, but hide fees, timing and missing individual transactions.
-- **Raw report hashes:** detect identical imports, while different schemas and cutoffs prevent financial comparison.
-- **Normalized transaction matching — recommended:** match provider operation references and types, then reconcile gross amount, fees, net settlement and payout totals.
+- **Payment totals:** compare a day's sums. Work is small, but missing transactions, offsetting errors, fees and timing differences can hide behind an equal total.
+- **Raw report hashes:** identify identical imported files. Duplicate import protection is useful, but schema/cutoff differences mean a different hash says nothing about whether money reconciles.
+- **Normalized transaction matching:** join provider references/types within account/currency context, compare gross/fees/net, then reconcile payouts. Differences become actionable; retained originals, normalization versions and unmatched-case operations add processing and review cost.
+
+**Recommendation.** Transaction-level matching fits separate authorization, capture and settlement stages. We accept a monitored unmatched backlog and normalization effort so a payout discrepancy can be traced to specific evidence rather than hidden in aggregate totals.
 
 Batch matching avoids one database query per row. File checksums identify duplicate files; transaction keys identify repeated rows. Currency, provider account and settlement period form the matching context.
 

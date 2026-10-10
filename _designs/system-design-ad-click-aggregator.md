@@ -7,7 +7,7 @@ tags: [Stream-Processing, Ad-Tech, Aggregation, Kafka, Flink, Fraud-Detection]
 thumbnail: /images/posts/2026-07-01-system-design-ad-click-aggregator.svg
 redirect_from:
   - /2026/07/01/system-design-ad-click-aggregator.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-07
 description: "Design of an ad-click pipeline that records clicks, reports campaign performance and produces auditable billing records."
 notion_source: https://app.notion.com/p/390d865005a88164bfd0ed5f8fdc91c4
 ---
@@ -145,18 +145,52 @@ flowchart TB
   C -->|report corrections| O
   Q[Reporting API] --> O
   Q --> L
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class U,API request
+  class K,A,F,B,L,O,R,C,Q background
 ```
 
 ## Storage
 
-- **Kafka:** retains clicks and verdicts for bounded replay. Producers use idempotent publication, acknowledgments from the in-sync replicas and a minimum replica policy. Acknowledgment still depends on that configured durability policy.
-- **Flink state:** stores exact recent click IDs and active aggregation buckets in checkpointed state. Hash `click_id` for deduplication, then repartition accepted events by aggregation key. Salt exceptionally busy ad keys only after deduplication.
-- **ClickHouse:** stores versioned aggregates ordered by campaign, time and ad. Queries select the latest version of each bucket before summing. [ReplacingMergeTree](https://clickhouse.com/docs/reference/engines/table-engines/mergetree-family/replacingmergetree) removes duplicates during background merges, so the query path must also handle unmerged versions.
-- **PostgreSQL billing ledger:** shard campaigns across transactional databases. Each shard uses a unique `entry_id` for every ledger entry and a partial unique index for the original charge on `(campaign_id, click_id)`. Charges, spend updates and notification outbox records commit together; distinct adjustments retain their own entry IDs. Route every retry for a campaign to the same shard.
+- **[Kafka](/designs/tech-kafka/):** retains clicks and verdicts for bounded replay. Producers use idempotent publication, acknowledgments from the in-sync replicas and a minimum replica policy. Acknowledgment still depends on that configured durability policy.
+- **[Flink](/designs/tech-flink/) state:** stores exact recent click IDs and active aggregation buckets in checkpointed state. Hash `click_id` for deduplication, then repartition accepted events by aggregation key. Salt exceptionally busy ad keys only after deduplication.
+- **[ClickHouse](/designs/tech-clickhouse/):** stores versioned aggregates ordered by campaign, time and ad. Queries select the latest version of each bucket before summing. [ReplacingMergeTree](https://clickhouse.com/docs/reference/engines/table-engines/mergetree-family/replacingmergetree) removes duplicates during background merges, so the query path must also handle unmerged versions.
+- **[PostgreSQL](/designs/tech-postgresql/) billing ledger:** shard campaigns across transactional databases. Each shard uses a unique `entry_id` for every ledger entry and a partial unique index for the original charge on `(campaign_id, click_id)`. Charges, spend updates and notification outbox records commit together; distinct adjustments retain their own entry IDs. Route every retry for a campaign to the same shard.
 - **Object storage:** retains immutable raw-event files and manifests for reconciliation. Archive access and retention differ from the longer-lived financial ledger.
-- **Redis:** caches published Top-N lists and dashboard responses. Durable stores can rebuild these caches.
+- **[Redis](/designs/tech-redis/):** caches published Top-N lists and dashboard responses. Durable stores can rebuild these caches.
 
 ## From request to response
+
+### One end-to-end request
+
+The collector acknowledges a click after replicated capture; reporting and billing consume that same retained event independently.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as User
+    participant A as Click collector
+  end
+  box rgb(230,244,234) Background processing
+    participant D as Durable log
+    participant W as Reporting worker
+    participant R as Aggregate store
+  end
+  rect rgb(232,240,254)
+    U->>A: Follow signed click URL
+    A->>D: Validate and append stable click ID
+    D-->>A: Replicated capture acknowledged
+    A-->>U: HTTP redirect to advertiser
+  end
+  rect rgb(230,244,234)
+    D->>W: Replay click for deduplication and reporting
+    W->>R: Publish provisional bucket version
+  end
+```
+
+Reporting workers publish versioned buckets for authorized dashboard queries; the clicking user receives only the advertiser redirect. Billing workers post a charge after fraud approval, while provisional report totals may be available before that verdict is final.
 
 ### Recording a click
 
@@ -196,7 +230,11 @@ A Top-N worker maintains counts for all active ad candidates in disjoint minute 
 | Checkpoints with transactional sinks | Coordinates supported writes with recovery | Guarantees depend on the specific sink |
 | Unique ledger entries and reconciliation | Makes financial retries safe and auditable | Requires transactional writes and retained evidence |
 
-**Recommendation:** use exact stream deduplication for reporting and an idempotent ledger for billing. [Flink's checkpoint model](https://nightlies.apache.org/flink/flink-docs-stable/docs/learn-flink/fault_tolerance/) explains operator recovery; the ledger's transaction defines whether a charge has been posted.
+- **Processing-state deduplication:** retain seen click IDs in stream state and suppress repeats before aggregation. This reduces duplicate reporting work, but events replayed beyond the retention horizon can be counted again unless reconstruction uses retained evidence.
+- **Checkpoints with transactional sinks:** checkpoint operator state and input positions alongside a sink-supported commit protocol. Supported outputs recover consistently; an ordinary external database call falls outside that protocol unless its connector provides the needed transaction semantics.
+- **Unique ledger entries and reconciliation:** insert charges under a stable click/entry identity and verify provider or settlement evidence afterward. This protects financial retries and supports corrections; transactional writes, evidence retention and reconciliation increase storage and operational work.
+
+**Recommendation:** use exact stream deduplication for reporting and an idempotent ledger for billing. [Flink's checkpoint model](https://nightlies.apache.org/flink/flink-docs-stable/docs/learn-flink/fault_tolerance/) explains operator recovery; the ledger's transaction defines whether a charge has been posted. Reporting needs fast replayable aggregation, while billing needs an auditable charge decision. Exact stream deduplication plus a unique transactional ledger fits those different contracts; it accepts two state systems and an explicit replay horizon rather than treating a stream checkpoint as a universal financial guarantee.
 
 PostgreSQL's [partial unique index](https://www.postgresql.org/docs/current/indexes-partial.html) limits original charges, while the primary key on `entry_id` deduplicates individual adjustments.
 
@@ -235,6 +273,11 @@ flowchart TB
   U -->|"Yes"| R["Verify recorded result"]
   N --> A["Commit then acknowledge"]
   R --> A
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class C,D,V,U,R,A request
+  class T,N background
 ```
 
 A later exclusion creates a uniquely identified adjustment linked to the original charge. Replaying that adjustment returns its recorded result; a different correction has a different identity. Ledger history therefore explains both the initial charge and every later change.
@@ -243,15 +286,21 @@ A later exclusion creates a uniquely identified adjustment linked to the origina
 
 **Problem.** A minute window may still receive delayed events after its first report has been published. Waiting for every possible event would delay all dashboard updates.
 
-**Options:** wait for a long watermark delay; close quickly and ignore late events; or publish provisional buckets with later corrections.
+- **Long watermark delay:** wait until most delayed events should have arrived before publishing a bucket. Final-looking totals need fewer corrections, but every dashboard waits for the slowest tolerated delay.
+- **Close quickly and drop late events:** finalize a bucket immediately and discard later arrivals. This is simple and fresh, but outages and delayed clients systematically undercount activity.
+- **Provisional buckets with corrections:** publish versioned snapshots quickly, then revise them as late events arrive within a retained horizon. Users see fresh data and recoverable totals; queries must select the latest complete version and the UI must identify provisional results.
 
-**Recommendation:** publish provisional snapshots every few seconds, use a short event-time watermark for normal completion, and accept late corrections within the configured reconciliation horizon. Validate event timestamps at ingestion and retain the original value for audit. Mark idle input partitions so they do not indefinitely delay watermark progress.
+**Recommendation:** publish provisional snapshots every few seconds, use a short event-time watermark for normal completion, and accept late corrections within the configured reconciliation horizon. Validate event timestamps at ingestion and retain the original value for audit. Mark idle input partitions so they do not indefinitely delay watermark progress. Provisional buckets fit near-real-time dashboards without sacrificing the retained reconciliation window. The accepted downside is that recent totals change; bucket versions and completion status make those changes explicit and keep replay from adding a second copy of a published total.
 
 ```mermaid
 sequenceDiagram
+  box rgb(232,240,254) Request path
   participant I as Ingestion
+  end
+  box rgb(230,244,234) Background processing
   participant A as Aggregation
   participant Q as Reports
+  end
   I->>A: Click for 12:01
   A->>Q: Bucket version 1, provisional
   I->>A: Late click for 12:01
@@ -271,9 +320,11 @@ Record expected partitions, watermark and completion state in the report metadat
 
 **Problem.** A verdict may arrive after the first dashboard update or change after a model review. Meanwhile, asynchronous spend reports trail newly accepted clicks.
 
-**Options:** block tracking on fraud evaluation; publish immediate counts and treat them as final; or keep received, pending and accepted activity separate.
+- **Block tracking on fraud evaluation:** obtain a verdict before redirecting or recording eligible activity. This simplifies immediate acceptance, but scanner latency or failure becomes user-visible redirect latency.
+- **Treat immediate counts as final:** count and charge at capture time. Reporting is straightforward, but delayed exclusions require untracked financial corrections or leave invalid clicks charged.
+- **Separate received, pending and accepted activity:** capture durably, evaluate asynchronously and post a charge only for an accepted verdict. Redirects remain responsive and decisions are auditable; pending spend and later adjustments require separate states and cannot enforce an instantaneous cap from delayed reports alone.
 
-**Recommendation:** redirect after durable capture, evaluate fraud in the background and charge only accepted clicks. An unresolved verdict remains pending. Record the rule/model version, apply verdict updates idempotently and post financial adjustments when a previously charged click is excluded.
+**Recommendation:** redirect after durable capture, evaluate fraud in the background and charge only accepted clicks. An unresolved verdict remains pending. Record the rule/model version, apply verdict updates idempotently and post financial adjustments when a previously charged click is excluded. Separate states fit a click-tracking service because redirect availability and billing evidence have different timing requirements. We accept provisional reports and a pending-verdict backlog, then use idempotent verdict transitions and ledger adjustments to make the final financial result explainable.
 
 A pacing alert is an operational signal rather than a strict spending cap. Approximate additional spend during reporting delay is:
 

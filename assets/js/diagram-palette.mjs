@@ -1,3 +1,49 @@
+// Shared by article rendering and the offline diagram/thumbnail check.
+export const MERMAID_VERSION = "11.16.0";
+
+export function createDiagramConfig() {
+  return {
+    startOnLoad: false,
+    theme: "base",
+    securityLevel: "strict",
+    fontFamily: "Inter, -apple-system, Segoe UI, Roboto, sans-serif",
+    themeCSS: ".label, .nodeLabel, .edgeLabel, .cluster-label { font-family: Inter, -apple-system, Segoe UI, Roboto, sans-serif; } .node rect { rx: 6px; ry: 6px; } .cluster rect { rx: 10px; ry: 10px; } .cluster-label { font-weight: 600; }",
+    themeVariables: {
+      fontFamily: "Inter, -apple-system, Segoe UI, Roboto, sans-serif",
+      background: "#ffffff",
+      primaryColor: "#e8f0fe",
+      primaryTextColor: "#202124",
+      primaryBorderColor: "#9aa0a6",
+      secondaryColor: "#e6f4ea",
+      secondaryTextColor: "#202124",
+      secondaryBorderColor: "#9aa0a6",
+      tertiaryColor: "#fef7e0",
+      tertiaryTextColor: "#202124",
+      tertiaryBorderColor: "#9aa0a6",
+      lineColor: "#5f6368",
+      textColor: "#202124",
+      edgeLabelBackground: "#ffffff",
+      clusterBkg: "#e8f0fe",
+      clusterBorder: "#e8f0fe",
+      actorBkg: "#e8f0fe",
+      actorBorder: "#9aa0a6",
+      actorTextColor: "#202124",
+      actorLineColor: "#dadce0",
+      signalColor: "#5f6368",
+      signalTextColor: "#3c4043",
+      noteBkgColor: "#fef7e0",
+      noteBorderColor: "#9aa0a6",
+      noteTextColor: "#202124",
+      labelBoxBkgColor: "#e6f4ea",
+      labelBoxBorderColor: "#9aa0a6",
+      labelTextColor: "#202124",
+      loopTextColor: "#3c4043",
+    },
+    flowchart: { curve: "linear", padding: 18, nodeSpacing: 35, rankSpacing: 55 },
+    sequence: { mirrorActors: false, wrap: true, actorMargin: 35, diagramMarginX: 20 },
+  };
+}
+
 // Older Notion exports set colors directly, overriding Mermaid's shared theme.
 // Keep their color groups, but use the same soft fills and thin gray borders.
 const fillGroups = {
@@ -39,7 +85,7 @@ export function normalizeDiagramStyles(source) {
           }
           return property;
         });
-    }).replace(/^(\s*rect\s+)rgb\(\s*(240,\s*248,\s*255|255,\s*248,\s*240)\s*\)/gm,
+    }).replace(/^(\s*(?:rect|box)\s+)rgb\(\s*(240,\s*248,\s*255|255,\s*248,\s*240)\s*\)/gm,
       (_, prefix, rgb) => prefix + (rgb.replace(/\s/g, "") === "240,248,255"
         ? "rgb(232, 240, 254)" : "rgb(254, 239, 227)"));
 }

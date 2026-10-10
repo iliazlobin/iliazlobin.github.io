@@ -7,7 +7,7 @@ tags: [Real-Time, Distributed-Systems, Event-Driven, Interview-Prep]
 thumbnail: /images/posts/2026-07-01-online-auction.svg
 redirect_from:
   - /2026/07/01/online-auction.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-07
 description: "Design of an auction marketplace with ordered bids, hidden proxy limits, live prices and a durable closing result."
 notion_source: https://app.notion.com/p/38fd865005a881d5b09fdadadedd8674
 ---
@@ -150,18 +150,57 @@ flowchart TB
   T[Close scheduler] -->|due auction| W
   T -->|schedule hints| C
   T -->|recovery scan| DB
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class U,API,W,F,G,T request
+  class DB,K,C,S background
 ```
 
 ## Storage
 
-- **PostgreSQL:** shard by `auction_id`. A short transaction locks the auction row, applies the ordered command, stores its outcome and writes an outbox event. [Row locking](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS) supplies the final serialization boundary.
+- **[PostgreSQL](/designs/tech-postgresql/):** shard by `auction_id`. A short transaction locks the auction row, applies the ordered command, stores its outcome and writes an outbox event. [Row locking](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS) supplies the final serialization boundary.
 - **Bid identity:** a unique command ID and user/idempotency-key record return the same outcome on retry. A unique final-result key on auction ID prevents duplicate winners.
 - **Proxy limits:** private rows indexed by auction, maximum and priority sequence. Price calculation reads and updates them within the auction transaction.
 - **Valkey:** caches public auction state and due-time hints. Cache loss is repaired from committed database state; it does not reverse an accepted bid.
 - **Search index:** receives versioned listing changes from the outbox. Recheck auction status and price when a user opens or bids on a search result.
-- **Kafka:** distributes commands and committed notifications with retryable delivery. Partitioning by auction reduces competing writers; the database remains authoritative during consumer reassignment.
+- **[Kafka](/designs/tech-kafka/):** distributes commands and committed notifications with retryable delivery. Partitioning by auction reduces competing writers; the database remains authoritative during consumer reassignment.
 
 ## From request to response
+
+### One end-to-end request
+
+A bid is accepted only after the auction transaction commits.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as User
+    participant A as Bid API
+  end
+  box rgb(230,244,234) Durable state
+    participant D as PostgreSQL
+  end
+  box rgb(254,247,224) Decision authority
+    participant W as Auction writer
+  end
+  box rgb(232,240,254) Watch gateway
+    participant C as Watch gateway
+  end
+  rect rgb(232,240,254)
+    U->>A: Submit bid with request ID
+    A->>W: Route by auction ID
+    W->>D: Lock auction, validate deadline and bid
+    D-->>W: Commit bid, result and outbox
+  end
+  rect rgb(230,244,234)
+    W-->>U: Accepted result and auction version
+    D-->>C: Publish committed outbox update
+    C-->>U: Updated public auction state
+  end
+```
+
+The public update is delivered separately, so watching clients can reconnect and read the committed auction version if a notification is missed.
 
 ### Creating and finding an auction
 
@@ -203,7 +242,11 @@ The close worker rereads and locks the auction. If an extension moved the deadli
 | Cache decision followed by database write | Fast in-memory decision | Requires a protocol to recover partial writes |
 | Ordered durable log with deterministic state machine | Good command replay and batching | Ownership and materialization are more involved |
 
-**Recommendation:** use ordered auction writers with PostgreSQL transactions. Batch a bounded set of commands for a hot auction, evaluate them sequentially and commit all associated outcomes and the final auction state together. Keep batches short enough to meet the latency budget.
+- **Database transaction per command:** lock the auction row, evaluate one bid and commit its outcome with the auction state. This gives a clear durable decision and safe retry identity; a busy auction serializes many small transactions, increasing lock waits and commit overhead.
+- **Cache decision followed by database write:** update the high bid in memory before persisting it. The normal decision is quick, but a crash between those writes leaves the cache and durable bid history disagreeing; recovery needs a protocol that can prove which bids were accepted.
+- **Ordered durable log with deterministic state machine:** append commands to an auction-keyed log and replay them in order. Batching and replay suit hot auctions, but ownership, acknowledged offsets and materialized results must be coordinated; a log acknowledgment alone is not a committed winning bid.
+
+**Recommendation:** use ordered auction writers with PostgreSQL transactions. Batch a bounded set of commands for a hot auction, evaluate them sequentially and commit all associated outcomes and the final auction state together. Keep batches short enough to meet the latency budget. Ordered writers with bounded PostgreSQL transactions fit auctions because bid acceptance and closing must share one durable order. Batching amortizes commits on hot auctions while retaining that decision boundary; the accepted cost is per-auction serialization, so batch size and lock wait stay within the bid deadline.
 
 ```text
 Transaction:
@@ -230,9 +273,11 @@ Ordinary manual bids stay at their submitted public amount; the proxy calculatio
 
 **Problem.** Polling each second creates millions of repeated requests, while broadcasting every intermediate bid can overwhelm users watching a popular auction.
 
-**Options:** polling; a global event broadcast; or interest-based WebSocket delivery with coalesced public state.
+- **Polling:** clients repeatedly fetch the latest version. It is easy to recover after disconnects, but a short interval spends requests on unchanged auctions and a long interval delays updates.
+- **Global event broadcast:** send each accepted bid to every gateway and filter there. Publishing is simple, but unrelated auctions consume network and gateway work, and a hot auction can overwhelm slow clients.
+- **Interest-based WebSocket delivery:** gateways subscribe only to auctions their clients watch and coalesce successive public versions. This reduces unnecessary delivery and sends current state promptly; subscriptions, bounded buffers and reconnect catch-up add operational state.
 
-**Recommendation:** subscribe each gateway only to auctions watched by its local users. Use [sharded Pub/Sub](https://valkey.io/topics/pubsub/#sharded-pubsub) to reduce cluster-wide traffic and coalesce updates within a measured portion of the 200ms budget.
+**Recommendation:** subscribe each gateway only to auctions watched by its local users. Use [sharded Pub/Sub](https://valkey.io/topics/pubsub/#sharded-pubsub) to reduce cluster-wide traffic and coalesce updates within a measured portion of the 200ms budget. Interest-based delivery fits a read-heavy auction because watchers need the latest public state, while the bid ledger retains every accepted command. Coalescing therefore saves fan-out without changing bid order; clients may skip intermediate display updates and must recover from a committed version after reconnecting.
 
 ```mermaid
 flowchart TB
@@ -242,6 +287,10 @@ flowchart TB
   P -->|watched auctions| C[Gateway B]
   A --> UA[Connected users]
   C --> UB[Connected users]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class F,B,P,A,C,UA,UB request
 ```
 
 The network still delivers bytes to each watcher. Bound per-client send buffers and disconnect slow consumers with a resumable state version. Pub/Sub delivery is best effort: on reconnect or a version gap, fetch the latest auction snapshot. A user requesting every bid reads the durable history endpoint.
@@ -256,9 +305,11 @@ A client at version 40 that receives 43 can replace its public snapshot, or refe
 
 **Problem.** Cached timers can be lost, workers can retry, and an accepted bid can extend a deadline just as a close attempt starts.
 
-**Options:** scan all auctions continuously; rely solely on per-auction timers; or use sharded due-time hints with an indexed durable recovery scan.
+- **Continuous database scans:** repeatedly find every due auction in durable storage. Recovery is straightforward, but scanning the full active set wastes reads and scan intervals add closing delay.
+- **Per-auction timers only:** schedule one in-memory callback for each deadline. Normal closing is inexpensive, but process loss drops timers and extensions can leave stale callbacks racing with the new deadline.
+- **Sharded hints with durable recovery scans:** dispatch near-term deadlines from partitioned schedule hints and repair missed entries from an indexed database scan. This bounds normal work and survives hint loss; duplicate checks and recovery-scan capacity remain part of the design.
 
-**Recommendation:** shard schedule hints by auction ID and periodically scan the database's active/deadline index to repair missed work. The close transaction decides whether the auction is due; a hint is only a reason to check.
+**Recommendation:** shard schedule hints by auction ID and periodically scan the database's active/deadline index to repair missed work. The close transaction decides whether the auction is due; a hint is only a reason to check. Hints plus recovery scans fit extendable auctions: scheduling can retry freely because the locked auction transaction checks the current deadline and decides closing. We accept duplicate close checks and small recovery delay in exchange for a scheduler that can be rebuilt from durable auction state.
 
 Bid acceptance and closing take the same auction lock. An accepted extension commits before a waiting close sees the new deadline. If closing commits first, later commands receive the ended-auction outcome. The final result and its outbox event commit together, so duplicate close attempts cannot select another winner.
 
@@ -276,6 +327,11 @@ flowchart TB
   D -->|"Yes"| F["Commit final result and outbox"]
   F --> P["Payment workflow"]
   F --> N["Final public state"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class H,L,D,R,P,N request
+  class F background
 ```
 
 The unique auction-result identity makes repeated close attempts return the same winner. Reserve qualification and payment status remain separate: selecting a winner does not prove that payment succeeded.

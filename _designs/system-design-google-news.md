@@ -7,7 +7,7 @@ tags: [News-Aggregation, Real-Time, Event-Driven, Ranking]
 thumbnail: /images/posts/2026-06-29-system-design-google-news.svg
 redirect_from:
   - /2026/06/29/system-design-google-news.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-07
 description: "Design of a news aggregator that groups related coverage and serves fresh regional and personalized feeds."
 notion_source: https://app.notion.com/p/390d865005a8819889edfe94e1f9b448
 ---
@@ -150,20 +150,65 @@ flowchart TB
   E --> BREAK["Breaking-story checks"]
   BREAK --> N["Opt-in notifications"]
   N --> U
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class PUB,C,E,D,DB,R,U,API,PROFILE,BREAK,N request
+  class CACHE background
 ```
 
 ## Storage
 
-- **PostgreSQL:** source schedules, article versions, story membership and corrections; unique source/canonical URL keys support retry-safe updates.
+- **[PostgreSQL](/designs/tech-postgresql/):** source schedules, article versions, story membership and corrections; unique source/canonical URL keys support retry-safe updates.
 - **Object storage:** permitted extraction artifacts and reproducible processing inputs under explicit retention rules.
-- **Kafka:** replayable article changes keyed by article ID. Workers apply versions and checkpoint after durable writes.
-- **Redis / Valkey:** recent similarity buckets, article metadata caches and immutable feed snapshots.
+- **[Kafka](/designs/tech-kafka/):** replayable article changes keyed by article ID. Workers apply versions and checkpoint after durable writes.
+- **[Redis](/designs/tech-redis/) / Valkey:** recent similarity buckets, article metadata caches and immutable feed snapshots.
 - **Bigtable or sharded PostgreSQL:** interest profiles and bounded interaction features keyed by user; choose based on measured scale and access patterns.
 - **Analytical store:** sanitized impression/click events and ranking evaluations.
 
 Publisher links and attribution remain in every article response. Store only content permitted by the publisher/content policy.
 
 ## From request to response
+
+### One end-to-end request
+
+Publishers' articles enter a retained ingestion path before feed builders group and rank them.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as User
+    participant A as Feed API
+  end
+  box rgb(230,244,234) Durable state
+    participant D as Article and feed stores
+  end
+  box rgb(230,244,234) Background processing
+    participant I as Crawl and ingestion
+    participant W as Feed builder
+  end
+  box rgb(232,240,254) Publisher
+    participant C as Publisher
+  end
+  rect rgb(230,244,234)
+    I->>C: Poll publisher feed and fetch article
+    C-->>I: Publisher content and source metadata
+    I->>I: Extract, deduplicate and group story
+    I->>D: Commit accepted article version
+    D-->>I: Committed article
+    W->>D: Read accepted article and story versions
+    D-->>W: Accepted article and story records
+    W->>D: Publish ranked feed generation
+  end
+  rect rgb(232,240,254)
+    U->>A: Request regional or personalized feed
+    A->>D: Read generation and eligible story candidates
+    A-->>U: Articles and generation-bound cursor
+    U->>C: Follow selected publisher URL
+  end
+```
+
+Crawl and ingestion services fetch publisher content and save accepted article versions; feed builders use those versions to publish ranked snapshots. The Feed API pins a generation for pagination, and selecting an article opens the publisher's URL.
 
 ### Collecting and grouping articles
 
@@ -185,9 +230,11 @@ Sorting every recent article during each request is wasteful. Prebuilt candidate
 
 **Problem.** Reprinted wire copy and independently written coverage of one event are different grouping problems.
 
-**Options.** Exact hashes, lexical fingerprints such as SimHash/MinHash, or semantic event clustering.
+- **Exact hashes:** normalize permitted text and compare its digest. Identical copies are cheap to group; small edits and independently written reports of the same event remain unmatched.
+- **Lexical fingerprints:** use SimHash/MinHash-style signatures to shortlist near-duplicates, then verify retained text features. Syndicated variations can be found without all-pairs comparison; threshold choice trades missed matches against verification load and oversized buckets.
+- **Semantic event clustering:** compare embeddings with entities, event time and location. Differently worded coverage can share a story; ambiguous events and cross-language representations require quality evaluation and recoverable merge/split decisions.
 
-**Recommendation.** Use exact hashes and lexical fingerprints for duplicated content, then event-aware clustering for related reporting. Named entities, event time, location and embeddings provide candidate signals; verify before merging.
+**Recommendation.** Use exact hashes and lexical fingerprints for duplicated content, then event-aware clustering for related reporting. Named entities, event time, location and embeddings provide candidate signals; verify before merging. Two grouping stages fit news because duplicated content and independent reporting have different meaning. We accept separate signatures and clustering state to avoid collapsing useful perspectives merely because they discuss the same topic.
 
 MinHash with locality-sensitive hashing narrows candidate comparisons. For band count b and rows per band r, candidate probability is `1 - (1 - similarity^r)^b`; thresholds affect both missed matches and verification load. They require evaluation on real articles.
 
@@ -205,6 +252,10 @@ flowchart TB
   E --> C["Related-story candidates"]
   C --> V["Verify event compatibility"]
   V --> S["Story cluster"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class A,H,D,E,C,V,S request
 ```
 
 Store cluster decisions with feature and article versions. A correction or mistaken merge can then split a cluster and rebuild affected feed generations. Cap huge candidate buckets and fall back to a bounded verification strategy rather than comparing every article with every other article.
@@ -213,9 +264,11 @@ Store cluster decisions with feature and article versions. A correction or mista
 
 **Problem.** Ranking scores change while a user scrolls.
 
-**Options.** Offset pagination over a live list, score-based cursors over that list, or immutable session snapshots.
+- **Live offset pages:** skip a count in the current ranking. Implementation is simple, but new articles and changed scores shift offsets, causing repeats or omissions.
+- **Live score cursors:** continue after the previous score/ID pair. Insertions ahead are less disruptive, but score changes can move articles across the cursor boundary.
+- **Immutable session snapshots:** retain a short-lived feed generation and page its fixed ordering. Scrolling is stable; snapshot storage and expiry are required, and newly ranked stories appear only after refresh.
 
-**Recommendation.** Publish feed generations and retain a short-lived immutable ordering for each feed session. Update shared candidate feeds incrementally and periodically refresh time-sensitive ranking.
+**Recommendation.** Publish feed generations and retain a short-lived immutable ordering for each feed session. Update shared candidate feeds incrementally and periodically refresh time-sensitive ranking. Generation-bound sessions fit a continuously reranked feed where scrolling should remain coherent. We accept short-lived retained orderings and explicit refresh/expiry instead of promising both live reordering and stable pagination.
 
 ```text
 article changes → candidate feed → ranking generation
@@ -237,9 +290,11 @@ Build G9 from a durable candidate cutoff and publish its pointer only after all 
 
 **Problem.** Early coverage can be brief, while original reporting and analysis arrive later.
 
-**Options.** Chronological order, engagement-only scores or a multi-signal ranker.
+- **Chronological order:** rank by publication time. Freshness is transparent and cheap, but frequent publishers and minor updates can crowd out important reporting.
+- **Engagement-only scores:** promote articles with observed clicks or reactions. Popular content is easy to identify, but feedback loops favor sensational or already exposed stories and cold stories have little evidence.
+- **Multi-signal ranking:** combine recency, topic authority, originality, interests and diversity after story grouping. It supports useful varied coverage; feature freshness, training bias and policy weights require ongoing evaluation.
 
-**Recommendation.** Rank with recency, topic-specific source quality, original reporting, user interests and diversity constraints. [Google's topic-authority explanation](https://developers.google.com/search/blog/2023/05/understanding-news-topic-authority) provides background for authority and original-reporting signals.
+**Recommendation.** Rank with recency, topic-specific source quality, original reporting, user interests and diversity constraints. [Google's topic-authority explanation](https://developers.google.com/search/blog/2023/05/understanding-news-topic-authority) provides background for authority and original-reporting signals. Multi-signal story ranking fits a feed that should surface meaningful developments as well as recent articles. We accept model/policy complexity and evaluate source diversity and relevance alongside engagement so volume alone does not determine visibility.
 
 A time-decay half-life is a tunable feature, rather than a universal expiry rule. Measure source diversity, relevance and repeated-story rate alongside engagement. Assign one story slot before selecting representative coverage, and preserve access to other perspectives.
 
@@ -253,9 +308,11 @@ A new independent report may improve coverage without increasing the story's imp
 
 **Problem.** Article volume can spike because of an important event, duplicated syndication or a widely repeated rumour.
 
-**Options.** Fixed count thresholds, baseline-relative anomalies or anomaly candidates followed by quality checks.
+- **Fixed count threshold:** alert when article volume passes a constant. It is easy to operate, but busy topics trigger routinely while small important topics may never reach the threshold.
+- **Baseline-relative anomaly:** compare topic/region volume with its expected recent pattern. Unusual surges stand out; sparse baselines, syndication and rumours can still produce false alarms.
+- **Anomaly candidate with quality checks:** count independent source groups, detect a surge, then verify eligible coverage and new development before notification. Precision improves, at the cost of verification delay, retained evidence and cooldown state.
 
-**Recommendation.** Use source-deduplicated volume relative to topic/region baselines, then verify independent coverage and eligibility before promoting a story or sending notifications. Cold topics need minimum evidence; sustained events need development-aware updates.
+**Recommendation.** Use source-deduplicated volume relative to topic/region baselines, then verify independent coverage and eligibility before promoting a story or sending notifications. Cold topics need minimum evidence; sustained events need development-aware updates. Verified anomaly candidates fit user notifications, where an incorrect breaking alert has a high trust cost. We accept a short confirmation delay and avoid automatic credibility claims based on raw publication volume.
 
 Separate processing-time alerts from event-time windows, handle late data and checkpoint stream state with input positions. Use story-level cooldowns and user notification budgets. Track alert precision and detection delay; volume alone does not establish credibility.
 

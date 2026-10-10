@@ -101,6 +101,11 @@
 }
 .portfolio-item:hover .thumb img { transform: scale(1.03); }
 
+/* Architecture previews show the full component map, including side labels. */
+.design-browser .portfolio-item .thumb { background: #fff; }
+.design-browser .portfolio-item .thumb img { object-fit: contain; object-position: center; }
+.design-browser .portfolio-item:hover .thumb img { transform: none; }
+
 .portfolio-item .thumb.placeholder {
   display: flex; align-items: center; justify-content: center; text-align: center; padding: 1.2rem;
   background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 55%, #6366f1 100%); color: #fff;

@@ -27,17 +27,25 @@ The same client may reach several gateway instances. Those instances need shared
 ### Functional requirements
 
 - **Identify clients:** use authenticated user/API-key identity or a trusted client IP.
+
 - **Enforce rules:** match endpoints and identities to configurable rate, burst and weighted-cost limits.
+
 - **Explain rejection:** return HTTP 429 with retry guidance.
+
 - **Update policies:** distribute versioned rule changes across gateways.
+
 - **Handle failures:** apply a defined fallback for each rule.
 
 ### Non-functional requirements
 
 - **Scale:** target 1M request checks/s across 100M daily active users.
+
 - **Latency:** limiter overhead P99 below 10ms within a region.
+
 - **Consistency:** atomic consumption for one bucket; disclose relaxed guarantees from local grants and failover.
+
 - **Availability:** preserve bounded local protection when global accounting is unavailable.
+
 - **Security:** trust identity and forwarding headers only from verified authentication and proxies.
 
 Request billing and lifetime financial quotas require a separate durable accounting system.
@@ -45,8 +53,11 @@ Request billing and lifetime financial quotas require a separate durable account
 ## Back-of-the-envelope calculations
 
 - **Checks:** 1M requests/s × 3 matching rules = up to 3M bucket evaluations/s before batching.
-- **State:** 5M active buckets × an assumed 80-byte payload = 400MB before Redis key/object overhead and replicas.
+
+- **State:** 5M active buckets × an assumed 80-byte payload = 400MB before [Redis](/designs/tech-redis/) key/object overhead and replicas.
+
 - **Grants:** batches of 10 tokens can approach a 10× reduction for busy keys; sparse traffic saves less and can waste grants.
+
 - **Capacity:** benchmark script cost, key skew and network pools. Simple-command throughput is not a reliable shard-count estimate.
 
 A per-client hot key remains serialized even when other buckets are distributed across many shards.
@@ -54,7 +65,9 @@ A per-client hot key remains serialized even when other buckets are distributed 
 ## Core entities
 
 - **RateLimitRule** defines how traffic is charged and how failures are handled.
+
 - **BucketState** tracks available tokens for one rule and identity.
+
 - **TokenGrant** reserves a short-lived allowance for a gateway; unused grants expire conservatively.
 
 ```protobuf
@@ -88,8 +101,8 @@ message LimitDecision {
   int64 retry_after_ms;
   string limiting_rule;
 }
-```
 
+```
 ## API
 
 ```yaml
@@ -106,15 +119,17 @@ HTTP 429:
   body: {error: rate_limited, retry_after_ms: integer}
 HTTP 503:
   body: {error: limit_service_unavailable}
+
 ```
 
 The check service derives matching rules from trusted configuration. Public clients cannot supply their own rule, cost or grant.
 
 ## High-level design
 
-The gateway applies a coarse local limiter first. Global checks use Redis-backed atomic buckets; eligible high-throughput rules can reserve short-lived local token grants. PostgreSQL stores policy versions.
+The gateway applies a coarse local limiter first. Global checks use Redis-backed atomic buckets; eligible high-throughput rules can reserve short-lived local token grants. [PostgreSQL](/designs/tech-postgresql/) stores policy versions.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart TB
   U["User"] --> G["API gateway"]
   G --> L["Local protection"]
@@ -125,18 +140,62 @@ flowchart TB
   L -->|admitted request| A["Application API"]
   R -->|decision| L
   L -->|429 or 503| U
-```
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+class U,G,A request;
+class B,P data;
+class L,R,C control;
 
+```
 ## Storage
 
 - **PostgreSQL:** versioned rules and policy audit history. Validate updates before publication and distribute an immutable rule snapshot.
+
 - **Redis Cluster:** active buckets with expiry after the full refill horizon. Route a bucket consistently; a Lua script performs refill, check and deduction atomically.
+
 - **Gateway memory:** cached rule snapshots, coarse local limits and expiring grants. A restart loses unused grants, reducing available allowance.
+
 - **Metrics pipeline:** aggregated allows, rejections, degraded checks, script latency and grant waste. Avoid exposing raw credentials in keys or logs.
 
 Redis replication/failover can lose acknowledged deductions under some configurations. Hard financial quotas need stronger durable coordination; a rate limiter protects traffic rather than acting as a billing ledger.
 
 ## From request to response
+
+### Admission flow
+
+```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+sequenceDiagram
+  participant U as Client
+  participant G as API gateway
+  participant R as Global limiter
+  participant B as Redis bucket
+  participant A as Application
+  rect rgb(254, 247, 224)
+    U->>G: Request
+    G->>G: Resolve identity and rule version
+    alt Current local grant has allowance
+      G->>G: Consume one reserved token
+    else Global decision required
+      G->>R: Identity, rule and request cost
+      R->>B: Atomic refill, check and deduct
+      B-->>R: Allowance or retry delay
+      R-->>G: Admission result
+    end
+  end
+  rect rgb(232, 240, 254)
+    alt Admitted
+      G->>A: Forward request
+      A-->>U: Application response
+    else Rejected or authority unavailable
+      G-->>U: 429 with Retry-After, or policy-required 503
+    end
+  end
+
+```
+
+A gateway spends a previously reserved local allowance or obtains an atomic global decision before forwarding. A confirmed limit rejection is distinct from an unavailable global authority; the rule's declared outage policy determines the latter response.
 
 ### Identifying and matching a request
 
@@ -168,14 +227,15 @@ During an outage, enforce a bounded local emergency limit for availability-orien
 
 **Problem:** rate, burst, rolling-window and concurrency limits express different policies.
 
-| Algorithm | Useful behavior | Tradeoff |
-| --- | --- | --- |
-| Fixed-window counter | Simple calendar-window limit | Boundary bursts |
-| Sliding-window counter | Low-memory rolling estimate | Approximation depends on traffic shape |
-| Sliding request log | Exact retained-window count | State and cleanup grow with requests |
-| Token bucket / GCRA | Controlled sustained rate and burst | Needs careful time and atomic updates |
+- **Fixed-window counter:** Increment a counter for a calendar window. State is small and reporting is intuitive, but a client can spend one window's allowance just before the boundary and another immediately after it.
 
-**Recommendation:** use token buckets for API fairness and burst control. Choose an exact log only for a workload needing precise rolling-window semantics. Concurrency limits separately bound in-flight work; a request-rate limit alone cannot protect a slow upstream.
+- **Sliding-window counter:** Blend adjacent window counts to estimate a rolling total. Memory stays bounded, but the estimate assumes a traffic distribution within the older window and can misjudge concentrated bursts.
+
+- **Sliding request log:** Retain individual request timestamps and count the live interval. Rolling-window semantics are exact for retained events, but state and cleanup work grow with accepted request volume.
+
+- **Token bucket or GCRA — recommended for rate and burst control:** Maintain refillable allowance or a virtual scheduling time in one atomic update. Sustained rate and burst behavior are explicit; time, expiry and concurrency handling must be correct, and this differs from an exact rolling-window policy.
+
+**Recommendation:** use token buckets for API fairness and burst control. Choose an exact log only for a workload needing precise rolling-window semantics. Concurrency limits separately bound in-flight work; a request-rate limit alone cannot protect a slow upstream. The selected bucket owner coordinates clock and balance updates; its outage behavior follows the endpoint policy below.
 
 [Envoy's global rate-limiting architecture](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_features/global_rate_limiting) is a useful reference for combining local protection and a shared decision service.
 
@@ -189,11 +249,13 @@ Request rate and concurrency solve separate problems. If an upstream call takes 
 
 **Problem:** separate reads and writes can allow two gateways to spend the same token.
 
-- **Client read-modify-write:** introduces a lost-update race.
-- **WATCH/MULTI retries:** can coordinate updates, with retries under contention.
-- **Atomic Lua script:** performs the bounded calculation next to bucket state.
+- **Client read-modify-write:** Read a balance, calculate admission, then write it back. Implementation is straightforward, but concurrent gateways can read the same balance and admit requests against the same token.
 
-**Recommendation:** use one bounded script per bucket. [Redis documents atomic script execution](https://redis.io/docs/latest/develop/programmability/eval-intro/); the script blocks other server work while it runs, so avoid loops over request history.
+- **WATCH/MULTI retries:** Detect a changed bucket and retry an optimistic transaction. Conflicting writes are coordinated, but hot buckets generate repeated reads and retries that worsen tail latency.
+
+- **Bounded atomic Lua script — recommended:** Refill, check and deduct next to the Redis state as one operation. A request observes a consistent bucket result; scripts block other work on that server, so calculation and key count must remain small.
+
+**Recommendation:** use one bounded script per bucket. [Redis documents atomic script execution](https://redis.io/docs/latest/develop/programmability/eval-intro/); the script blocks other server work while it runs, so avoid loops over request history. Hot identities make optimistic contention retries costly. Redis failover can lose recent decisions, so hard spending guarantees remain in a separately designed durable ledger.
 
 ```lua
 -- KEYS[1]: bucket. ARGV: rate, capacity, positive cost.
@@ -217,6 +279,7 @@ end
 redis.call("HSET", KEYS[1], "tokens", tokens, "last", effective_now)
 redis.call("PEXPIRE", KEYS[1], math.max(1, math.ceil(cap / rate * 1000)))
 return {allowed, math.floor(tokens), retry_ms}
+
 ```
 
 The timestamp includes microseconds and clamps backward movement. Expiry occurs only after enough idle time to refill fully. Handle NOSCRIPT by loading the reviewed script and retrying under a deadline; benchmark execution and clock/failover behavior.
@@ -224,16 +287,20 @@ The timestamp includes microseconds and clamps backward movement. Expiry occurs 
 **One indivisible decision.** The gateway routes a bucket key to its Redis owner. The script reads stored tokens/time, refills up to capacity, checks cost, deducts if allowed and writes the new state before another script can touch that bucket.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 sequenceDiagram
   participant A as Gateway A
   participant B as Gateway B
   participant R as Redis bucket
+  rect rgb(232, 240, 254)
   A->>R: Check cost 1
   R->>R: Refill, allow, deduct atomically
   R-->>A: Allowed
   B->>R: Check cost 1
   R->>R: Observe remaining balance
   R-->>B: Allow or retry-after
+  end
+
 ```
 
 With one token remaining, competing scripts produce one allowed result and one rejection. Separate GET and SET operations could let both gateways spend it.
@@ -244,21 +311,27 @@ A lost reply is different: the script may have deducted a token even though the 
 
 **Problem:** a network check for every admitted request increases Redis load and tail latency.
 
-- **Per-request checks:** simplest accounting, highest shared-store traffic.
-- **Independent local buckets:** fast, but their aggregate allowance grows with gateway count.
-- **Reserved token grants:** deduct globally once, then consume a bounded grant locally.
+- **Per-request global checks:** Deduct allowance for every request through the shared store. Accounting is easiest to inspect, but each admission adds network latency and Redis work.
 
-**Recommendation:** grant small batches only to busy, burst-tolerant rules. Deduct the grant before returning it, bind it to a gateway/rule version and expire it quickly. Lost or unused tokens are discarded; automatic refunds would require proof that they were never spent.
+- **Independent local buckets:** Give every gateway its own full rule allowance. Admission is fast, but fleet-wide allowance grows with gateway count and a client can exploit routing changes.
+
+- **Reserved token grants — recommended for busy tolerant rules:** Deduct a small batch globally before consuming it locally under a versioned expiry. Shared-store calls fall; crashed gateways strand unused tokens and grants temporarily reduce fairness or rule-change responsiveness.
+
+**Recommendation:** grant small batches only to busy, burst-tolerant rules. Deduct the grant before returning it, bind it to a gateway/rule version and expire it quickly. Lost or unused tokens are discarded; automatic refunds would require proof that they were never spent. Tune grant size against refill frequency and short-term allocation skew, retaining per-request authority for rules that require tighter fairness.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 sequenceDiagram
   participant G as Gateway
   participant R as Global bucket
+  rect rgb(232, 240, 254)
   G->>R: Reserve a bounded grant
   R->>R: Refill and deduct atomically
   R-->>G: Tokens and expiry
   G->>G: Consume locally until exhausted
   G->>R: Request another grant
+  end
+
 ```
 
 Grants shift the timing of consumption. The extra instantaneous burst is bounded by outstanding unspent grants, rather than a universal percentage. Cap grant size and grants per identity; monitor utilization and under-admission from lost tokens.
@@ -273,11 +346,13 @@ Small grants improve fairness but make more shared calls. Large grants strand al
 
 **Problem:** unlimited fail-open traffic can overload the application, while universal fail-closed behavior can disable it.
 
-- **Fail open:** maintains access but removes that rule's protection.
-- **Fail closed:** protects strict admission, sacrificing availability.
-- **Bounded local fallback:** keeps some protection with a disclosed fleet-wide allowance.
+- **Fail open:** Continue admission during an authority outage. Availability is preserved, but the affected rule offers no global protection and an outage can become an application overload.
 
-**Recommendation:** choose fallback per endpoint and retain coarse local controls everywhere. Login and other abuse-sensitive endpoints require their own policy; being user-facing alone does not justify unlimited admission.
+- **Fail closed:** Return an unavailable response whenever global allowance cannot be checked. Strict admission is protected, but legitimate requests lose access during the dependency failure.
+
+- **Endpoint-specific bounded local fallback — recommended:** Use declared emergency local limits for tolerant endpoints and fail closed for strict rules. Some availability and protection remain; the total emergency allowance depends on fleet size and must be measured and time-bounded.
+
+**Recommendation:** choose fallback per endpoint and retain coarse local controls everywhere. Login and other abuse-sensitive endpoints require their own policy; being user-facing alone does not justify unlimited admission. Bound emergency allowance across the fleet and report fallback duration and admitted volume, making the temporary reduction in protection visible.
 
 Use circuit breakers and short timeouts to prevent dependency failures from exhausting gateway pools. Alert on degraded-check duration, admitted traffic and upstream saturation. Test lost replies, failover, rule-version changes and gateway crashes as well as normal refill behavior.
 

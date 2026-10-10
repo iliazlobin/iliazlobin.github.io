@@ -66,8 +66,8 @@ layout: default
 
 <!-- Mermaid: render fenced ```mermaid blocks (client-side, GitHub-Pages safe) -->
 <script type="module">
-  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
-  import { normalizeDiagramStyles } from "{{ '/assets/js/diagram-palette.mjs' | relative_url }}?v={{ site.time | date: '%s' }}";
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.esm.min.mjs";
+  import { createDiagramConfig, normalizeDiagramStyles } from "{{ '/assets/js/diagram-palette.mjs' | relative_url }}?v={{ site.time | date: '%s' }}";
   const blocks = document.querySelectorAll(".post-content .language-mermaid");
   blocks.forEach((block) => {
     const code = block.querySelector("code") || block;
@@ -79,59 +79,19 @@ layout: default
     container.parentNode.replaceChild(div, container);
   });
   if (document.querySelector(".post-content .mermaid")) {
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: "base",
-      securityLevel: "strict",
-      fontFamily: "Inter, -apple-system, Segoe UI, Roboto, sans-serif",
-      // Shared Google Cloud-inspired presentation; article geometry stays in blog.css.
-      themeVariables: {
-        background: "#ffffff",
-        primaryColor: "#ffffff",
-        primaryTextColor: "#202124",
-        primaryBorderColor: "#9aa0a6",
-        secondaryColor: "#e8f0fe",
-        secondaryTextColor: "#202124",
-        secondaryBorderColor: "#9aa0a6",
-        tertiaryColor: "#e6f4ea",
-        tertiaryTextColor: "#202124",
-        tertiaryBorderColor: "#dadce0",
-        lineColor: "#5f6368",
-        textColor: "#202124",
-        edgeLabelBackground: "#ffffff",
-        clusterBkg: "#e8f0fe",
-        clusterBorder: "#e8f0fe",
-        actorBkg: "#ffffff",
-        actorBorder: "#9aa0a6",
-        actorTextColor: "#202124",
-        actorLineColor: "#dadce0",
-        signalColor: "#5f6368",
-        signalTextColor: "#3c4043",
-        noteBkgColor: "#e8f0fe",
-        noteBorderColor: "#d2e3fc",
-        noteTextColor: "#202124",
-        labelBoxBkgColor: "#e6f4ea",
-        labelBoxBorderColor: "#dadce0",
-        labelTextColor: "#202124",
-        loopTextColor: "#3c4043",
-      },
-      flowchart: { curve: "linear", padding: 18, nodeSpacing: 35, rankSpacing: 55 },
-      sequence: { mirrorActors: false, wrap: true, actorMargin: 35, diagramMarginX: 20 },
-    });
-    try {
-      await mermaid.run({ nodes: document.querySelectorAll(".post-content .mermaid") });
-      document.querySelectorAll(".post--google-diagrams .mermaid svg").forEach((svg) => {
+    mermaid.initialize(createDiagramConfig());
+    for (const div of document.querySelectorAll(".post-content .mermaid")) {
+      try {
+        await mermaid.run({ nodes: [div] });
+        const svg = div.querySelector("svg");
         svg.style.setProperty("--diagram-natural-width", `${svg.viewBox.baseVal.width}px`);
-      });
-    }
-    catch (e) {
-      console.error("Mermaid render error:", e);
-      // Keep the source readable if a diagram cannot render.
-      document.querySelectorAll(".post--google-diagrams .mermaid").forEach((div) => {
+      } catch (e) {
+        console.error("Mermaid render error:", e);
+        // One invalid diagram must not hide the others. Retain its source for recovery.
         const pre = document.createElement("pre");
         pre.textContent = div.dataset.source;
         div.replaceWith(pre);
-      });
+      }
     }
   }
 </script>

@@ -7,7 +7,7 @@ tags: [Search, Indexing, Social]
 thumbnail: /images/posts/2026-07-02-system-design-post-search.svg
 redirect_from:
   - /2026/07/02/system-design-post-search.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-07
 description: "Search for social posts by keyword, phrase or meaning, with language/date filters and current visibility checks."
 notion_source: https://app.notion.com/p/390d865005a8817096c7cc0ca690aebf
 ---
@@ -127,19 +127,64 @@ flowchart TB
   QUERY --> SEARCH
   QUERY --> VERIFY["Ranking and<br/>visibility checks"]
   VERIFY --> DB
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class U,API,POST,EVENTS,QUERY,VERIFY request
+  class DB,IDX,SEARCH background
 ```
 
 ## Storage
 
-- **PostgreSQL shards:** authoritative posts, versions, visibility and outbox events. Commit the post change and event on the same shard. The search system can hydrate by post ID using the post service's batch interface.
-- **Elasticsearch/Lucene:** compressed term postings, term positions, filter fields and ANN vector indexes on SSD, with a memory/filesystem cache. Use time partitions plus fixed logical shards; avoid application-managed Redis posting lists.
-- **Kafka:** ordered changes by post ID, with consumer checkpoints and sufficient retention for replay.
+- **[PostgreSQL](/designs/tech-postgresql/) shards:** authoritative posts, versions, visibility and outbox events. Commit the post change and event on the same shard. The search system can hydrate by post ID using the post service's batch interface.
+- **[Elasticsearch](/designs/tech-elasticsearch/)/Lucene:** compressed term postings, term positions, filter fields and ANN vector indexes on SSD, with a memory/filesystem cache. Use time partitions plus fixed logical shards; avoid application-managed [Redis](/designs/tech-redis/) posting lists.
+- **[Kafka](/designs/tech-kafka/):** ordered changes by post ID, with consumer checkpoints and sufficient retention for replay.
 - **Object storage:** index snapshots and versioned embedding artifacts. An embedding model rollout builds a compatible vector index before query traffic switches.
 - **Redis:** bounded query/session caches. Cache keys include query, filters, index/model generation and authorization scope; permission checks still occur on response.
 
 Compression ratios, refresh cost and vector recall need measurement on the actual corpus. [Unicorn](https://vldb.org/pvldb/vol6/p1150-curtiss.pdf) is useful background on distributed social search; this design chooses a Lucene-based index rather than recreating its internals.
 
 ## From request to response
+
+### One end-to-end request
+
+Post creation commits the source version and outbox once.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as User
+    participant P as Post API
+    participant A as Search API
+  end
+  box rgb(230,244,234) Durable state
+    participant D as Post database
+    participant C as Search indexes
+  end
+  box rgb(230,244,234) Index processing
+    participant W as Index consumers
+  end
+  rect rgb(232,240,254)
+    U->>P: Submit authenticated post
+    P->>D: Commit post version and outbox
+    D-->>P: Committed post
+    P-->>U: Created post identity
+  end
+  rect rgb(230,244,234)
+    W->>D: Read committed outbox changes
+    D-->>W: Versioned change
+    W->>C: Update lexical and vector indexes independently
+  end
+  rect rgb(232,240,254)
+    U->>A: Search query with filters
+    A->>C: Retrieve lexical and semantic candidates
+    C-->>A: Ranked lists and completeness status
+    A->>D: Batch-check current visibility
+    A-->>U: Fused eligible results and snapshot cursor
+  end
+```
+
+The Post API authorizes creation and commits the source record with its outbox event. Text and embedding consumers advance independently; the Search API retrieves both candidate lists, fuses them and checks current access before returning snippets and a stable cursor.
 
 ### Keyword and phrase search
 
@@ -171,11 +216,11 @@ The service creates snippets only for final hits and returns highlight offsets o
 
 **Problem:** BM25 and vector similarity use different score distributions.
 
-- **Raw weighted scores:** inexpensive, but normalization and weights vary by query.
-- **Reciprocal rank fusion:** combines rank positions and needs no training pipeline.
-- **Learned reranker:** can improve relevance with labeled data, at extra inference cost.
+- **Raw weighted scores:** normalize BM25/similarity and combine them with weights. Inference is cheap, but score distributions vary by query and a weight tuned for one cohort can distort another.
+- **Reciprocal rank fusion:** combine rank positions from each list. No training pipeline or cross-score normalization is needed; magnitude information is lost and fusion cannot recover candidates absent from both retrieval lists.
+- **Learned reranker:** score a bounded union using query/content features and labels. Relevance can improve with representative data, but inference latency, model operations and biased training labels add cost.
 
-**Recommendation:** use reciprocal rank fusion, then evaluate whether a bounded reranker improves relevance enough to justify latency and compute. A candidate absent from one list contributes only from the other.
+**Recommendation:** use reciprocal rank fusion, then evaluate whether a bounded reranker improves relevance enough to justify latency and compute. A candidate absent from one list contributes only from the other. Reciprocal rank fusion fits a first hybrid retrieval path with incompatible score scales and no assumed labeled reranking pipeline. We accept rank-only fusion and bounded candidate recall; a reranker must show sufficient measured relevance gain within the response budget.
 
 ```python
 def rrf(lexical, semantic, k=60):
@@ -201,6 +246,10 @@ flowchart TB
   F --> A["Hydrate and authorize"]
   A --> R["Rerank bounded candidates"]
   R --> O["Results"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class Q,L,V,F,A,R,O request
 ```
 
 Reserve a fixed part of the deadline for hydration and optional reranking. If vector retrieval times out, return the lexical result with a degraded-retrieval indicator. Measure the union's recall separately from final ranking quality: an excellent reranker can still produce poor results when its candidate set misses relevant posts.
@@ -209,11 +258,11 @@ Reserve a fixed part of the deadline for hydration and optional reranking. If ve
 
 **Problem:** embedding generation can lag while lexical indexing is ready.
 
-- **One blocking worker:** simple progress tracking, but the slower path delays both indexes.
-- **Independent consumers:** lexical and semantic progress can advance separately.
-- **Synchronous indexing during post creation:** immediate search visibility, with posting coupled to index availability.
+- **One blocking worker:** generate embeddings and text updates in one ordered task. Progress is simple, but embedding latency/backlog delays already-ready lexical updates.
+- **Independent versioned consumers:** materialize text and vectors separately from the durable source event. Lexical search remains usable during embedding lag; the API must report separate freshness and both consumers must reject stale versions/tombstones.
+- **Synchronous creation-time indexing:** write searchable indexes before acknowledging a post. Visibility is immediate when healthy, but posting latency and availability become coupled to every index/model dependency.
 
-**Recommendation:** use independent versioned consumers. The [Elasticsearch refresh mechanism](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search) makes new segments searchable; tune refresh intervals under realistic write/query load.
+**Recommendation:** use independent versioned consumers. The [Elasticsearch refresh mechanism](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search) makes new segments searchable; tune refresh intervals under realistic write/query load. Independent consumers fit different text and embedding costs while preserving durable posting availability. We accept temporarily unequal retrieval freshness and measure commit-to-searchable time per path, rather than treating event acknowledgment as search visibility.
 
 Track commit-to-searchable latency separately for text and vectors, including queue lag and retries. During an embedding backlog, lexical retrieval remains available. Rebuild from a snapshot and replay offset, retaining deletion/version information throughout recovery.
 
@@ -227,11 +276,11 @@ Deletes travel through both paths as versioned tombstones. Keep them long enough
 
 **Problem:** every additional shard adds work and another opportunity for a slow response.
 
-- **Term partitioning:** routes by query term but concentrates hot-term traffic and complicates intersections.
-- **Document partitioning:** each shard evaluates a complete query over its own documents; broad queries still fan out.
-- **Time partitioning with document shards:** prunes time-filtered queries and keeps recent indexes hot.
+- **Term partitioning:** route queries to term-owned postings. Some lookups touch few owners, but popular terms become hot and multi-term intersections require cross-owner coordination.
+- **Document partitioning:** evaluate the complete query on each document shard and merge results. Query semantics are local and writes distribute; broad queries still fan out to every selected shard and stragglers affect p99.
+- **Time partitions with document shards:** prune date ranges first and search fixed logical shards within them. Recent queries keep a bounded hot set; broad historical ranges expand task count and require deadlines/completeness reporting.
 
-**Recommendation:** use time partitions and fixed logical document shards, with replicated readers and bounded concurrency. Query recent partitions by default; an explicit older date range expands the search scope. A replica adds read capacity, not another logical slice of results.
+**Recommendation:** use time partitions and fixed logical document shards, with replicated readers and bounded concurrency. Query recent partitions by default; an explicit older date range expands the search scope. A replica adds read capacity, not another logical slice of results. Time-plus-document partitioning fits recent-post defaults and explicit older ranges. We accept bounded concurrency and clearly marked partial results where policy permits; replicas add read capacity, not new result slices.
 
 Return a partial flag if an eligible shard misses the deadline, and retain authorization checks for all hits. Capacity planning includes internal requests/query, tail latency, index size and refresh/merge pressure; hashing alone does not guarantee equal query cost.
 
@@ -245,11 +294,11 @@ Track a completion bitmap alongside hits. If task 23 misses its deadline, a part
 
 **Problem:** ANN top-K may contain mostly excluded posts, and cached index visibility may be stale.
 
-- **Post-filter only:** easy, but selective filters reduce recall.
-- **Filter-aware retrieval:** narrows the candidate population before scoring.
-- **Separate indexes for every permission group:** precise but expensive to maintain.
+- **Post-filter only:** retrieve global top-K, then remove excluded hits. Implementation is easy, but selective author/language filters can leave too few candidates and relevant eligible posts were never retrieved.
+- **Filter-aware retrieval:** apply supported stable filters during lexical/ANN candidate selection. Eligible recall improves, but query cost depends on filter selectivity and indexed visibility can still lag permission changes.
+- **Index per permission group:** isolate searchable populations physically. Retrieval can be precise, but many overlapping/changing groups multiply indexes and propagation/rebuild work.
 
-**Recommendation:** push stable author/date/language filters into retrieval and use supported filter-aware ANN queries. Treat index visibility as a candidate filter; the current post authority makes the final permission decision. If that decision cannot be verified, return fewer results or an availability error.
+**Recommendation:** push stable author/date/language filters into retrieval and use supported filter-aware ANN queries. Treat index visibility as a candidate filter; the current post authority makes the final permission decision. If that decision cannot be verified, return fewer results or an availability error. Filter-aware retrieval plus current authority checks fits selective searches and mutable post privacy. We accept batch access-check cost and fewer results when authority is unavailable; stale snippets are filtered before response assembly.
 
 Keep cache scopes explicit, prevent unauthorized snippets from entering responses and audit deletion/permission propagation. [TAO's social-graph storage paper](https://www.usenix.org/system/files/conference/atc13/atc13-bronson.pdf) provides context for graph access patterns without implying that search indexes are the permission authority.
 

@@ -43,15 +43,40 @@ framed container automatically.
 
 ````markdown
 ```mermaid
-graph LR
+flowchart TB
   A[Crawler] --> B[(Queue)]
-  B --> C[Lambda: enrich]
-  C --> D[(OpenSearch)]
+  B --> C[Enrichment worker]
+  C --> D[(Search index)]
+  classDef service fill:#e8f0fe,stroke:#9aa0a6,color:#202124
+  classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124
+  class A,C service
+  class B,D data
 ```
 ````
 
 Supported: `graph`, `flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram`,
-`erDiagram`, `gantt`, etc. (Mermaid v11). Keep node labels short.
+`erDiagram`, `gantt`, etc. (Mermaid 11.16.0). Keep node labels short.
+
+Use the Google-inspired palette in the **canonical Notion source**, then export
+the same block to the website: blue `#e8f0fe` for service/request groups, green
+`#e6f4ea` for data/background work, yellow `#fef7e0` for control/decisions,
+neutral borders `#9aa0a6` and text `#202124`. White node interiors also work inside
+colored groups. Give groups meaningful labels; colors alone do not explain them.
+Sequence diagrams use `box rgb(...)` for participant groups or `rect rgb(...)`
+for phases, not flowchart `classDef` syntax.
+
+The shared configuration in `assets/js/diagram-palette.mjs` supplies a blue
+fallback for older unstyled diagrams; it deliberately does not infer component
+roles. Article rendering and offline SVG generation use this same configuration.
+The Mermaid version is pinned so a CDN update cannot silently change layout.
+
+Every system design needs a simplified functional sequence with an accompanying
+explanation in its functional-flow section. Keep HLD conceptual and top-down;
+put mechanisms and failure paths in functional flows and deep dives. For each
+deep-dive alternative, explain the engineering benefit and cost, then justify
+the recommendation using this design's workload, correctness and recovery needs.
+These tradeoffs require editorial review; a heading or word count is not evidence
+of a useful explanation.
 
 **Every Mermaid block MUST be COMPLETE and VALID — a broken block renders as a red
 "Syntax error in text" box on the live page (HARD):**
@@ -141,26 +166,46 @@ For an engineering-blog / source-code entry, hyperlink the whole label:
 `[Twitter Algebird — CMS with TopCMS](https://github.com/twitter/algebird/blob/develop/algebird-core/src/main/scala/com/twitter/algebird/CountMinSketch.scala).`
 
 Never fabricate a link — drop a source you can't verify. Use real, resolvable URLs.
+Link named technologies to their existing technology pages at the relevant first
+use; preserve primary-source links supporting mechanisms. Notion uses its native
+page links; website exports use the matching `/designs/tech-…/` route.
 
 ## 9. Card thumbnail — the real diagram from the article (required)
 
-The blog-index card shows a **picture from the post itself: its main architecture diagram**, rendered to a
-static SVG. This is the `thumbnail:` front-matter field (§2), and it is **set automatically** — don't hand-pick it:
+The design card shows the article's main architecture diagram as a static SVG,
+using its existing `thumbnail:` front-matter path. Regenerate it after changing
+the diagram; client-side styling cannot update an SVG loaded as an image.
+
+Use an **already installed Mermaid CLI 11.16.0**, including its matching Mermaid
+dependency. The helper performs no installation or remote diagram rendering:
 
 ```bash
-python3 ~/.hermes/scripts/render-post-diagram.py _posts/YYYY-MM-DD-kebab-title.md
+node tests/render_diagrams.mjs --cli /path/to/mermaid-cli/src/cli.js
+# After all diagrams validate, refresh system-design HLD assets:
+node tests/render_diagrams.mjs --cli /path/to/mermaid-cli/src/cli.js --thumbnails
 ```
 
-The script renders the first `mermaid` block under `## 5` (the High-Level Design architecture diagram; falls
-back to the `## 1` overview) to `images/posts/<file>.svg` via kroki.io and writes `thumbnail: /images/posts/<file>.svg`.
-`git add` the generated SVG.
+By default the helper checks every Mermaid block in `_designs/` and `_posts/`.
+`--system-designs` limits the check to SD/ML articles. If Chromium is installed
+outside Puppeteer's cache, pass `--browser /path/to/chrome`. A temporary directory
+retains rendered SVGs, the shared configuration and a source/hash/fill manifest.
+Computed SVG fills are recorded, rather than treating unused palette CSS as proof
+that a diagram is styled.
+
+`--thumbnails` replaces only system- and low-level-design assets. It selects the
+flowchart under **High-level design** for SD/ML, or **From … to …** for LD, rather
+than an introductory sequence. Missing flowcharts, invalid Mermaid or
+unsafe/shared destinations fail the operation.
+No article source, metadata or Notion content is changed. Review and stage the
+generated SVGs with the article changes.
 
 - **The card reads `thumbnail` ONLY** — `blog.md` falls back to the gradient title-card, **never** to the
   site-wide OG image (`image:` / `og-default.png`). A post with **no `thumbnail:` shows the gradient card**, not
-  a diagram — so always run the script and confirm the `thumbnail:` line landed before publishing.
-- If the diagram fails to render (a Mermaid syntax error), **fix the diagram** and re-run with `--force` —
+  a diagram. Set `thumbnail:` explicitly, then verify that path and the rendered SVG before publishing.
+  The helper preserves this metadata and requires an existing path for design thumbnails.
+- If the diagram fails to render (a Mermaid syntax error), **fix the diagram** and rerun the helper —
   don't ship the post on the gradient fallback.
-- **Overwriting a thumbnail is cache-safe.** `render-post-diagram.py --force` writes the new SVG to the
+- **Overwriting a thumbnail is cache-safe.** The helper writes the new SVG to the
   **same** `images/posts/<file>.svg` path. `blog.md` appends a build-time `?v=` to the card URL (same scheme
   as CSS/JS), so each deploy serves a fresh URL — browsers and Cloudflare (`max-age=14400`) can't keep showing
   a stale placeholder. Without that versioning a re-rendered diagram stays invisible for up to 4h behind cache.

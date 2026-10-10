@@ -25,35 +25,53 @@ The service combines longer-term preferences with recent actions such as viewing
 ### Functional requirements
 
 - **Recommend products.** Return a ranked set for a home page, product page or cart.
+
 - **Use recent intent.** Incorporate views, cart changes and other approved session signals within one minute.
+
 - **Recommend related items.** Support similar products and complementary purchases.
+
 - **Handle cold starts.** Produce useful recommendations for new users and newly listed products.
+
 - **Respect eligibility.** Exclude products that fail the latest availability, region or policy check.
+
 - **Keep the set varied.** Limit repetition while preserving relevance.
+
 - **Collect outcomes.** Record displayed recommendations, clicks and attributed purchases.
 
 ### Non-functional requirements
 
 - **Scale:** support 100M catalog items and a peak of 100K recommendation requests/s.
+
 - **Latency:** target p99 below 100ms from request to displayed recommendations in the supported regions.
+
 - **Availability:** target 99.9%, with an eligible popularity-based fallback.
+
 - **Freshness:** reflect session actions within one minute and make new products retrievable within one hour.
+
 - **Quality:** evaluate ranking offline, then measure conversion and user outcomes in controlled experiments.
+
 - **Privacy:** use consented personalization signals and keep private user features out of shared response caches.
 
 ## Back-of-the-envelope calculations
 
 - A 256-dimensional float32 embedding uses **1,024 bytes per item**. For 100M products, vectors alone occupy about **102GB**, before index structures and replicas.
+
 - 200M interactions/day is roughly **2,300 events/s on average**. A 60-day training window contains 12B interactions before filtering and sampling.
+
 - An initial funnel retrieves 5,000 candidates, uses retrieval scores to select 500 for the lightweight ranker and applies the deep ranker to the best 100, then returns 20 products. At 100K requests/s, that is **50M cheap-ranking pairs/s** and **10M deep-ranking pairs/s**.
+
 - Serving capacity depends on the measured cost of each stage. Cache hit rates, batch sizes and candidate budgets are part of the load test rather than assumed GPU throughput.
 
 ## Core entities
 
 - **Product** holds catalog content and eligibility.
+
 - **UserContext** combines longer-term preferences with current session intent.
+
 - **RecommendationImpression** records what the application actually displayed.
+
 - **RecommendationOutcome** links a later action to an impression.
+
 - **ServingBundle** versions the compatible retrieval models, item index and rankers.
 
 ```protobuf
@@ -99,8 +117,8 @@ message ServingBundle {
   string ranker_uri;
   string feature_schema;
 }
-```
 
+```
 ## API
 
 ```yaml
@@ -124,8 +142,8 @@ record_event:
   path: /v1/recommendation-events
   fields: [event_id, request_id, product_id, action, occurred_at]
   actions: [impression, click, cart, purchase]
-```
 
+```
 ## High-level design
 
 Retrieval finds products that might be relevant. A lightweight ranker removes weak candidates, a deeper ranker scores the remaining set and a final stage applies eligibility and diversity rules.
@@ -133,6 +151,7 @@ Retrieval finds products that might be relevant. A lightweight ranker removes we
 The offline pipeline learns from displayed recommendations and their outcomes. It publishes the retrieval models, item index and rankers as a compatible bundle.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart TB
   U["User / application"] --> API["Recommendation API"]
   CONTEXT[("User + session features")] --> API
@@ -148,27 +167,68 @@ flowchart TB
   TRAIN --> REG[("Serving bundles")]
   REG -.->|"Index"| IDX
   REG -.->|"Rankers"| RANK
-```
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+class U,API,RET,RANK,RESULT request;
+class CONTEXT,IDX,CATALOG,EVENTS,UPDATE,TRAIN,REG data;
+class RULES control;
 
+```
 ## Storage
 
-- **PostgreSQL:** own product records and inventory state, with sharding by product ID as the catalog grows. Batched ID reads support hydration and the final eligibility check; transactions support catalog and inventory changes.
-- **Redis:** serve recent session actions and frequently read feature vectors. Include feature timestamps and distinguish a missing value from an observed zero.
+- **[PostgreSQL](/designs/tech-postgresql/):** own product records and inventory state, with sharding by product ID as the catalog grows. Batched ID reads support hydration and the final eligibility check; transactions support catalog and inventory changes.
+
+- **[Redis](/designs/tech-redis/):** serve recent session actions and frequently read feature vectors. Include feature timestamps and distinguish a missing value from an observed zero.
+
 - **ScaNN item index:** hold product embeddings in a sharded, replicated approximate-nearest-neighbor index. Keep immutable base snapshots in object storage and a compatible recent-item overlay.
-- **Kafka and object storage:** ingest idempotent impression and outcome events, then retain Parquet datasets for training and replay.
+
+- **[Kafka](/designs/tech-kafka/) and object storage:** ingest idempotent impression and outcome events, then retain Parquet datasets for training and replay.
+
 - **Bundle registry:** store manifests and release metadata. Promote a bundle only after its user encoder, item encoder, index and ranker contracts have been checked together.
 
 A cached inventory value can become stale. The final eligibility check reads the inventory service's current state; checkout separately reserves stock.
 
 ## From request to response
 
+### Recommendation flow
+
+```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+sequenceDiagram
+  participant U as Application
+  participant A as Recommendation API
+  participant R as Candidate retrieval
+  participant M as Ranking and eligibility
+  participant E as Event stream
+  rect rgb(232, 240, 254)
+    U->>A: User or session, page and current cart
+    A->>R: Retrieve and merge bounded candidates
+    R-->>A: Candidate IDs and retrieval features
+    A->>M: Light shortlist, deep scores and policy checks
+    M-->>A: In-stock, region-eligible diverse products
+    A-->>U: IDs, request ID and bundle version
+  end
+  rect rgb(230, 244, 234)
+    U-->>E: Actual impressions and later outcomes
+  end
+
+```
+
+Retrieval determines which items can compete, and staged ranking spends expensive inference only on a bounded shortlist. The application reports actual display separately from the server response, so training outcomes join to the same request and item IDs. Eligibility checks remain active on fallback paths.
+
 ### Recommending products for a page
 
 - **Build the context.** Resolve the user or anonymous session, page type, current product and cart contents. Fetch the feature vector in a batch.
+
 - **Retrieve candidates.** Compute a user/context embedding and query the item index. Add a bounded set of popular, similar-item or co-purchase candidates for coverage.
+
 - **Rank in stages.** Trim the retrieved set by retrieval score, use inexpensive features to rank the shortlist, then apply the deeper model to its strongest candidates.
+
 - **Check eligibility.** Batch-check stock, regional availability and policy. Refill from the ranked reserve candidates when items are excluded.
+
 - **Form the set.** Apply category or brand diversity limits and return the final product IDs with a request ID.
+
 - **Record display and outcomes.** The application reports impressions only for items it actually rendered. Later clicks and purchases refer to that request ID.
 
 Ranking every product for every request would be prohibitively expensive. Retrieval and stage-specific candidate limits bound that work.
@@ -198,20 +258,26 @@ An inventory outage has a different consequence: serve only entries covered by a
 A model that captures detailed user-product interactions may be too expensive to apply to thousands of candidates at peak traffic. Candidate retrieval also determines which products the ranker ever gets to consider.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart LR
   A["100M<br/>catalog items"] --> B["5K<br/>retrieved"]
   B --> C["500<br/>lightweight scores"]
   C --> D["100<br/>deep scores"]
   D --> E["20<br/>returned"]
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+class B,C,D,E request;
+class A data;
+
 ```
+- **Popularity or co-purchase lists:** Precompute inexpensive context-based lists. They provide a dependable fallback, but established products dominate and the current user or cart receives limited detailed matching.
 
-| Approach | Strength | Trade-off |
-| --- | --- | --- |
-| Popularity or co-purchase lists | Cheap and dependable | Limited personalization |
-| One ranker over a large candidate set | Simple scoring path | High per-request compute cost |
-| Embedding retrieval plus staged ranking | Separates coverage from detailed scoring | Several compatible artifacts to operate |
+- **One ranker over a large candidate set:** Apply the same detailed scorer to every retrieved product. The path is simple and avoids a light-stage cutoff, but feature reads and inference scale with thousands of candidates per request.
 
-**Use two-tower retrieval followed by lightweight and deep ranking.** The user tower and item tower map context and products into a shared vector space. Item vectors are precomputed; a request computes only its context vector and retrieves nearby products.
+- **Embedding retrieval with staged ranking — recommended:** Use a shared vector space for coverage, then inexpensive shortlisting and bounded deep scoring. Compute is controlled; recall can be lost in retrieval or shortlisting and all encoders, indexes and rankers must remain compatible.
+
+**Use two-tower retrieval followed by lightweight and deep ranking.** The user tower and item tower map context and products into a shared vector space. Item vectors are precomputed; a request computes only its context vector and retrieves nearby products. A 100M-item catalog cannot be deeply scored on each request. We accept staged recall loss and multiple serving artifacts, then measure useful-candidate retention at each cutoff alongside conversion and peak inference cost.
 
 [ScaNN](https://arxiv.org/abs/1908.10396) offers approximate retrieval with a memory/recall trade-off. Measure candidate recall against a higher-quality retrieval baseline before tuning the downstream ranker.
 
@@ -231,6 +297,7 @@ Retrieval         ANN plus bounded alternative sources   use surviving sources
 Light ranking     batched cached features                public/context fallback
 Deep ranking      richer user-product interactions       retain light order
 Final selection   current eligibility and diversity      remove invalid items
+
 ```
 
 Measure how many relevant products survive each cutoff. A fast light ranker that drops most eventual purchases saves compute by destroying recall. Use a teacher-ranked evaluation set and mature purchase outcomes to plot retained quality against candidate count. Reserve a deadline slice for final catalog hydration so a timely model response does not become a late API response.
@@ -239,11 +306,13 @@ Measure how many relevant products survive each cutoff. A fast light ranker that
 
 A user's current-session vector changes frequently, while an index containing the full catalog is rebuilt less often. Updating only one tower can make user and item vectors incompatible.
 
-- **Rebuild everything together** for straightforward consistency, at a high refresh cost.
-- **Update each artifact independently** for speed, with the risk of mixed embedding spaces.
-- **Use immutable bundles with compatible incremental updates** to separate release safety from data freshness.
+- **Rebuild every artifact together:** Publish one fully rebuilt set whenever catalog data changes. Consistency is easy to reason about, but a large index rebuild delays small updates and spends substantial compute.
 
-**Publish a bundle containing both towers, the base index, rankers and feature definitions.** A new product is encoded using the bundle currently serving requests, and its overlay carries that version.
+- **Update artifacts independently:** Refresh each encoder, ranker and index on its own schedule. Data appears quickly, but vectors from different encoder versions can become incomparable and regress retrieval.
+
+- **Immutable bundles with compatible overlays — recommended:** Coordinate model-space releases while encoding new products with the active bundle. This separates catalog freshness from model changes; overlays, watermarks and warm rollback bundles add storage and cutover work.
+
+**Publish a bundle containing both towers, the base index, rankers and feature definitions.** A new product is encoded using the bundle currently serving requests, and its overlay carries that version. Catalog updates are frequent, while a model-space change affects the entire index. We accept overlay reconciliation and duplicate warm artifacts so requests always use compatible user/item towers and fresh eligible product data.
 
 Online session features update within one minute. Training features are joined by their availability at the recommendation time, including delayed events. Shared feature definitions and recorded serving snapshots keep offline evaluation comparable to the live path.
 
@@ -254,11 +323,18 @@ Warm the replacement index and models before switching traffic. Rollback restore
 The base index contains vectors generated by item encoder E1. A new product enters a small overlay after E1 encodes its content. When E2 is ready, build a new base plus overlay using E2, load query encoder U2 and its rankers, then switch the bundle pointer only after the matching artifacts are healthy.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart TB
     C["Catalog changes"] --> O["Overlay encoded with active bundle"]
     B["New encoder and rankers"] --> I["Build compatible base and overlay"]
     I --> V["Warm and validate bundle"]
     V --> R["Atomic routing-pointer change"]
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+class C,O,B,I,V data;
+class R control;
+
 ```
 
 Store each product's content version in the index record. A replayed older catalog update cannot replace a newer vector or undo a deletion. A request pins its bundle ID, while the final catalog check applies current eligibility.
@@ -269,11 +345,13 @@ For historical training, reconstruct item availability and inventory signals at 
 
 A new user has no reliable interaction history. A new product has content but little evidence about clicks or purchases.
 
-- **Popularity** provides a strong initial user baseline but favors established products.
-- **Content-based retrieval** can include new products immediately, with limited behavioral evidence.
-- **Controlled exploration** collects outcomes for less-exposed items, with a relevance cost.
+- **Popularity baseline:** Choose established products for the page or region. It works without personal history, but concentrates exposure and gives new products little evidence.
 
-**Combine context-based popularity with content embeddings, then reserve a bounded exploration budget.** For a new user, use the current page, cart, language and region. For a new product, use its title, category and other approved attributes.
+- **Content-based retrieval:** Represent products from approved attributes and users from current context. New products are searchable immediately; content similarity has limited evidence about purchase intent.
+
+- **Context baseline with controlled exploration — recommended:** Combine page/cart context and content vectors with a bounded eligible-item exploration allocation. Learning can reach less-exposed products; some slots have lower expected relevance and require exposure-probability logging.
+
+**Combine context-based popularity with content embeddings, then reserve a bounded exploration budget.** For a new user, use the current page, cart, language and region. For a new product, use its title, category and other approved attributes. The service must work before reliable user or product histories exist. We accept a measured exploration cost and keep eligibility checks authoritative, while purchase outcomes establish whether broader exposure is actually useful.
 
 Keep missing behavioral features explicit. A product with no purchase history differs from a product that received many impressions and converted poorly.
 
@@ -293,11 +371,13 @@ An exploration purchase becomes an attributed outcome only after joining the req
 
 Clicks arrive quickly, but a product that attracts clicks may produce few purchases. Purchase labels arrive later and are influenced by whether the product was shown.
 
-- **Click-only training** gives fast feedback but optimizes a proxy.
-- **Purchase-only training** aligns with conversion, with fewer and delayed labels.
-- **Multi-task training** learns several outcomes, with additional loss weighting and calibration.
+- **Click-only training:** Use abundant early interaction labels. Feedback arrives quickly, but the scorer can favor enticing products that seldom convert or satisfy the customer.
 
-**Begin with a purchase-oriented ranking objective supported by click and cart features.** Wait for the attribution window before marking an impression as a non-purchase; start with 48 hours and validate that window against the product's actual purchase delay.
+- **Purchase-only training:** Optimize the transaction outcome directly. Business alignment is clearer, but labels are sparse and delayed, and exposed non-purchases must wait for the attribution window to mature.
+
+- **Purchase-oriented learning with auxiliary outcomes — recommended:** Use mature purchase evidence and supporting click/cart signals, adding shared heads only when they improve the purchase objective. This shares information; loss-weight competition and target leakage require per-head and purchase-quality checks.
+
+**Begin with a purchase-oriented ranking objective supported by click and cart features.** Wait for the attribution window before marking an impression as a non-purchase; start with 48 hours and validate that window against the product's actual purchase delay. Conversion is the primary outcome, while clicks and carts provide earlier supporting evidence. We accept delayed purchase labels and evaluate multi-task interference before maintaining additional heads; auxiliary click gains alone do not justify promotion.
 
 Deduplicate outcomes and group train/test splits chronologically. Join features as they existed at impression time, excluding future cart changes and purchases. Negative sampling and class weights are recorded in the training manifest.
 
@@ -310,6 +390,7 @@ An impression log records which item occupied which slot, the serving bundle, re
 ```text
 10:00 recommendation shown → 10:05 cart action → next day purchase
        snapshot stored          auxiliary label        purchase label matures
+
 ```
 
 The proposed purchase-oriented ranker scores relevance using calibrated purchase probability; cart and click signals improve representation and diagnose the funnel. Sample negatives only from actual eligible impressions, recording their sampling rate. A product never shown has no observed purchase opportunity for that request.
@@ -320,14 +401,19 @@ Fit calibration on natural-prevalence held-out data. If serving multiplies proba
 
 Repeatedly showing near-identical products limits discovery. Business constraints such as category diversity or margin also change which items a user sees.
 
-- **Pure score order** preserves the model's objective but can produce repetitive sets.
-- **Hard rules** enforce product requirements, with abrupt ranking changes.
-- **A diversity-aware reranker** trades a bounded amount of score for variety.
+- **Pure score order:** Return the highest independently scored products. The learned objective is preserved, but near-duplicates can occupy much of the slate and reduce discovery.
+
+- **Hard diversity rules:** Enforce fixed category or brand counts. Product requirements are predictable, but abrupt exclusions can remove strongly relevant items and reduce the available set.
+
+- **Eligibility followed by a bounded diversity reranker — recommended:** Select products using relevance with a small redundancy penalty among already chosen items. Variety becomes explicit; penalty tuning can trade conversion for diversity and adds slate-level evaluation work.
+
+Users need a useful set of available products rather than many copies of the same choice. We accept a bounded relevance tradeoff, measuring conversion and discovery together instead of treating variety as a universal improvement.
 
 **Apply eligibility first, then a small, explicit diversity penalty.** Maximum marginal relevance is one option: score each next item using its relevance and similarity to products already selected.
 
 ```python
 slate_score = relevance_score - diversity_weight * max_similarity_to_selected
+
 ```
 
 Tune the diversity weight using relevance, conversion and duplicate-category exposure. Margin or freshness boosts have their own bounded weights and experiments, making their effect on the ranking visible.
@@ -348,6 +434,7 @@ while candidates and len(selected) < limit:
         x.relevance - weight * max_similarity(x, selected, default=0))
     selected.append(item)
     candidates.remove(item)
+
 ```
 
 Keep relevance and similarity on compatible scales; an arbitrary similarity penalty can dominate an uncalibrated ranking score. Use content/category similarity to reduce near-duplicate products, then evaluate whether variety improves discovery without hurting the intended shopping task.

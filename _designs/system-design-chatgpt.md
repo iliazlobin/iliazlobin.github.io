@@ -5,7 +5,7 @@ category: system-design
 date: 2026-07-22
 tags: [LLM, Streaming, GPU, Conversation]
 thumbnail: /images/posts/system-design-chatgpt.svg
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-07
 description: "Design of a ChatGPT-like chat service that generates streaming responses and maintains conversation history."
 notion_source: https://app.notion.com/p/3a5d865005a8815d9369ec6226fc527f
 ---
@@ -166,17 +166,64 @@ flowchart TB
     G <-->|Read events| R
     C <-->|Dispatch / results| I
     E -->|Text deltas| R
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class U,W,G,I,S request
+  class P,R,E,K background
+  class C control
+  style Control fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  style Serving fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
 ```
 
 ### Storage
 
-- **PostgreSQL:** choose transactions and uniqueness constraints for message ordering, idempotency and quota reservations. Store related records on the same user shard as the dataset grows. Index messages by `(conversation_id, sequence)` and conversations by `(user_id, updated_at, conversation_id)`; a [GIN text-search index](https://www.postgresql.org/docs/current/textsearch-indexes.html) supports title search.
-- **Redis:** use atomic token-bucket counters for request-rate limits and bounded event streams for reconnect replay. These records expire; PostgreSQL retains final responses and usage. A Redis outage pauses new admission and stream delivery until recovery.
+- **[PostgreSQL](/designs/tech-postgresql/):** choose transactions and uniqueness constraints for message ordering, idempotency and quota reservations. Store related records on the same user shard as the dataset grows. Index messages by `(conversation_id, sequence)` and conversations by `(user_id, updated_at, conversation_id)`; a [GIN text-search index](https://www.postgresql.org/docs/current/textsearch-indexes.html) supports title search.
+- **[Redis](/designs/tech-redis/):** use atomic token-bucket counters for request-rate limits and bounded event streams for reconnect replay. These records expire; PostgreSQL retains final responses and usage. A Redis outage pauses new admission and stream delivery until recovery.
 - **GPU memory:** retain active key/value attention tensors and reusable prompt prefixes. Model artifacts remain in object storage and are loaded when a worker starts.
 
-Cassandra would provide horizontally distributed history storage, but coordinating the selected uniqueness and quota transactions would require additional machinery. PostgreSQL keeps those operations together; Redis serves the transient, low-latency state.
+[Cassandra](/designs/tech-apache-cassandra/) would provide horizontally distributed history storage, but coordinating the selected uniqueness and quota transactions would require additional machinery. PostgreSQL keeps those operations together; Redis serves the transient, low-latency state.
 
 ## Functional scenarios
+
+### One end-to-end request
+
+The conversation API commits one generation identity and reserves quota before admitting GPU work.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as User
+    participant G as Gateway
+    participant A as Conversation API
+  end
+  box rgb(230,244,234) Background processing
+    participant D as PostgreSQL
+    participant W as Model worker
+    participant C as Replay cache
+  end
+  rect rgb(232,240,254)
+    U->>G: Submit message with idempotency key
+    G->>A: Authorized conversation request
+    A->>D: Commit message, generation and quota reservation
+    D-->>A: Committed generation
+    A->>W: Dispatch through inference router
+    W->>C: Append stable token event IDs
+    G->>C: Read events from generation cursor
+    C-->>G: Ordered text deltas
+    G-->>U: SSE text deltas
+  end
+  rect rgb(230,244,234)
+    W->>A: Completed text and final usage
+    A->>D: Save final message and settle quota
+    D-->>A: Committed completion
+    A->>C: Append terminal generation event
+    C-->>G: Terminal event at current cursor
+    G-->>U: SSE terminal event
+  end
+```
+
+The gateway reads ordered replay events from the cache and delivers them over SSE. The conversation API commits the final message and quota settlement before publishing the terminal event. A reconnect resumes through the same bounded replay path.
 
 ### Sending a prompt
 
@@ -201,6 +248,12 @@ flowchart TB
     E --> F{"Stop condition?"}
     F -->|"Continue"| D
     F -->|"End token / limit / cancel"| G["Save response<br>Settle quota"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class A,B,D,E,F request
+  class C background
+  class G control
 ```
 
 Each iteration adds output to a per-generation buffer. An independent I/O task sends text deltas to Redis; the gateway reads them and delivers SSE events to the web client. This separates GPU scheduling from socket speed.
@@ -231,11 +284,11 @@ Deletion sets `deleted_at`, hides the conversation immediately and cancels its a
 
 Requests need different amounts of work: a long prompt requires substantial prefill, while an active response needs frequent decode steps. Reserving a full context buffer for every request wastes memory, and a fixed batch retains capacity until its longest response finishes.
 
-- **Fixed batches:** straightforward execution, but short responses wait behind longer ones.
-- **Continuous batching:** admit and finish requests between iterations; chunk long prefills so active streams keep receiving tokens.
-- **Separate prefill/decode pools:** tune each workload independently, at the cost of transferring attention state and coordinating two capacity pools.
+- **Fixed batches:** execute a group until its longest response finishes. The scheduler is simple, but completed short requests leave unused batch capacity and long prompts delay active streams.
+- **Continuous batching:** admit and retire requests between decode iterations, with chunked prefill sharing time with active decoding. This improves utilization and first-token/decode fairness; the scheduler must manage varying attention-memory footprints and prefill budgets.
+- **Separate prefill/decode pools:** send prompt processing and token generation to independently sized workers. Each pool can be tuned for its workload, but attention-state transfer adds bandwidth, handoff latency and another admission boundary.
 
-**Recommendation:** start with continuous batching, chunked prefill and paged attention-cache allocation. [Orca](https://www.usenix.org/conference/osdi22/presentation/yu) and [TensorRT-LLM in-flight batching](https://nvidia.github.io/TensorRT-LLM/batch_manager.html) describe iteration-level scheduling; [PagedAttention](https://arxiv.org/abs/2309.06180) describes noncontiguous cache blocks.
+**Recommendation:** start with continuous batching, chunked prefill and paged attention-cache allocation. [Orca](https://www.usenix.org/conference/osdi22/presentation/yu) and [TensorRT-LLM in-flight batching](https://nvidia.github.io/TensorRT-LLM/batch_manager.html) describe iteration-level scheduling; [PagedAttention](https://arxiv.org/abs/2309.06180) describes noncontiguous cache blocks. Continuous batching with chunked prefill fits a mixed interactive workload without introducing cross-pool attention transfers. We accept more scheduler and cache-block bookkeeping than fixed batches; disaggregation becomes worthwhile only when measured prefill/decode imbalance exceeds its transfer and coordination costs.
 
 Size attention memory from the selected model configuration:
 
@@ -271,11 +324,11 @@ Choose the token budget by profiling first-token latency, inter-token gaps and t
 
 A generation can continue while its connection drops, and reconnecting must refer to the same attempt. Slow sockets and gateway failures therefore need a lifecycle separate from GPU execution.
 
-- **Cancel on disconnect:** frees capacity immediately, but a brief network interruption ends the response.
-- **Bounded replay with a grace period:** supports short reconnects while keeping memory and abandoned work bounded.
-- **Durable storage for every delta:** permits longer recovery, with extra writes and storage.
+- **Cancel on disconnect:** stop GPU work as soon as the connection closes. Abandoned requests release capacity promptly, but a brief mobile network interruption ends an otherwise healthy response.
+- **Bounded replay with grace:** retain ordered token events for a short reconnect window and keep generation alive during that grace period. Users recover transient disconnects under the same attempt; abandoned work and Redis memory still consume capacity until the bound expires.
+- **Persist every delta durably:** store each event for longer recovery. A gateway failure loses less stream history, but per-token writes add throughput, storage and recovery complexity even for streams that finish normally.
 
-**Recommendation:** use bounded replay and a 30s disconnect grace period. Assign increasing event IDs within each generation and retain up to 1,000 events per generation in Redis, with a byte limit and a 30s TTL after termination. The worker appends each delta once with a stable sequence ID; retried writes deduplicate that ID. The client ignores events it has already applied.
+**Recommendation:** use bounded replay and a 30s disconnect grace period. Assign increasing event IDs within each generation and retain up to 1,000 events per generation in Redis, with a byte limit and a 30s TTL after termination. The worker appends each delta once with a stable sequence ID; retried writes deduplicate that ID. The client ignores events it has already applied. A 30-second grace period fits short interactive reconnections while bounding expensive abandoned GPU work. We accept that recovery after the replay window is limited to the durable generation/message state; every token is not a permanent conversation record.
 
 ```yaml
 id: "generation-123:42"
@@ -295,10 +348,14 @@ Assume event 42 reached Redis but the socket dropped before the client rendered 
 
 ```mermaid
 sequenceDiagram
-    participant C as Client
-    participant G as Gateway
-    participant R as Replay store
-    participant W as Generation worker
+  box rgb(232,240,254) Request path
+  participant C as Client
+  participant G as Gateway
+  end
+  box rgb(230,244,234) Background processing
+  participant R as Replay store
+  participant W as Generation worker
+  end
     W->>R: Append generation:42
     G--xC: Connection drops
     C->>G: Reconnect after generation:41
@@ -315,11 +372,11 @@ A gateway crash preserves GPU execution because delivery and generation have sep
 
 Every follow-up repeats much of the previous context. Recomputing that prefix increases first-token latency; retaining all historical attention data would eventually exhaust GPU memory.
 
-- **Recompute every turn:** simple recovery with higher prefill cost.
-- **Cache immutable prefix blocks:** reuse recent compatible context and evict unused blocks under memory pressure.
-- **Persist whole attention caches:** avoids some recomputation, but adds transfer cost and model-version coupling.
+- **Recompute every turn:** rebuild attention state from the full context. Recovery and isolation are simple, but repeated conversation prefixes consume prefill work and increase first-token latency.
+- **Immutable prefix blocks:** reuse compatible recent token-prefix blocks and evict them under memory pressure. Follow-ups save prefill work; identity must include preceding tokens, model/tokenizer revision and user isolation, and eviction can still force recomputation.
+- **Persist whole attention caches:** transfer and retain complete model state outside the worker. Some repeated work is avoided, but large state movement competes with serving bandwidth and old caches couple to the exact model configuration.
 
-**Recommendation:** keep an ephemeral, per-user prefix cache. A block's identity includes the preceding-prefix hash, token IDs, model revision, tokenizer configuration and a server-controlled user isolation salt. The preceding hash matters because attention data depends on earlier tokens.
+**Recommendation:** keep an ephemeral, per-user prefix cache. A block's identity includes the preceding-prefix hash, token IDs, model revision, tokenizer configuration and a server-controlled user isolation salt. The preceding hash matters because attention data depends on earlier tokens. Ephemeral per-user blocks fit repeated conversation turns without making GPU state a durable dependency. We accept cache misses and recomputation after eviction or worker loss; the conversation history remains the recovery source.
 
 ```python
 import hashlib
@@ -357,11 +414,11 @@ Evict zero-reference entries using a recency policy; active generations retain t
 
 A request count alone understates load: two long-context generations can consume more memory than many short requests. Unbounded priority queues also give low-priority users unpredictable waits.
 
-- **Separate tier fleets:** strong capacity isolation, but idle capacity is harder to share.
-- **Strict priority queues:** simple priority handling, with starvation risk.
-- **Weighted fair queues:** share service between tiers while enforcing user and memory limits.
+- **Separate tier fleets:** reserve independent workers for free and paid users. Capacity isolation is clear, but idle workers in one tier cannot easily serve another tier's backlog.
+- **Strict priority queues:** always dispatch the highest tier first. Priority behavior is simple, but sustained paid demand can starve lower tiers and request counts conceal long-context cost.
+- **Weighted fair queues:** grant each tier work credits and rotate between users while checking memory and concurrency. Capacity is shared with a positive minimum service share; cost estimation and queue accounting add complexity, and fairness cannot create capacity during overload.
 
-**Recommendation:** use weighted fair admission per model pool, then continuous batching within each worker. Give each tier a positive share and bound both queued work and active generations. Start with proposed per-user caps of two free-tier and ten paid-tier generations; tune those policies from queue delay and GPU-memory measurements.
+**Recommendation:** use weighted fair admission per model pool, then continuous batching within each worker. Give each tier a positive share and bound both queued work and active generations. Start with proposed per-user caps of two free-tier and ten paid-tier generations; tune those policies from queue delay and GPU-memory measurements. Weighted fair admission fits shared model pools with different service tiers and variable context lengths. We accept estimation error and bounded queue rejection, then tune weights and caps from queue age and memory pressure rather than promising unlimited priority service.
 
 Implement admission with weighted deficit round-robin: each scheduling round adds work credits in proportion to the tier's weight. A request becomes eligible when its estimated prefill/decode cost fits those credits; dispatch subtracts that cost. Rotate between users within each tier. The GPU scheduler separately checks available cache blocks.
 
