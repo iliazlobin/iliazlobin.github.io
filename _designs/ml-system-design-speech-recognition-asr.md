@@ -322,10 +322,19 @@ Reserve capacity for final passes so a burst of completed utterances cannot dela
 
 Use voice-activity estimates to move through `waiting → speaking → trailing_silence → finalized`. New speech during trailing silence returns to speaking. An explicit end message finalizes the current utterance after all preceding sequence-numbered audio is accounted for.
 
-```text
-Last spoken frame      trailing silence       final pass       delivery
-        |---------------- 500ms ----------------|-- 200ms --|------|
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  A["Last spoken frame"] -->|"500 ms trailing silence"| B["Endpoint decision"]
+  B -->|"200 ms final processing"| C["Final text ready"]
+  C -->|"Delivery overhead"| D["Final text displayed"]
+  class A,D request;
+  class B control;
+  class C data;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Sequence IDs expose missing audio. A reconnect can replay unacknowledged chunks within the bounded session buffer; the worker deduplicates them before acoustic processing. If a gap cannot be filled, mark the result incomplete instead of disguising it as clean transcription.
@@ -356,11 +365,23 @@ User corrections are useful candidates for review. A changed transcript may refl
 
 Specify accepted sample rates, channel conversion, amplitude normalization, resampling kernel and feature-window/hop sizes in the bundle. For the same audio fixture, offline and online feature extraction should agree within an explicit tolerance. “Both use log-mel features” is insufficient if their framing or normalization differs.
 
-```text
-Audio fixture → offline feature extractor → tensor A
-Audio fixture → serving feature extractor → tensor B
-Compare shape, timestamps and numerical tolerance before promotion.
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A["Same audio fixture"] --> B["Offline feature extractor"]
+    A --> C["Serving feature extractor"]
+    B --> D["Tensor A"]
+    C --> E["Tensor B"]
+    D --> F["Compare shape, timestamps<br/>and numerical tolerance"]
+    E --> F
+    F -->|"Within tolerance"| G["Eligible for promotion"]
+    class B,C request;
+    class A,D,E data;
+    class F,G control;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Apply training augmentation after split assignment. A noise recording, speaker session or near-duplicate clip shared across train and test can inflate reported performance. Store speaker/session grouping and provenance so the split is reproducible.

@@ -392,12 +392,24 @@ The client debounces requests and tags each prefix with a request sequence. If a
 
 Join a selected suggestion and resulting search outcome to that displayed request. A manually completed query becomes a candidate-coverage signal when it differs from the suggestions; it is not proof that every shown suggestion was bad.
 
-```text
-Request 10: "sys" → displayed list and positions
-Request 11: "syste" → newer list
-Late response 10 → ignored; not counted as an impression
-Selection from 11 → label joins to request 11
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  R10["Request 10: sys"] --> L10["Response for request 10"]
+  R11["Request 11: syste"] --> L11["Response for request 11"]
+  L10 --> C{"Response revision is current?"}
+  L11 --> C
+  C -->|"No: late response 10"| D["Discard response<br>record no impression"]
+  C -->|"Yes: request 11"| E["Display list and positions<br>log request 11 exposure"]
+  E --> O["Selection and search outcome<br>join to request 11"]
+  class R10,R11,L10,L11 request
+  class E,O data
+  class C control
+  class D danger
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Use controlled exploration only within approved candidates and store its actual assignment probabilities. Training can then separate relevance from positions favored by the old model. Evaluate short/common prefixes, long/rare prefixes, languages and typo cases independently; aggregate selection rate alone can reward repetition of already popular queries.

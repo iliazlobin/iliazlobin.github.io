@@ -296,11 +296,19 @@ A daily chart summary retains first/last values, min/max, successful coverage an
 
 **Recommendation.** Use threshold-crossing state with a cooldown and documented rearm margin. Save the state transition and notification outbox entry together. The durable key is (watch_id, generation, observation_id); a short-lived Redis dedupe key alone cannot cover queue replay. Threshold crossings match a user's request to hear when an offer reaches their target. We accept the configured rearm/cooldown behavior, persist it with the delivery intent and distinguish suppressed policy events from lost notifications.
 
-```text
-Above target → armed
-Valid available price crosses below target → alert queued
-Still below target → remain disarmed
-Price rises above rearm margin → armed again
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  A["Above target"] --> S["Armed"]
+  S -->|"Valid available price crosses below target"| D["Disarmed<br>alert queued"]
+  D -->|"Still below target"| D
+  D -->|"Price rises above rearm margin"| S
+  class A data
+  class S,D control
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Delivery retries reuse the same notification identity. If a provider times out after accepting a message, query its status where possible. Without provider idempotency or status lookup, duplicate delivery remains possible and is recorded as an operational limitation. Standard watches may use a durable digest rather than discard excess alerts.

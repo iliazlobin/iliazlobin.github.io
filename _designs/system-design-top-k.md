@@ -250,11 +250,22 @@ The approximate path retains broader heavy-hitter candidates with stated error/c
 
 **Recommendation.** Keep minute-level summaries for the hour and coarser summaries for longer windows. Combine the buckets for each publication; retain finer boundary buckets when the promised precision requires them. Top-K requests repeat standard windows, so minute-level recent summaries can amortize event processing. We accept bucket-boundary approximation where the contract permits it and retain finer boundary state when exactness is required.
 
-```text
-hour window:  [retained minute buckets ...] + newest bucket
-advance:      drop oldest bucket, retain newer buckets
-publish:      combine selected buckets → candidate counts → top K
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A["Retained minute buckets<br/>for the hour window"] --> B["Advance window:<br/>drop oldest, add newest"]
+    B --> C["Retain newer buckets"]
+    C --> A
+    C --> D["Combine selected buckets"]
+    D --> E["Candidate counts"]
+    E --> F["Publish top K"]
+    class A,C,E data;
+    class B control;
+    class D,F request;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Coarser buckets introduce boundary approximation. Declare that granularity, accept late events within a configured allowance and rebuild corrected generations when needed. A late event belongs to its original event-time bucket, rather than the next hour.

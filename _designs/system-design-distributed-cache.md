@@ -266,9 +266,21 @@ Suppose the primary stores version 12 and returns success, then fails before its
 
 Replica acknowledgment narrows some windows but does not replace an authoritative transactional record. Store source versions with cache values and prevent a slow fill of version 10 from overwriting an already observed version 12 where the cache update path supports a conditional version check.
 
-```text
-Source commits v12 → cache update v12 → replica lags → primary failure
-                                                  promoted cache may be older
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  S["Source commits v12"] --> P["Primary cache stores v12<br>and acknowledges success"]
+  P --> F["Primary fails<br>before replica receives v12"]
+  R["Replica still has an older value"] --> M["Replica promoted"]
+  F --> M
+  M --> O["Cache may return an older version"]
+  class S,R data
+  class P,M request
+  class F,O danger
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Cold failover sends more misses to the source. Apply a global fallback concurrency budget, prioritize necessary reads and shed optional expensive work. Test replica resynchronization and source recovery while traffic remains high, rather than testing only the healthy cache path.
@@ -300,8 +312,19 @@ Local single-flight turns concurrent misses in one process into one source read.
 
 The lease holder reads the source and writes a versioned value with its original freshness deadline. Lease expiry means another filler can begin; a paused former holder must not overwrite a newer result without a version check.
 
-```text
-1,000 callers → local coalescing → bounded shared fillers → source database
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  C["1,000 concurrent callers"] --> L["Local single-flight<br>one fill per key per process"]
+  L --> B["Shared fill lease<br>or source-wide concurrency limit"]
+  B --> D[("Source database")]
+  class C,L request
+  class B control
+  class D data
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Add expiry jitter only within the permissible freshness window. A refresh-ahead task can spread work for predictably hot keys, but it needs the same source budget as ordinary misses. Track fill concurrency, waiting time and requests suppressed per source read; cache stampede protection is successful when source load stays bounded during a cache outage.

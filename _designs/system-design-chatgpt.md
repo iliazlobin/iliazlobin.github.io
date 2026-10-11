@@ -399,13 +399,23 @@ For tokens `A B C D`, attention state for the block `C D` depends on `A B`. A ca
 
 A follow-up request tokenizes the full conversation using the bundle's tokenizer. The scheduler walks complete block keys from the start until the first miss. It acquires references to matching blocks, computes the remaining suffix, and allocates writable storage for new tokens. A partially filled shared block needs copy-on-write before extension.
 
-```text
-Saved context:  [A B] → [C D] → [E F]
-Follow-up:      [A B] → [C D] → [E F] → [G H]
-Reused: first three complete blocks; computed: new suffix
-
-Edited turn:   [A B] → [C X] → [E F]
-Reused: first block only; later attention state is recomputed
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  subgraph Saved["Saved context: reused by an unchanged follow-up"]
+    A["Block A B"] --> B["Block C D"]
+    B --> C["Block E F"]
+  end
+  C -->|"Follow-up"| D["Block G H<br>compute new suffix"]
+  A -->|"Edited turn: reuse ends here"| X["Block C X<br>first changed block"]
+  X --> Y["Block E F<br>recompute attention state"]
+  class A,B,C data
+  class D,X,Y request
+  style Saved fill:#e6f4ea,stroke:#9aa0a6,color:#202124
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Evict zero-reference entries using a recency policy; active generations retain their pages. Model, tokenizer and isolation-salt changes intentionally create misses. Cache survival is an optimization: PostgreSQL history and versioned model artifacts supply the recovery path when a worker or its GPU memory disappears.

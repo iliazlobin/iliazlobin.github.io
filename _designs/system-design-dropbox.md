@@ -271,12 +271,23 @@ Reconstruction follows manifest order, verifies each block, decompresses with re
 
 **Recommendation.** Compare the local tree and remote tree with the last-synced tree. Apply independent changes; preserve both contents when edits conflict. Stable file IDs distinguish moves from unrelated deletes and additions. Common-base reconciliation fits arbitrary files and long offline periods without assuming every format has a safe merge algorithm. We accept conflict copies and extra client state to preserve both users' data; stable file IDs separate a rename from deletion/recreation.
 
-```text
-last synced tree ── local changes ──► local tree
-       │
-       └──────── remote changes ──► remote tree
-                         │
-                 reconcile / preserve conflicts
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  B["Last-synced tree<br>common base"] -->|"Local changes"| L["Local tree"]
+  B -->|"Remote changes"| R["Remote tree"]
+  B --> M["Three-way reconciliation"]
+  L --> M
+  R --> M
+  M --> I["Combine independent changes"]
+  M --> C["Preserve conflicting revisions"]
+  class B,L,R data
+  class M control
+  class I,C request
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 A commit carries its base revision. A competing commit creates an explicit conflict outcome rather than silently replacing the other edit. [Dropbox's sync-engine rewrite](https://dropbox.tech/infrastructure/rewriting-the-heart-of-our-sync-engine) explains the value of stable identifiers and atomic moves.

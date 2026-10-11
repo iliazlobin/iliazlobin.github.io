@@ -254,11 +254,7 @@ Candidate generation combines followed creators, embedding neighbors and eligibl
 
 The light ranker uses cheap cached user/item aggregates. The deep ranker adds sequence attention and user-item cross-features only for its shortlist. Batch feature hydration and tensor preparation; network lookups per candidate can dominate inference even when the model itself is fast.
 
-```text
-2,000 candidates → 500 cheap shortlist → 100 rich scores → 25 final items
-Measure recall at each arrow, not just latency at the final model.
-
-```
+Measure recall at each ranking stage alongside end-to-end latency.
 
 Train the light model to retain promising deep-model candidates, then verify against mature user outcomes. Its teacher distribution must match the current retrieval sources. Keep a fallback score for every candidate so deep-stage timeout leaves a usable order. Deadline budgets cover feature retrieval and final eligibility, not only GPU execution.
 
@@ -365,10 +361,20 @@ A fresh-item source proposes content encoded with the active bundle, with missin
 
 For a new user, use language, selected interests and current-session behavior. An immediate hide can remove similar content from the next request without changing the global model. A new item receives bounded eligible exposure, and its outcomes update streaming aggregates.
 
-```text
-Candidate eligible? → yes → exploration slot available? → sample and log assignment
-                  → no  → exclude before ranking
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A{"Candidate eligible?"} -->|"No"| B["Exclude before ranking"]
+    A -->|"Yes"| C{"Exploration slot available?"}
+    C -->|"Yes"| D["Sample and log assignment"]
+    C -->|"No"| E["No exploration assignment"]
+    class A,C,E control;
+    class D request;
+    class B danger;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Measure discovery quality by item age and creator cohort, not just total impressions. An exploration item still follows current blocking and safety rules. The allocation can borrow unused slots only under a declared policy; it does not guarantee traffic to every submitted item.
@@ -389,10 +395,23 @@ Stream processing continues during training and rollback. New sessions use the p
 
 The manifest records user/item encoders, embedding dimension, feature schema, base/overlay watermarks, rankers and scoring policy. Warm all artifacts, run query vectors against the new index, and validate sample feature tensors before routing live requests.
 
-```text
-Build artifacts → compatibility checks → shadow → canary → promote pointer
-                                             failure → retain prior bundle
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A["Build artifacts"] --> B["Compatibility checks"]
+    B -->|"Pass"| C["Shadow"]
+    C -->|"Pass"| D["Canary"]
+    D -->|"Pass"| E["Promote bundle pointer"]
+    B -->|"Failure"| F["Retain prior compatible bundle"]
+    C -->|"Failure"| F
+    D -->|"Failure"| F
+    class A request;
+    class B,C,D,E control;
+    class F data;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 A feed cursor includes a session/snapshot identity and records served item IDs. Continuing that cursor uses its pinned scoring snapshot where retained, while every page rechecks current eligibility. If the snapshot expired, return an explicit restart response rather than quietly changing pagination semantics.

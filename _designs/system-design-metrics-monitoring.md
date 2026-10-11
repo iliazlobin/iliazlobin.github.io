@@ -306,12 +306,19 @@ groups:
 
 The evaluator runs the expression at a scheduled timestamp, using the same timestamp for numerator and denominator. Each returned service label set identifies a separate alert instance. On the first true result it records `pending` and `active_since`; continuing true results retain that timestamp. After two minutes it becomes `firing`. A false result clears the pending interval. These are the [Prometheus alert-state semantics](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/).
 
-```text
-12:00:00  true   pending starts
-12:00:15  true   pending
-...             every successful evaluation remains true
-12:02:00  true   firing
-12:02:15  false  resolved
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  P["12:00:00: pending starts"] -->|"True at each successful evaluation"| W["12:00:15 onward: pending"]
+  W -->|"True evaluation at 12:02:00<br>two-minute hold complete"| F["12:02:00: firing"]
+  F -->|"12:02:15: false"| R["Resolved"]
+  W -->|"False before the hold completes"| X["Clear pending interval"]
+  class P,W,F,R control
+  class X request
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 If the first visible breach arrives just after a tick, the next evaluation adds up to one interval of scheduling delay. Ingestion visibility lag, query execution, the two-minute hold and notification grouping add separate delays. Track each component rather than advertising a 15-second end-to-end alert guarantee.

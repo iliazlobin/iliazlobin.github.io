@@ -361,13 +361,30 @@ A simple capacity calculation helps tune the controller: if checkout capacity is
 
 **Recommendation.** Use authorization followed by durable assignment and capture, coordinated by a persistent workflow. Each provider operation has its own stable key; API request keys are user-scoped and input-checked. [Stripe's idempotency contract](https://docs.stripe.com/api/idempotent_requests) explains the provider boundary. A timeout cannot prove that a payment failed. We accept temporarily retained seats and a recovery queue so provider evidence resolves the payment before inventory is safely released or tickets are issued.
 
-```text
-Owned hold → checkout reservation → authorized → assigned / pending capture
-→ capture confirmed → tickets issued
-
-Ambiguous provider result → recovery → status lookup / verified event
-Definitive failure → void or refund as needed → release inventory
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  A["Owned hold"] --> B["Checkout reservation"]
+  B --> C{"Authorization outcome"}
+  C -->|"Confirmed"| D["Assigned seats / pending capture"]
+  D --> E{"Capture outcome"}
+  E -->|"Confirmed"| F["Tickets issued"]
+  C -->|"Ambiguous"| G["Recover authorization<br>retain reservation"]
+  G --> H["Status lookup or verified event<br>for authorization"]
+  H --> C
+  E -->|"Ambiguous"| I["Recover capture<br>retain assigned seats"]
+  I --> J["Status lookup or verified event<br>for capture"]
+  J --> E
+  C -->|"Definitive failure"| K["Void or refund as needed"]
+  E -->|"Definitive failure"| K
+  K --> L["Release inventory after compensation"]
+  class A,B,D,F data;
+  class C,E,G,H,I,J control;
+  class K,L danger;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 A saga supplies durable progress and compensation, not universal exactly-once external behavior. Retain operation IDs beyond provider retry-key windows; query provider status before retrying an old unknown operation. Compensation failures remain visible for reconciliation. Measure unknown-outcome age, capture lag and payment/inventory discrepancies.

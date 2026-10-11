@@ -290,9 +290,22 @@ The driver stream carries a monotonic session epoch and sequence alongside coord
 
 A radius query returns possible drivers, then the dispatch service reads their records and rejects stale or unavailable entries. Near a partition boundary, query neighboring cells and deduplicate driver IDs. Straight-line distance is a shortlist signal; road-network travel time determines the final cost.
 
-```text
-GPS update → epoch/sequence check → regional geo index
-Nearby IDs → freshness/availability check → road ETA shortlist
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  U["GPS update"] --> V["Check session epoch<br>and sequence"]
+  V --> I[("Regional geo index")]
+  Q["Nearby-driver query"] --> I
+  I --> C["Candidate driver IDs"]
+  C --> F["Check position freshness<br>and availability"]
+  F --> E["Road ETA shortlist"]
+  class U,Q,C,E request
+  class I data
+  class V,F control
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Moving across cells removes the old membership with a version guard so a late removal cannot erase the new one. Cleanup removes expired members from the geo set; key TTL on a separate record does not do that automatically. Rebuild after Redis loss from fresh heartbeats/recent retained events and throttle dispatch while coverage recovers.
@@ -317,10 +330,21 @@ Store feature and model versions with each prediction. Training joins features a
 
 For a readying restaurant and an approaching driver, pickup begins at the later of their completion times. A useful baseline is `max(food_ready_time, driver_arrival_time)`, followed by handoff and delivery travel. Simply summing preparation and driver travel overstates the wait when they overlap.
 
-```text
-Food preparation -----------|
-Driver approach ------|     | pickup/handoff → delivery travel
-                      later ready stage determines pickup start
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  S["Order in progress"] --> P["Food preparation"]
+  S --> A["Driver approach"]
+  P --> J["Wait until both are ready<br>later completion determines pickup start"]
+  A --> J
+  J --> H["Pickup and handoff"]
+  H --> T["Delivery travel"]
+  class S,P,A,H,T request
+  class J control
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Train the end-to-end output against completed delivery outcomes using features available at each order stage. Record whether the restaurant accepted, preparation started or pickup completed; one model can then condition on the remaining work rather than repeatedly predicting already completed time.
@@ -345,10 +369,26 @@ A new order adds a pickup and a drop-off. Enumerate a bounded set of insertion p
 
 Reject candidates exceeding capacity, food waiting or lateness limits. Keep the lowest-cost feasible route as the search evaluates local swaps or different insertions.
 
-```text
-Existing: pickup A → drop A
-Candidate: pickup A → pickup B → drop B → drop A
-Checks: capacity, pickup readiness, precedence, both delivery windows
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  subgraph Existing["Existing route"]
+    E1["Pickup A"] --> E2["Drop A"]
+  end
+  subgraph Candidate["Candidate route with order B inserted"]
+    C1["Pickup A"] --> C2["Pickup B"]
+    C2 --> C3["Drop B"]
+    C3 --> C4["Drop A"]
+  end
+  Candidate --> V["Validate capacity, pickup readiness,<br>precedence and both delivery windows"]
+  class E1,E2,C1,C2,C3,C4 request
+  class V control
+  style Existing fill:#e8f0fe,stroke:#9aa0a6,color:#202124
+  style Candidate fill:#e6f4ea,stroke:#9aa0a6,color:#202124
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Version the route proposal. Driver acceptance checks that the current route/assignment version still matches; otherwise recalculate. Replanning after a delay considers only remaining stops and preserves completed actions. A bounded search may not find the mathematical optimum, but its deadline and feasible-so-far result make its operational behavior predictable.

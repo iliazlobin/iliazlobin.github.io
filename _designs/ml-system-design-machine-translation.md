@@ -292,11 +292,23 @@ Benchmark the complete path at the expected length distribution. Quantization is
 
 Compute the encoder once, then keep decoder attention state for the generated prefix. Greedy decoding selects the next token from one hypothesis. A beam of width four retains up to four hypotheses at each step, scores their extensions and keeps the best surviving paths. Length normalization and stopping rules matter: raw summed log probability favors shorter sequences.
 
-```text
-Input queue → encoder → decode token 1 → decode token 2 → ... → end token
-                       one active path for streaming
-                       several competing paths for quality mode
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  Q["Input queue"] --> E["Compute encoder once"]
+  E --> M{"Decode mode"}
+  M -->|"Streaming"| G["Greedy decoder<br>one active hypothesis"]
+  G -->|"Next token"| G
+  G --> S["Stable token stream<br>until end token"]
+  M -->|"Completed-text quality"| B["Bounded beam decoder<br>several competing hypotheses"]
+  B -->|"Score extensions"| B
+  B --> F["Return chosen translation<br>after completion"]
+  class Q,E,G,S,B,F request
+  class M control
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Beam hypotheses can change order as later tokens arrive, so the optional quality mode returns its chosen sequence after completion. Streaming emits the greedy path and promises that already delivered tokens remain part of that generation.

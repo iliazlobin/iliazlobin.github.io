@@ -387,10 +387,20 @@ Use ranking metrics such as NDCG and recall for offline comparisons. Calibrate p
 
 An impression log records which item occupied which slot, the serving bundle, request-time features and the exposure policy. Purchase events carry stable order/item identities. Join them within the attribution window and deduplicate repeated order notifications before producing labels.
 
-```text
-10:00 recommendation shown → 10:05 cart action → next day purchase
-       snapshot stored          auxiliary label        purchase label matures
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A["10:00: recommendation shown"] --> B["10:05: cart action"]
+    B --> C["Next day: purchase"]
+    A -.-> D["Store impression-time snapshot"]
+    B -.-> E["Early auxiliary label"]
+    C -.-> F["Purchase label matures"]
+    class A,B,C request;
+    class D,E,F data;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 The proposed purchase-oriented ranker scores relevance using calibrated purchase probability; cart and click signals improve representation and diagnose the funnel. Sample negatives only from actual eligible impressions, recording their sampling rate. A product never shown has no observed purchase opportunity for that request.

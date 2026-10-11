@@ -311,10 +311,22 @@ Retry failed outputs independently. Bound queue age and apply admission limits t
 
 An upload creates a video/version record and deterministic rendition jobs. The workflow prioritizes the required playable rendition, validates its segments, and publishes a manifest pointing only to completed immutable outputs. Other renditions join a later compatible manifest generation.
 
-```text
-Upload committed → required rendition → validate segments → playable manifest
-                   additional renditions ────────────────→ later manifest
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A["Upload committed"] --> B["Required playable rendition"]
+    B --> C["Validate segments"]
+    C --> D["Playable manifest"]
+    A --> E["Additional renditions"]
+    E --> F["Later compatible manifest generation"]
+    D --> F
+    class A,D,F data;
+    class B,E request;
+    class C control;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 A worker retry writes the same rendition/version key and verifies checksums before accepting an existing object. A stale worker cannot overwrite a newer generation. If a higher-resolution task fails, the already valid playable rendition remains available.
@@ -343,11 +355,18 @@ Prefetch the first playable segment of the next small candidate set, then extend
 
 Estimate usefulness from current-session skip behavior, not only long-term interests. On constrained or metered networks, reduce candidates/rendition bytes; on a stable fast connection, prepare enough to improve first-frame readiness without filling the entire slate.
 
-```text
-Next candidate selected → segment eligible within byte budget?
-                         yes → fetch first segment
-                         no  → wait until it becomes current
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A["Next candidate selected"] --> B{"Segment eligible<br/>within byte budget?"}
+    B -->|"Yes"| C["Fetch first segment"]
+    B -->|"No"| D["Wait until video becomes current"]
+    class A,C request;
+    class B,D control;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Use a cache key based on immutable media generation and rendition. Private access tokens should not accidentally fragment a public cache or bypass authorization; the CDN contract must define that boundary. Report unused-prefetch bytes divided by prefetched bytes alongside first-frame latency, so faster starts are not evaluated without their data/egress cost.
@@ -372,10 +391,20 @@ A content authority commits a tombstone/visibility revision and its event togeth
 
 The final serving path checks current eligibility before issuing media access. Clients encountering an unavailable prefetched clip advance to another eligible item and log the reason, rather than treating it as a dislike.
 
-```text
-Authority revision → search / feed / index invalidation
-                   → media access revocation and cache purge policy
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A["Authority tombstone or visibility revision"] --> B["Search invalidation"]
+    A --> C["Feed-cache invalidation"]
+    A --> D["ANN / index invalidation"]
+    A --> E["Media access revocation"]
+    A --> F["Cache purge policy"]
+    class A data;
+    class B,C,D,E,F control;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Retention policy governs source-object deletion, while access revocation controls future reads. Short-lived private URLs limit residual access; already downloaded content is a separate unavoidable exposure. Measure commit-to-filter and commit-to-media-revocation lag independently and test rollback/replay with deleted versions.

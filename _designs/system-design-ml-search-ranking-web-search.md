@@ -314,10 +314,23 @@ Join labels only after their observation window closes. Use request-time feature
 
 The exposure record contains query, displayed document versions, positions, snippets, UI version and exploration policy. Join later clicks/dwell or successful reformulation to that exact request. A retrieved document that never appeared is not a displayed negative.
 
-```text
-Retrieved 200 → displayed 10 → user examines a subset → clicks or no-click success
-               exposure log     partly unobserved        outcome log
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A["200 retrieved documents"] --> B["10 displayed documents"]
+    B --> C["User examines a subset<br/>Partly unobserved"]
+    C --> D["Click or no-click success"]
+    B -.-> E["Exposure log"]
+    D -.-> F["Outcome log"]
+    E --> G["Join evidence by request"]
+    F --> G
+    class A,B,C,D request;
+    class E,F data;
+    class G control;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Use judged query/document pairs as the stable evaluation anchor. A no-click can mean failure, abandonment or a useful answer in the snippet; the label policy distinguishes these where evidence supports it.

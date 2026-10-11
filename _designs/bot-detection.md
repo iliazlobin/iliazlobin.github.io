@@ -303,11 +303,22 @@ Fit calibration on independent mature labels, then select thresholds for challen
 
 If 1,000 reviewed restrictions contain 900 abusive accounts, precision is 90%. If there were 50K reviewed legitimate accounts and 100 were restricted, false-positive rate is 0.2%. These quantities answer different questions and should appear together with cohort coverage.
 
-```text
-Model score → calibrator version → action threshold policy
-                                     ↓
-                         challenge / review / restriction
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  S["Model score"] --> C["Versioned calibrator"]
+  C --> P{"Action threshold policy"}
+  P --> H["Challenge"]
+  P --> R["Review"]
+  P --> X["Restriction"]
+  class S,C request
+  class P control
+  class H,R control
+  class X danger
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Persist action duration and expiry, with a version preventing an older event from extending or undoing a newer reviewed decision. Model rollout includes its calibration; threshold-only releases remain separate policy changes. Monitor successful challenge completion and investigator backlog so a wider uncertain band does not quietly degrade the user experience.
@@ -334,11 +345,22 @@ Build an anomaly score from bounded action-rate, sequence and relationship featu
 
 A live event can raise action rates for legitimate users, while a coordinated attack may look ordinary per account but unusual across a graph. Review examples from both sides and use temporary proportionate controls under the declared policy.
 
-```text
-Unusual pattern + measurable impact → investigation priority
-Independent review                → new labeled cohort
-Validated candidate               → versioned production release
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  N["Unusual pattern"] --> Q["Prioritized investigation"]
+  I["Measurable impact"] --> Q
+  Q --> R["Independent review"]
+  R --> L["New labeled cohort"]
+  L --> V["Validate model candidate"]
+  V --> P["Versioned production release"]
+  class N,I,L data
+  class Q,R,V control
+  class P request
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Record baseline/feature version and launch/event context in diagnostics. Cluster similar sequences to reduce duplicate investigations and preserve representative sampling for prevalence measurement. The anomaly detector's success metric is useful confirmed investigations per review cost, not agreement with its own outlier threshold.

@@ -248,15 +248,25 @@ The close worker rereads and locks the auction. If an extension moved the deadli
 
 **Recommendation:** use ordered auction writers with PostgreSQL transactions. Batch a bounded set of commands for a hot auction, evaluate them sequentially and commit all associated outcomes and the final auction state together. Keep batches short enough to meet the latency budget. Ordered writers with bounded PostgreSQL transactions fit auctions because bid acceptance and closing must share one durable order. Batching amortizes commits on hot auctions while retaining that decision boundary; the accepted cost is per-auction serialization, so batch size and lock wait stay within the bid deadline.
 
-```text
-Transaction:
-  lock auction
-  load existing command outcomes
-  evaluate unprocessed commands in durable order
-  write outcomes, updated auction and outbox events
-  commit
-After commit:
-  acknowledge work and publish public updates
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    subgraph T["One PostgreSQL transaction"]
+        A["Lock auction"] --> B["Load existing command outcomes"]
+        B --> C["Evaluate unprocessed commands<br/>in durable order"]
+        C --> D["Write outcomes, auction state<br/>and outbox events"]
+        D --> E["Commit"]
+    end
+    E --> F["Acknowledge work"]
+    E --> G["Publish public updates"]
+    class A,E control;
+    class B,D data;
+    class C,F,G request;
+    style T fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 An old or duplicate consumer is safe because the row lock and command identity are enforced in storage. A crashed transaction rolls back; a crash after commit is recovered by reading the existing outcome. Cache projections accept only newer auction versions.

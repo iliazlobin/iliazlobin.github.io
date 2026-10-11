@@ -302,13 +302,20 @@ A long and short video differ in possible watch duration. Evaluate absolute usef
 
 The scoring policy combines calibrated probabilities and the bounded duration estimate with recorded units/weights. Train heads only when their label windows are mature. Hides and explicit dissatisfaction remain guardrails even when watch time grows.
 
-```text
-Impression → playback evidence → matured watch/engagement labels
-                                  ↓
-                       shared representation and heads
-                                  ↓
-                     versioned slate-scoring policy
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A["Impression"] --> B["Playback evidence"]
+    B --> C["Mature watch and engagement labels"]
+    C --> D["Shared representation and prediction heads"]
+    D --> E["Versioned slate-scoring policy"]
+    class A,D request;
+    class B,C data;
+    class E control;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Validate whole-session outcomes and return rate through a controlled experiment. Offline teacher agreement or an increase in average seconds alone cannot establish that recommendations improved for users.

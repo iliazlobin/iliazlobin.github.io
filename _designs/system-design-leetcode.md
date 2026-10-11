@@ -249,14 +249,31 @@ History queries are limited to the authenticated user and use cursor pagination 
 
 The trusted host controls VM resources, egress and deadlines. Guest-side restrictions are additional defense, not the enforcement boundary after a guest compromise. Give the guest only its input and required files; compare output with hidden expected results in the trusted judge control plane. Authenticate result channels and cap output bytes.
 
-```text
-Trusted judge host
-  ├─ validates test/checker version
-  ├─ limits VM resources and elapsed time
-  ├─ compares captured output
-  └─ disposable microVM
-       ├─ untrusted compiler and solution
-       └─ isolated scratch disk
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  subgraph Host["Trusted judge host"]
+    V["Validate test and checker versions"]
+    L["Enforce VM resource limits<br>and elapsed-time deadline"]
+    C["Compare bounded captured output<br>using the trusted checker"]
+    subgraph VM["Disposable microVM"]
+      U["Untrusted compiler and solution"]
+      D[("Isolated scratch disk")]
+      U --> D
+    end
+    V -->|"Approved inputs"| U
+    L -.->|"Host enforcement"| U
+    U -->|"Bounded output channel"| C
+  end
+  class V,L,C control
+  class U danger
+  class D data
+  style Host fill:#e8f0fe,stroke:#9aa0a6,color:#202124
+  style VM fill:#fce8e6,stroke:#9aa0a6,color:#202124
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Use [cgroup v2](https://docs.kernel.org/admin-guide/cgroup-v2.html) for host resource controls and a host watchdog for total time budgets. CPU bandwidth throttling is different from a total CPU-time deadline. Guest process limits alone do not enforce a budget for the whole VM.

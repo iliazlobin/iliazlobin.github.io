@@ -300,9 +300,19 @@ Use post ID and version for idempotent index updates. Rebuild a failed shard fro
 
 The post outbox emits ID, content version, creation/deletion state and event sequence. An indexer writes it with an external version condition, so a delayed update cannot replace a later delete. A successful index write is not yet search visibility; refresh makes the new segment queryable.
 
-```text
-Post commit → event delivery → index write → refresh → searchable
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A["Post commit"] --> B["Event delivery"]
+    B --> C["Versioned index write"]
+    C --> D["Index refresh"]
+    D --> E["Searchable post"]
+    class A,C,E data;
+    class B,D request;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Measure each stage. Choose refresh frequency under combined write, search and segment-merge load; more frequent refresh can increase overhead. Queries default to recent time partitions, expanding only for the requested history.
@@ -357,10 +367,20 @@ The stream normalizes the hashtag, applies eligibility/abuse policy and maps an 
 
 Sum bucket counts for a rolling contribution total. If one author appears in two buckets, they contribute twice to that sum; exact distinct authors across the window require unioning identities or a suitable distinct-count representation.
 
-```text
-Post → normalized eligible topics → deduplicated author/bucket contributions
-     → per-topic bucket counts → window sum → regional ranking
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A["Post"] --> B["Normalize topics and check eligibility"]
+    B --> C["Deduplicate region / topic /<br/>author / bucket contributions"]
+    C --> D["Per-topic bucket counts"]
+    D --> E["Rolling-window sum"]
+    E --> F["Regional topic ranking"]
+    class A,D,E,F data;
+    class B,C control;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 For a popular topic, aggregate salted partials before updating its final owner. Expiration subtracts or drops the oldest bucket under the same replay-safe checkpoint. A sketch supplies frequency estimates only for known queried candidates; keep a bounded candidate tracker and measure its recall against exact retained events.

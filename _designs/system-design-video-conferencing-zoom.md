@@ -301,10 +301,20 @@ An ICE restart establishes a replacement path after a network change. Retrying s
 
 Signaling exchanges transport credentials and candidate addresses. ICE connectivity checks test candidate pairs and nominate a working path; TURN supplies relay candidates when direct transport cannot connect.
 
-```text
-Signaling exchange → candidate gathering → connectivity checks → nominated pair
-Network changes    → ICE restart with new credentials/candidates
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  S["Signaling exchange"] --> G["Gather direct and TURN candidates"]
+  G --> C["Check candidate pairs"]
+  C --> N["Nominate a working pair"]
+  N --> M["Secure media transport"]
+  M -->|"Network change"| R["ICE restart<br>new credentials and candidates"]
+  R --> C
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
+class S,G,C,N,M,R request;
 ```
 
 The media path carries authenticated encrypted transport independently of signaling. A healthy WebSocket does not imply healthy audio/video. Keep metrics for candidate type, RTT, loss and relay use so connectivity failures can be localized.
@@ -331,12 +341,19 @@ Load tests cover loss, bursty delay, mobile handoff and changing subscription la
 
 Estimate a receiver's available budget from transport feedback and queue delay. Reserve audio first, then screen content/active speaker, then selected secondary tiles. Choose existing encoded layers that fit that budget and request sender adaptation when none is feasible.
 
-```text
-Receiver budget
-  → audio reservation
-  → active speaker / screen share
-  → secondary tiles within remaining capacity
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  B["Estimate receiver bandwidth"] --> A["Reserve audio bandwidth"]
+  A --> P["Select screen-share or active-speaker layers"]
+  P --> T["Fit secondary tiles within remaining capacity"]
+  T --> F["Receiver feedback<br>loss and queue delay"]
+  F --> B
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
+class B,A,P,T,F request;
 ```
 
 Use hysteresis for upgrades so small fluctuations do not repeatedly switch layers. Downgrade sooner when loss or queue delay rises, and bound retransmission against playout deadlines. The jitter buffer absorbs limited variation at the cost of added delay; growing it without limit preserves old packets while ruining conversation latency.
@@ -363,9 +380,25 @@ On SFU failure, clients receive a new assignment, establish a new transport and 
 
 Assign each participant to a nearby capacity-qualified SFU. If users in another region subscribe to a publisher, relay the required encoded layers once between regional nodes and fan them out locally.
 
-```text
-Publisher → local SFU → regional relay → remote SFU → remote subscribers
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  subgraph LOCAL["Publisher region"]
+    P["Publisher"] -->|"Encoded layers"| L["Local SFU"]
+  end
+  L -->|"Subscribed layers only"| X["Regional relay"]
+  subgraph REMOTE["Subscriber region"]
+    R["Remote SFU"] -->|"Local fan-out"| A["Subscriber A"]
+    R -->|"Local fan-out"| B["Subscriber B"]
+  end
+  X -->|"One inter-region copy per required layer"| R
+  style LOCAL fill:#e8f0fe,stroke:#9aa0a6,color:#202124
+  style REMOTE fill:#e6f4ea,stroke:#9aa0a6,color:#202124
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
+class P,L,X,R,A,B request;
 ```
 
 The controller owns versioned assignments; media nodes own active packet forwarding. If the controller restarts, established media can continue from retained session state. If a media node fails, its clients need new transport credentials, publication/subscription setup and fresh decodable frames.
@@ -392,11 +425,24 @@ A member who receives media keys can access that meeting's media. Membership ver
 
 In transport-encrypted mode, the SFU terminates the transport and trusted server recording can process payloads. In client-managed media encryption mode, forwarding uses routing metadata while payload decryption belongs to authorized meeting members.
 
-```text
-Transport-only: client ↔ trusted media service ↔ client
-End-to-end:     authorized clients share media keys;
-               forwarding service handles encrypted payloads
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  subgraph TRANSPORT["Transport encryption · service can process media"]
+    T1["Sending client"] <-->|"Encrypted transport"| S["Trusted media service<br>can decode or record"]
+    S <-->|"Encrypted transport"| T2["Receiving client"]
+  end
+  subgraph E2EE["End-to-end encryption · clients hold media keys"]
+    E1["Authorized sending client<br>encrypts payload"] -->|"Encrypted media"| F["Forwarding service<br>routing metadata only"]
+    F -->|"Encrypted media"| E2["Authorized receiving client<br>decrypts payload"]
+  end
+  style TRANSPORT fill:#fef7e0,stroke:#9aa0a6,color:#202124
+  style E2EE fill:#e6f4ea,stroke:#9aa0a6,color:#202124
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
+class T1,S,T2,E1,F,E2 request;
 ```
 
 Membership changes trigger the protocol's group-key update. A removed member should not receive future keys; previously received keys or decoded media remain part of the prior trust exposure. Authenticate the roster and host actions so signaling manipulation cannot silently add a receiver.

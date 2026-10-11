@@ -371,12 +371,19 @@ Offline jobs construct permitted account/device/payment-token relationships and 
 
 For a new card linked to an established device, the model can observe device age, number of recent distinct cards and whether reviewed abusive neighbors exist. A shared household device can produce a similar relationship, so the model needs the surrounding context and a missing/age mask.
 
-```text
-Historical graph snapshot → prepared relationship feature
-Recent action stream       → fresh velocity feature
-                                   ↓
-                      combined transaction scorer
-
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  G[("Historical graph snapshot")] --> R["Prepared relationship feature"]
+  A["Recent action stream"] --> V["Fresh velocity feature"]
+  R --> S["Combined transaction scorer"]
+  V --> S
+  class G,A,R,V data
+  class S request
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Cap fan-out during graph training and retain its timestamp so leakage from future relationships is prevented. New identities absent from the graph use cohort priors and current attributes. Evaluate gain and false declines by genuinely new account/card cohorts before making graph availability a required checkout dependency.

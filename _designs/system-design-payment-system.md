@@ -305,11 +305,24 @@ LISTEN/NOTIFY can wake a polling worker sooner, while periodic polling recovers 
 
 In one database transaction, create the pending operation and an outbox row. A poller claims the row with an expiring lease, commits that claim, then calls the provider outside the transaction. A crash releases work through lease expiry, and the next owner uses the same operation/provider key.
 
-```text
-Crash before commit        → no accepted local operation
-Crash after commit         → outbox delivers later
-Crash after provider call  → same-key recovery or reconciliation
-Crash after result commit  → duplicate delivery returns saved result
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A["Operation and outbox transaction"] -->|"Commit"| B["Durable pending operation"]
+    B --> C["Provider call"]
+    C --> D["Result transaction commits"]
+    A -.->|"Crash before commit"| E["No accepted local operation"]
+    B -.->|"Crash after commit"| F["Outbox delivers later"]
+    C -.->|"Crash after call"| G["Same-key recovery<br/>or reconciliation"]
+    D -.->|"Duplicate delivery"| H["Return saved result"]
+    class A,C,F request;
+    class B,D,H data;
+    class G control;
+    class E danger;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Claim ownership uses a generation/lease version. A stale worker can record observed provider evidence, but cannot overwrite a newer operation state blindly. Retain incomplete work until confirmed resolution; repeatedly publishing an event cannot substitute for provider outcome evidence.
@@ -372,12 +385,16 @@ Import a provider file under a unique checksum, preserve the original, and norma
 
 Batch-join normalized operations to local captures/refunds, then compare amounts and state. Next group their net amounts by settlement/payout identity and compare bank movement.
 
-```text
-Local capture/refund evidence
-             ↕ operation-level matching
-Provider settlement rows
-             ↕ grouped net plus fees/timing
-Bank payout evidence
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+    A["Local capture and refund evidence"] <-->|"Operation-level matching"| B["Provider settlement rows"]
+    B <-->|"Grouped net amounts,<br/>fees and timing"| C["Bank payout evidence"]
+    class A,B,C data;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Keep pending, timing-difference, amount-mismatch and orphan cases separate. A transaction can be captured today and settle later; a daily total mismatch alone does not establish missing money. Corrections create new linked accounting records after review of the actual discrepancy. Reconciliation is also the recovery path for provider-key expiry and unknown results, with age-based escalation and explicit unresolved exposure.

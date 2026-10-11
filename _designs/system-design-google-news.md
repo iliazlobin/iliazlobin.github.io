@@ -270,12 +270,22 @@ Store cluster decisions with feature and article versions. A correction or mista
 
 **Recommendation.** Publish feed generations and retain a short-lived immutable ordering for each feed session. Update shared candidate feeds incrementally and periodically refresh time-sensitive ranking. Generation-bound sessions fit a continuously reranked feed where scrolling should remain coherent. We accept short-lived retained orderings and explicit refresh/expiry instead of promising both live reordering and stable pagination.
 
-```text
-article changes → candidate feed → ranking generation
-                                      │
-                             immutable session snapshot
-                                      │
-                                page 1 → page 2
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  A["Article changes"] --> C["Candidate feed"]
+  C --> G["Ranking generation"]
+  G --> S[("Immutable session snapshot")]
+  S --> P1["Page 1"]
+  S --> P2["Page 2"]
+  P1 -->|"Generation-bound cursor"| P2
+  class A,C,G data
+  class S control
+  class P1,P2 request
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 A score cursor alone does not freeze order. Expired sessions return an explicit refresh response; snapshot age and pipeline lag are exposed for operational monitoring. During an outage, serve a bounded-age snapshot with current retraction checks.

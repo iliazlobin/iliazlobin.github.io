@@ -189,7 +189,8 @@ async function main() {
   const config = join(outputDirectory, "mermaid-config.json");
   writeFileSync(input, diagrams.map(diagram => `\`\`\`mermaid\n${normalizeDiagramStyles(diagram.source)}\n\`\`\``).join("\n\n"));
   writeFileSync(config, JSON.stringify(createDiagramConfig(), null, 2));
-  const command = [cli, "-i", input, "-o", output, "-c", config, "-b", "white", "-j", "4"];
+  // Bound browser memory on the full corpus, including larger nested diagrams.
+  const command = [cli, "-i", input, "-o", output, "-c", config, "-b", "white", "-j", "1"];
   if (browserPath) {
     const puppeteerConfig = join(outputDirectory, "puppeteer-config.json");
     writeFileSync(puppeteerConfig, JSON.stringify({ executablePath: browserPath }));
