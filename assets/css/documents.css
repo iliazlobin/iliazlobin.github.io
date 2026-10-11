@@ -1,0 +1,44 @@
+/* Compact document rhythm. Keep prose, code and diagram text at their existing
+   sizes; collection scoping leaves blog posts, cards and other pages unchanged. */
+.post--document {
+  padding-top: 1.8rem;
+  padding-bottom: 2rem;
+}
+.post--document .post-header {
+  margin-bottom: 1.2rem;
+  padding-bottom: 1rem;
+}
+.post--document .post-content { line-height: 1.6; }
+.post--document .post-content > :first-child { margin-top: 0; }
+.post--document .post-content h2 { margin: 1.7rem 0 .65rem; }
+.post--document .post-content h3 { margin: 1.3rem 0 .5rem; }
+.post--document .post-content h4 { margin: 1rem 0 .4rem; }
+.post--document .post-content :is(h2, h3, h4) + :is(h3, h4) { margin-top: .75rem; }
+
+/* Select prose containers, not Mermaid's HTML labels inside SVGs. */
+.post--document .post-content > p,
+.post--document .post-content blockquote:not(.callout) > p { margin: 0 0 .75rem; }
+.post--document .post-content :is(ul, ol) { margin: 0 0 .75rem; padding-left: 1.3rem; }
+.post--document .post-content li { margin: 0; }
+.post--document .post-content li + li { margin-top: .25rem; }
+.post--document .post-content li > p { margin: 0; }
+.post--document .post-content li > * + p { margin-top: .4rem; }
+.post--document .post-content li > :is(ul, ol) { margin: .35rem 0 0; }
+.post--document .post-content blockquote:not(.callout) { margin: .85rem 0; padding: .2rem .9rem; }
+.post--document .post-content blockquote:not(.callout) > :last-child { margin-bottom: 0; }
+.post--document .post-content hr { margin: 1.5rem 0; }
+
+/* Rouge has nested wrappers: one outer gap, rather than stacked margins. */
+.post--document .post-content div.highlighter-rouge { margin: .85rem 0; }
+.post--document .post-content div.highlighter-rouge > .highlight,
+.post--document .post-content div.highlighter-rouge pre { margin: 0; }
+.post--document .post-content pre { margin: .85rem 0; padding: .75rem .9rem; }
+.post--document .post-content table { margin: .85rem 0; }
+.post--document .post-content :is(th, td) { padding: .45rem .65rem; }
+.post--document .post-content :is(th, td) > p { margin: 0; }
+.post--document .post-content .mermaid { margin: 1rem 0; padding: .9rem; }
+.post--document .post-content img { margin: .85rem 0; }
+
+@media (max-width: 700px) {
+  .post--document .post-content .mermaid { padding: .65rem; }
+}
