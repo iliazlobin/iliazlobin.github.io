@@ -12,6 +12,24 @@
   font-size: 1.02rem;
 }
 
+.about-inline-link,
+.about-inline-link:visited {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: .15em;
+}
+
+.about-inline-link:hover {
+  color: var(--accent);
+  text-decoration-color: currentColor;
+}
+
+.about-inline-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
 .about-photo {
   width: 128px;
   height: 128px;
