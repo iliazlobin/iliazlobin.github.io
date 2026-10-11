@@ -9,10 +9,9 @@ description: "Ilia Zlobin — Staff Software Engineer with 14+ years of experien
 
 <div class="about-intro">
   <div>
-    <p class="about-lead">I’m a <strong>Staff Software Engineer</strong> with 14+ years of experience building and evolving large-scale software systems, infrastructure platforms, developer products, and applied AI systems. My work spans distributed systems, cloud infrastructure, platform engineering, SRE, and agentic AI.</p>
+    <p class="about-lead">I’m a <strong><a class="about-inline-link" href="{{ '/resume/' | relative_url }}">Staff Software Engineer</a></strong> with 14+ years of experience building and evolving large-scale software systems, infrastructure platforms, developer products, and applied AI systems. My work spans distributed systems, cloud infrastructure, platform engineering, SRE, and agentic AI.</p>
     <p class="about-lead">I set technical direction for complex initiatives, define architecture and execution strategy, and stay hands-on through implementation, testing, production rollout, and operations. Recent work includes infrastructure capacity modeling, internal developer platforms, and orchestration systems for AI coding agents.</p>
-    <p class="about-lead">I also work on <strong>technical consulting and startup GTM advisory</strong>, helping teams make architecture and platform decisions, prepare products for enterprise adoption, shape technical positioning, and connect engineering capabilities with customer and market needs.</p>
-    <p class="about-lead"><a href="{{ '/advisory/' | relative_url }}">Explore technical advisory services</a>.</p>
+    <p class="about-lead">I also work on <strong><a class="about-inline-link" href="{{ '/advisory/' | relative_url }}">technical consulting and startup GTM advisory</a></strong>, helping teams make architecture and platform decisions, prepare products for enterprise adoption, shape technical positioning, and connect engineering capabilities with customer and market needs.</p>
     {% include social-links.html gmail=true %}
   </div>
   <img class="about-photo" src="{{ '/images/profile-photo.jpg' | relative_url }}" alt="Ilia Zlobin" width="128" height="128">
@@ -29,7 +28,7 @@ I work one-on-one with engineers growing toward Staff, Staff+, and Principal rol
 {% endcomment %}
 
 <section class="about-section" aria-labelledby="career-focus">
-  <h2 id="career-focus">What I work on</h2>
+  <h2 id="career-focus">Work</h2>
   <p>My work centers on <strong>AI systems, distributed systems, SRE, and platform engineering</strong>. I build LLM applications, coding-agent and multi-agent workflows, and production AI systems with a focus on orchestration, evaluation, tool use, retrieval, and reliability. On the infrastructure side, I work on large-scale systems where scalability, resilience, observability, capacity planning, performance, and operational efficiency matter.</p>
   <p>I also focus on <strong>technical strategy and architecture</strong>, including platform modernization, cloud foundations, developer platforms, automation, and self-service infrastructure. Alongside engineering, I provide <strong>technical consulting and GTM advisory</strong>, helping teams with architecture, enterprise readiness, solution design, customer discovery, and technical positioning. I also work with engineers on <strong>technical leadership, career development, and professional growth</strong>, including architecture guidance, skill development, interview preparation, and navigating Staff+ engineering paths.</p>
 </section>
