@@ -1,0 +1,167 @@
+{
+  "article": "_designs/system-design-video-conferencing-zoom.md",
+  "reviewNote": "Reviewer-authored first-use contracts, not semantic proof. Purpose/mechanism signatures record important explanatory relationships without copying full paragraphs. Independently review changed wording, code comments and prerequisite edges.",
+  "assumedKnown": ["browser", "server", "media", "network", "database", "encryption", "HTTP", "API", "POST", "GET", "ID", "CPU"],
+  "concepts": [
+    {
+      "id": "e2ee", "aliases": ["E2EE", "end-to-end encryption", "end-to-end encrypted"],
+      "prerequisites": ["media", "encryption"],
+      "definition": {"purpose": "authorized participants|authorized devices", "mechanism": "media decryption keys|media keys.*(?:remain|keeps)|keeps.*media.*keys"}
+    },
+    {
+      "id": "turn", "aliases": ["TURN"], "prerequisites": ["server", "network"],
+      "definition": {"purpose": "cannot connect directly|direct connectivity.*unavailable", "mechanism": "relay.*carries.*media|relay.*device.*media server"}
+    },
+    {
+      "id": "track", "aliases": ["track", "tracks", "published_tracks", "track_objects"], "prerequisites": ["media"],
+      "definition": {"purpose": "microphone|camera|screen", "mechanism": "track.*(?:is|represents).*stream"}
+    },
+    {
+      "id": "assignment-version", "aliases": ["assignment_epoch"], "prerequisites": ["server"],
+      "definitionSurfaces": ["prose", "model"],
+      "definition": {"purpose": "reject.*older|older.*reject|delayed commands", "mechanism": "advance.*reassignment|changing servers advances|assignment.*version"}
+    },
+    {
+      "id": "chat-sequence", "aliases": ["sequence"], "prerequisites": ["media"],
+      "definitionSurfaces": ["prose", "model"],
+      "definition": {"purpose": "replay.*reconnect|reconnect.*replay", "mechanism": "meeting.local order|meeting.local sequence"}
+    },
+    {
+      "id": "signaling", "aliases": ["signaling", "signaling_url"], "prerequisites": ["media", "server", "network"],
+      "definition": {"purpose": "before.*(?:audio|video).*flow|establish.*media connection", "mechanism": "(?:agree|exchange).*(?:formats|settings|addresses|credentials)"}
+    },
+    {
+      "id": "websocket", "aliases": ["WebSocket"], "prerequisites": ["signaling"],
+      "definition": {"purpose": "setup messages|host controls|chat", "mechanism": "persistent.*two.way|two.way.*persistent"}
+    },
+    {
+      "id": "webrtc", "aliases": ["WebRTC", "Web Real-Time Communication"], "prerequisites": ["signaling"],
+      "definition": {"purpose": "establish.*media connection", "mechanism": "negotiate.*media settings.*test connectivity"}
+    },
+    {
+      "id": "offer", "aliases": ["offer"], "prerequisites": ["signaling"],
+      "definition": {"purpose": "media formats.*connection settings", "mechanism": "client proposes"}
+    },
+    {
+      "id": "answer", "aliases": ["answer"], "prerequisites": ["offer"],
+      "definition": {"purpose": "accepted settings", "mechanism": "media server returns"}
+    },
+    {
+      "id": "candidate", "aliases": ["ice_candidate"], "prerequisites": ["signaling"],
+      "definition": {"purpose": "possible network addresses", "mechanism": "endpoint advertises|endpoints advertise"}
+    },
+    {
+      "id": "ice", "aliases": ["ICE", "Interactive Connectivity Establishment"], "prerequisites": ["signaling", "candidate", "turn"],
+      "definition": {"purpose": "select.*working.*(?:path|pair)", "mechanism": "test packets.*address pairs|tests.*candidate pairs"}
+    },
+    {
+      "id": "subscription", "aliases": ["subscribe", "subscribing", "subscription", "subscriptions", "subscriber", "subscribers", "resubscribe"],
+      "prerequisites": ["track"],
+      "definition": {"purpose": "tracks.*receive|participant.s track", "mechanism": "client requests|requesting"}
+    },
+    {
+      "id": "connection-version", "aliases": ["session_epoch"], "prerequisites": ["signaling"],
+      "definition": {"purpose": "rejecting older versions.*delayed commands", "mechanism": "connection version.*session_epoch.*reconnecting advances"}
+    },
+    {
+      "id": "idempotency", "aliases": ["Idempotency-Key"], "prerequisites": ["HTTP"],
+      "definition": {"purpose": "retrying.*same recording job", "mechanism": "client.generated.*identifies.*recording.start request"}
+    },
+    {
+      "id": "sfu", "aliases": ["SFU", "SFUs", "selective forwarding unit", "selective forwarding units"], "prerequisites": ["track"],
+      "definition": {"purpose": "receiving devices|receiving device", "mechanism": "participant sends.*streams.*forwards.*streams requested"}
+    },
+    {
+      "id": "postgresql", "aliases": ["PostgreSQL", "Postgres"], "prerequisites": ["database"],
+      "definition": {"purpose": "durable transactions|durable updates", "mechanism": "indexed access.*meeting|transaction saves.*together"}
+    },
+    {
+      "id": "redis", "aliases": ["Redis"], "prerequisites": ["database"],
+      "definition": {"purpose": "fast lookups.*expiry", "mechanism": "in.memory key.value store.*short.lived coordination"}
+    },
+    {
+      "id": "manifest", "aliases": ["manifest", "manifests"], "prerequisites": ["track"],
+      "definition": {"purpose": "resume.*interruption", "mechanism": "index of completed segments"}
+    },
+    {
+      "id": "codec", "aliases": ["codec", "codecs"], "prerequisites": ["track"],
+      "definition": {"purpose": "compress.*track.*transmission|compress.*transmission", "mechanism": "audio or video encoder/decoder"}
+    },
+    {
+      "id": "publishing", "aliases": ["publishing", "publisher", "publishers", "publishes", "unpublishes", "republish"], "prerequisites": ["track"],
+      "definition": {"purpose": "sending a track", "mechanism": "sending a track is called.*publishing"}
+    },
+    {
+      "id": "quality-layers", "aliases": ["layers", "quality versions", "quality layers", "encoded layers"], "prerequisites": ["codec", "sfu", "subscription"],
+      "definition": {"purpose": "receiving device.s bandwidth", "mechanism": "separately encoded quality versions|base stream.*additional layers"}
+    },
+    {
+      "id": "rtp", "aliases": ["RTP", "Real-time Transport Protocol"], "prerequisites": ["track", "codec"],
+      "definition": {"purpose": "order packets.*align playback", "mechanism": "packets carrying sequence numbers.*playback timestamps"}
+    },
+    {
+      "id": "keyframe", "aliases": ["keyframe", "keyframes"], "prerequisites": ["codec", "quality-layers"],
+      "definition": {"purpose": "switching quality|missing.*references", "mechanism": "independently decodable|fresh decoding point"}
+    },
+    {
+      "id": "simulcast", "aliases": ["simulcast"], "prerequisites": ["quality-layers"],
+      "definition": {"purpose": "quality|bitrate", "mechanism": "independently encoded.*versions"}
+    },
+    {
+      "id": "scalable-coding", "aliases": ["scalable video coding", "scalable-codec"], "prerequisites": ["quality-layers"],
+      "definition": {"purpose": "add quality|bitrate", "mechanism": "base layer.*enhancement layers"}
+    },
+    {
+      "id": "udp", "aliases": ["UDP", "User Datagram Protocol"], "prerequisites": ["network"],
+      "definition": {"purpose": "time.sensitive audio/video", "mechanism": "individual packets.*without waiting.*retransmission"}
+    },
+    {
+      "id": "nat", "aliases": ["NAT", "NATs", "network address translation"], "prerequisites": ["network"],
+      "definition": {"purpose": "addresses unreachable|tests possible paths", "mechanism": "translate.*private address.*public address"}
+    },
+    {
+      "id": "turn-allocation", "aliases": ["TURN allocation", "relay allocations"], "prerequisites": ["turn"],
+      "definition": {"purpose": "client reserves.*relay address", "mechanism": "temporary relay address|short.lived credentials"}
+    },
+    {
+      "id": "tcp", "aliases": ["TCP", "Transmission Control Protocol"], "prerequisites": ["network"],
+      "definition": {"purpose": "restrictive networks", "mechanism": "delivers data in order"}
+    },
+    {
+      "id": "tls", "aliases": ["TLS", "Transport Layer Security"], "prerequisites": ["tcp", "encryption"],
+      "definition": {"purpose": "protect.*connection|encrypt.*connection|connection.*encrypted", "mechanism": "encrypt.*TCP|TCP.*encrypt|encrypt.*transport|transport.*encrypt"}
+    },
+    {
+      "id": "head-of-line", "aliases": ["head-of-line blocking"], "prerequisites": ["tcp"],
+      "definition": {"purpose": "delay newer media", "mechanism": "missing packet.*retransmission"}
+    },
+    {
+      "id": "ice-restart", "aliases": ["ICE restart"], "prerequisites": ["ice", "sfu", "signaling"],
+      "definition": {"purpose": "replaces the media path.*preserving.*meeting session", "mechanism": "fresh connection credentials.*addresses.*repeat connectivity checks"}
+    },
+    {
+      "id": "rtt", "aliases": ["RTT"], "prerequisites": ["network"],
+      "definition": {"purpose": "locate connectivity failures", "mechanism": "packet and reply.*round trip"}
+    },
+    {
+      "id": "jitter-buffer", "aliases": ["jitter buffer", "jitter buffering"], "prerequisites": ["rtp"],
+      "definition": {"purpose": "smooth timing variation|smooth network timing", "mechanism": "hold arriving packets|holds arriving packets|fixed delay budget"}
+    },
+    {
+      "id": "hysteresis", "aliases": ["hysteresis"], "prerequisites": ["quality-layers"],
+      "definition": {"purpose": "prevents.*fluctuations.*switching", "mechanism": "sustained spare bandwidth.*upgrading"}
+    },
+    {
+      "id": "placement", "aliases": ["placement controller"], "prerequisites": ["sfu", "assignment-version"],
+      "definition": {"purpose": "chooses a media server", "mechanism": "participant locations.*capacity.*data.residency"}
+    },
+    {
+      "id": "regional-relay", "aliases": ["inter-region relay", "regional relay"], "prerequisites": ["sfu", "subscription"],
+      "definition": {"purpose": "subscribers.*another region", "mechanism": "carries.*streams between regional SFUs.*distributes them locally"}
+    },
+    {
+      "id": "sframe", "aliases": ["SFrame", "Secure Frame"], "prerequisites": ["e2ee", "sfu"],
+      "definition": {"purpose": "encrypt media frames", "mechanism": "standardized frame.encryption format"}
+    }
+  ]
+}

@@ -62,7 +62,7 @@ Intercontinental propagation, device processing and restrictive networks can exc
 
 - **Recording:** 5M recordings/day × 45 minutes × 1.5Mbps / 8 ≈ 2.5PB/day for one retained media stream per recording. Recording several streams separately multiplies this by the retained stream count.
 
-Bandwidth, recording retention and per-meeting fan-out determine capacity; server counts require measured forwarding throughput.
+Bandwidth, recording retention and per-meeting stream deliveries determine capacity; server counts require measured forwarding throughput.
 
 ## Core entities
 
@@ -97,7 +97,7 @@ message MediaSession {
   string session_id;
   string participant_id;
   string forwarding_node;          // Assigned media server
-  int64 assignment_epoch;          // Server-assignment version
+  int64 assignment_epoch;          // Advance on reassignment; reject older commands
   repeated string published_tracks; // Tracks this participant sends
 }
 
@@ -105,7 +105,7 @@ message Recording {
   string recording_id;
   string meeting_id;
   string status;
-  repeated string track_objects;
+  repeated string track_objects;  // Storage references to the saved tracks
   Timestamp started_at;
 }
 
@@ -113,16 +113,20 @@ message ChatMessage {
   string message_id;
   string meeting_id;
   string sender_id;
-  int64 sequence;
+  int64 sequence;                  // Meeting-local order for replay after reconnect
   string body;
 }
 
 ```
 ## API
 
-Meeting creation, joining and recording use HTTP endpoints. After joining, the client opens a WebSocket control connection for **signaling**: the exchange of setup messages, host controls and chat. Live media needs connection negotiation, encrypted transport and feedback about network conditions; the browser's [WebRTC standard](https://www.w3.org/TR/webrtc/) supplies these capabilities.
+Meeting creation, joining and recording use HTTP endpoints. Before audio or video can flow, the client and its assigned media server agree on supported media formats and exchange network addresses they can try. This connection-setup exchange is called [**signaling**](https://www.rfc-editor.org/rfc/rfc8829.html#section-1.1).
 
-An `offer` describes media formats and connection settings; the `answer` supplies the other side's accepted settings. An `ice_candidate` carries a possible network address. [Interactive Connectivity Establishment (ICE)](https://www.rfc-editor.org/rfc/rfc8445) tests these possible paths, including a TURN relay when needed, and selects a working address pair.
+The meeting service relays these setup messages between the client and media server. The client uses a persistent, two-way [WebSocket connection](https://datatracker.ietf.org/doc/html/rfc6455) to the meeting service; host controls, chat and reactions share that connection. Audio and video travel over a separate encrypted media connection. Browser clients use [Web Real-Time Communication (WebRTC)](https://www.w3.org/TR/webrtc/) to negotiate media settings, test connectivity and establish that media connection.
+
+The client proposes media formats and connection settings in an `offer`; the media server returns its accepted settings in an `answer`. Each endpoint advertises possible network addresses in `ice_candidate` messages. Devices may need a direct address or a TURN relay, so [Interactive Connectivity Establishment (ICE)](https://www.rfc-editor.org/rfc/rfc8445.html) sends test packets across possible device/server address pairs and selects a working path.
+
+The client requests the tracks it wants to receive using `subscribe`. Control messages carry the current connection version (`session_epoch`) and media-server assignment version (`assignment_epoch`). Reconnecting advances the first; changing servers advances the second. Rejecting older versions prevents delayed commands from changing the current session. A client-generated `Idempotency-Key` identifies a recording-start request so retrying it returns the same recording job.
 
 ```yaml
 POST /v1/meetings:
@@ -150,7 +154,7 @@ GET /v1/recordings/{recording_id}:
 
 ```
 
-Signaling commands have IDs so retries can return the existing result. Retained chat messages have sequence numbers so reconnecting clients can request messages they missed.
+Each control command has a unique ID so retries return its existing result. Retained chat messages have sequence numbers so reconnecting clients can request messages they missed.
 
 ## High-level design
 
@@ -180,11 +184,11 @@ class M control;
 
 - **Relational database — [PostgreSQL](/designs/tech-postgresql/):** meeting metadata, permissions, recording jobs and retained chat need durable transactions and indexed access by meeting. A transaction saves a chat message, its unique message ID and its meeting-local sequence together, supporting retry deduplication and ordered replay.
 
-- **In-memory key-value store — [Redis](/designs/tech-redis/):** session-routing, participant-list and presence snapshots need fast lookups and expiry. These are short-lived coordination records; durable permissions remain in PostgreSQL. Media servers retain established connection state so they can continue forwarding during a temporary cache outage.
+- **In-memory key-value store — [Redis](/designs/tech-redis/):** media-server assignments and connected-participant lists need fast lookups and expiry. These are short-lived coordination records; durable permissions remain in PostgreSQL. Media servers retain established connection state so they can continue forwarding during a temporary cache outage.
 
-- **Object storage:** immutable recording segments, manifests and final outputs support large sequential writes and authorized downloads. A manifest identifies the segments that completed before an interruption.
+- **Object storage:** immutable recording segments and final outputs support large sequential writes and authorized downloads. Workers keep an index of completed segments, called a **manifest**, so finalization can resume after an interruption.
 
-- **Durable job queue:** recording finalization and retention work are replayable jobs, separate from the live meeting.
+- **Durable job queue:** stores pending recording-finalization and retention jobs so workers can retry them after a crash, separately from the live meeting.
 
 Chat retention follows the meeting policy. Media packets remain in bounded transport and retransmission buffers; recording is an explicit operation.
 
@@ -202,8 +206,10 @@ sequenceDiagram
   rect rgb(254, 247, 224)
     U->>M: Join meeting
     M-->>U: Session token and media-server assignment
-    U->>M: Exchange connection-setup messages
-    M-->>U: Connection settings
+    U->>M: Propose media settings and possible addresses
+    M->>F: Relay the proposal
+    F-->>M: Accepted settings and possible addresses
+    M-->>U: Relay the response
   end
   rect rgb(232, 240, 254)
     U->>F: Establish encrypted connection and send tracks
@@ -215,11 +221,11 @@ sequenceDiagram
 
 ```
 
-The meeting service handles access and connection setup; the SFU handles live media delivery. Once a device connects, it sends its tracks to the SFU and requests the tracks it needs to receive. A TURN relay can carry the device-to-SFU connection when direct connectivity is unavailable.
+The meeting service checks access and relays connection-setup messages between the device and its assigned SFU. The device and SFU then select a working path and establish the encrypted media connection. The device sends its tracks and requests the tracks it needs to receive; the SFU forwards those selected streams. A TURN relay carries the device-to-SFU connection when direct connectivity is unavailable.
 
 ### Joining a meeting
 
-The client authenticates and submits the meeting ID. The meeting service checks access and capacity, creates a participant session and returns a short-lived signaling token and a media-server assignment.
+The client authenticates and submits the meeting ID. The meeting service checks access and capacity, creates a participant session and returns a short-lived token for the control connection and a media-server assignment.
 
 The client exchanges its supported media formats and possible network addresses through signaling. ICE checks those address pairs and chooses a working direct or TURN-relayed path. After the encrypted media connection is established, the client starts sending tracks and requesting the tracks it needs to receive.
 
@@ -227,7 +233,7 @@ On reconnect, the participant identity stays the same but the connection version
 
 ### Sending and receiving audio and video
 
-The client uses a **codec**, an audio or video encoder/decoder, to compress each track for transmission. Sending a track is called **publishing**; requesting another participant's track is **subscribing**. For video, the client can send multiple quality versions or quality layers so the SFU can select an appropriate bitrate for each receiving device.
+The client compresses each track for transmission using a **codec**, an audio or video encoder/decoder. Sending a track is called **publishing**; requesting another participant's track is **subscribing**. For video, it can send separately encoded quality versions, or a base stream with additional layers of detail. The SFU selects the version or layers that fit each receiving device's bandwidth.
 
 The SFU uses each receiver's requested tracks and network feedback to select what it forwards. Receivers briefly queue incoming packets to smooth arrival-time variation, then decode and play the streams. The quality-control deep dive explains how those versions and layers are encoded and selected.
 
@@ -265,15 +271,13 @@ A group call creates many subscriptions, and users have limited uplink and decod
 
 In a 20-person mesh, sending a 2Mbps camera stream separately to 19 peers requires 38Mbps of upload bandwidth per participant. Selective forwarding sends a bounded set of quality versions to one media server, which distributes them to receivers. We choose it because client upload bandwidth and server encoding capacity are limited. The cost moves to server outbound bandwidth and per-receiver subscription state; mixing remains useful for authorized recording or constrained clients.
 
-The [Real-time Transport Protocol (RTP) topology specification](https://www.rfc-editor.org/rfc/rfc7667.html#section-3.7) describes these packet-forwarding and mixing approaches. Bound the number of visible video subscriptions so each device stays within its receive-bandwidth and decoding capacity.
+Media travels in packets carrying sequence numbers and playback timestamps, using [Real-time Transport Protocol (RTP)](https://datatracker.ietf.org/doc/html/rfc3550). These let receivers order packets and align playback. Bound visible video subscriptions so each device stays within its receive-bandwidth and decoding capacity.
 
-Switch video quality at a **keyframe**, which starts a fresh decoding point without depending on earlier video frames, or at a switching point supported by the codec. Packet sequence numbers identify ordering; a quality switch also has to preserve the decoder's required frame dependencies. The SFU keeps bounded packet history for retransmission and requests keyframes when required.
+Many compressed video frames describe changes relative to earlier frames. Switching quality versions can leave a receiver missing those references. The SFU switches at an independently decodable **keyframe**, or another switching point supported by the codec, and keeps a bounded history of recent packets for retransmission.
 
 **What the SFU forwards**
 
 A publisher sends video using **simulcast**, several independently encoded quality versions, or **scalable video coding**, a base layer with enhancement layers that add quality. The SFU forwards a suitable version or decodable set of layers for each subscription: high quality for a large active-speaker tile, lower quality for a small mobile tile. Receiving devices decode their selected streams and compose their own meeting layouts.
-
-For a mesh of N participants, each publisher sends up to N-1 copies. With forwarding, the publisher sends a bounded set of encoded layers; server egress still scales with subscriptions and must be budgeted.
 
 ```mermaid
 %%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -289,11 +293,11 @@ class P,S,A,B,C request;
 
 ```
 
-On a layout change, the receiver requests a new subscription. The SFU switches at a codec-valid point and uses a keyframe request when necessary. Keep bounded packet history for retransmission; a packet whose playback deadline passed is dropped rather than indefinitely queued. Measure sender uplink, SFU egress and receiver decode load separately.
+On a layout change, the receiver requests a new subscription. The SFU requests a keyframe when needed for the switch and drops retransmissions after their playback deadline. Measure sender upload bandwidth, SFU outbound bandwidth and receiver decoding load separately.
 
 ### How do meetings survive restrictive networks?
 
-A direct **UDP** media path sends individual packets without waiting for transport-level retransmission. This suits time-sensitive audio/video, but firewalls and network address translation (NAT) can prevent a device from reaching the SFU directly.
+A direct media path sends individual packets without waiting for transport-level retransmission, using **User Datagram Protocol (UDP)**. This suits time-sensitive audio/video. A home router may translate a device's private address to a public address; this is **network address translation (NAT)**. That translation and firewall rules can make some advertised addresses unreachable, which is why ICE tests possible paths.
 
 - **Direct transport only:** Use a direct supported media candidate. Relay spending is low, but restrictive NATs or firewalls prevent some participants from connecting.
 
@@ -303,20 +307,18 @@ A direct **UDP** media path sends individual packets without waiting for transpo
 
 Participants use heterogeneous enterprise and mobile networks. We accept connectivity-check setup and provision measured TURN capacity so reachability does not depend on one assumed UDP path.
 
-Deploy TURN near users, require short-lived credentials and monitor allocations, relay bandwidth and transport mix. TURN can use TCP, optionally protected by Transport Layer Security (TLS), for restrictive networks. TCP delivers data in order, so a missing packet can delay newer media behind its retransmission; this is head-of-line blocking.
-
-An ICE restart establishes a replacement path after a network change. Retrying signaling alone does not repair a failed media transport.
+Deploy TURN near users and require short-lived credentials. A client reserves a temporary relay address through a **TURN allocation**; monitor those reservations, relay bandwidth and transport mix. For restrictive networks, TURN can use **Transmission Control Protocol (TCP)**, encrypting the connection and authenticating the relay server with **Transport Layer Security (TLS)**. TCP delivers data in order, so a missing packet can delay newer media behind its retransmission; this is **head-of-line blocking**.
 
 **Connection establishment and network change**
 
-Signaling exchanges connection credentials and candidate addresses. ICE tests candidate pairs and selects a working path; TURN supplies a device-to-SFU relay path when direct connectivity is unavailable. An **ICE restart** exchanges new credentials and candidates to establish a replacement path after a network change.
+When a phone moves from Wi-Fi to cellular, its earlier media path may stop working. The client and SFU exchange fresh connection credentials and addresses through signaling, then repeat connectivity checks. This renewal is an **ICE restart**; it replaces the media path while preserving the meeting session.
 
 ```mermaid
 %%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart TB
   S["Signaling exchange"] --> G["Gather direct and TURN candidates"]
   G --> C["Check candidate pairs"]
-  C --> N["Nominate a working pair"]
+  C --> N["Select a working path"]
   N --> M["Secure media transport"]
   M -->|"Network change"| R["ICE restart<br>new credentials and candidates"]
   R --> C
@@ -327,9 +329,9 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 class S,G,C,N,M,R request;
 ```
 
-The media path carries authenticated encrypted transport independently of signaling. A healthy WebSocket does not imply healthy audio/video. Keep metrics for candidate type, RTT, loss and relay use so connectivity failures can be localized.
+Monitor the control connection and media path separately: either can fail while the other remains available. Record the selected address type, the time for a packet and reply to complete a round trip (**RTT**), packet loss and relay use to locate connectivity failures.
 
-TURN allocations require bounded lifetimes and short-lived credentials, with per-user abuse limits. A TCP/TLS fallback improves reachability but can delay newer media behind a lost packet. Test enterprise firewalls and Wi-Fi-to-mobile handoff with real clients. After a path changes, adapt congestion estimates instead of immediately sending the old high bitrate over the new link.
+Expire relay allocations and enforce per-user abuse limits. Test enterprise firewalls and Wi-Fi-to-mobile handoff with real clients. After a path changes, estimate its capacity before restoring the previous video bitrate.
 
 ### How do we keep quality consistent across receivers?
 
@@ -343,13 +345,11 @@ A fast connection and a congested mobile connection can subscribe to the same pu
 
 A meeting contains different devices and bandwidth conditions. We accept layer-management and publisher overhead to preserve audio and useful visible video without individualized server transcoding.
 
-Use receiver feedback, queue delay and packet loss to estimate available capacity. Allocate audio first, then screen content or the active speaker, then other tiles. A **jitter buffer** briefly holds arriving packets to smooth network timing variation; bound that buffer and the retransmission deadline so old packets do not prolong congestion.
-
-Load tests cover loss, bursty delay, mobile handoff and changing subscription layouts. Measure frozen-frame time and audio interruptions alongside bitrate.
+Receiving devices report packet arrivals and losses. The SFU combines these reports with the delay in its outgoing packet queue to estimate each receiver's available bandwidth. It reduces forwarded video bitrate as congestion grows. Receivers briefly hold arriving packets to smooth timing variation; this **jitter buffer** has a fixed delay budget so buffering preserves the playback target.
 
 **Allocate bandwidth per receiver**
 
-Estimate a receiver's available budget from transport feedback and queue delay. Reserve audio first, then screen content/active speaker, then selected secondary tiles. Choose existing encoded layers that fit that budget and request sender adaptation when none is feasible.
+Reserve the estimated bandwidth for audio first, then screen content or the active speaker, then other selected tiles. Choose encoded layers that fit the remaining capacity; request a lower sender bitrate when the available versions are too large.
 
 ```mermaid
 %%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -357,7 +357,7 @@ flowchart TB
   B["Estimate receiver bandwidth"] --> A["Reserve audio bandwidth"]
   A --> P["Select screen-share or active-speaker layers"]
   P --> T["Fit secondary tiles within remaining capacity"]
-  T --> F["Receiver feedback<br>loss and queue delay"]
+  T --> F["Receiver arrivals/loss<br>SFU queue delay"]
   F --> B
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
@@ -368,7 +368,7 @@ class B,A,P,T,F request;
 
 Require sustained spare bandwidth before upgrading quality; this **hysteresis** prevents small fluctuations from repeatedly switching layers. Downgrade sooner when loss or queue delay rises, and stop retransmitting packets after their playback deadline. Longer jitter buffering adds conversation delay, so keep it within the playback budget.
 
-Feedback is per subscription, so a slow receiver does not automatically force all participants to the same quality. Sender CPU/uplink limits still constrain the available layers. Test the full interaction under loss and bursts, reporting audio gaps and frozen-frame time in addition to average bitrate.
+Each receiver has its own quality selection; sender processing and upload capacity still limit the available versions. Test packet loss, bursty delay, mobile handoff and changing layouts. Measure audio interruptions and frozen-frame time alongside bitrate.
 
 ### How do we route a meeting across regions?
 
@@ -376,15 +376,15 @@ One region is operationally simple, but users far from that region pay extra pro
 
 - **One meeting region:** Keep all media on one regional forwarding group. Ownership and relay relationships are simple, but distant participants pay additional propagation delay.
 
-- **Local SFU per participant:** Attach everyone to a nearby forwarding node. Access paths are short, but cross-region subscriptions and many relay relationships become difficult to coordinate.
+- **Independent nearest-server placement:** Attach each participant to the nearest available SFU. Access paths are short, but participants spread across many nodes can require many node-to-node relay connections and separate copies of the same stream.
 
-- **Regional SFU groups — recommended:** Group nearby participants and relay only subscribed streams between regions. Access latency and relay work are balanced; meeting routing and SFU recovery must preserve subscription state and server-assignment versions.
+- **Regional SFU groups — recommended:** Group nearby participants on a regional set of media servers. Combine their requested tracks so each required stream crosses regions once per receiving group, then distribute it locally. This bounds relay copies, while routing and recovery must preserve subscriptions and server-assignment versions.
 
 Large meetings can span regions while only selected tracks are visible. We accept cross-region routing state and measured relay bandwidth, keeping small local meetings on the simpler one-region path.
 
-The meeting service's **placement controller** chooses a media server using participant locations, capacity and data-residency requirements. Media servers retain current connection and subscription state so established media can continue during a controller restart.
+The meeting service's **placement controller** chooses a media server using participant locations, capacity and data-residency requirements, and records the assignment version. Media servers retain current connection and subscription state so established media can continue during a controller restart.
 
-On SFU failure, clients receive a new assignment, establish a new transport and republish or resubscribe. Capacity reserves and regional admission limits keep failover from overloading healthy nodes. The recovery target remains a measured objective, rather than a guarantee for every network.
+On SFU failure, clients receive a new assignment, establish a new transport and republish or resubscribe. Capacity reserves and regional admission limits keep failover from overloading healthy nodes. Measure recovery against the five-second target under the supported network conditions.
 
 **A cross-region subscription**
 
@@ -398,8 +398,8 @@ flowchart TB
   end
   L -->|"Subscribed layers only"| X["Regional relay"]
   subgraph REMOTE["Subscriber region"]
-    R["Remote SFU"] -->|"Local fan-out"| A["Subscriber A"]
-    R -->|"Local fan-out"| B["Subscriber B"]
+    R["Remote SFU"] -->|"Local stream copy"| A["Subscriber A"]
+    R -->|"Local stream copy"| B["Subscriber B"]
   end
   X -->|"One inter-region copy per required layer"| R
   style LOCAL fill:#e8f0fe,stroke:#9aa0a6,color:#202124
@@ -411,7 +411,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 class P,L,X,R,A,B request;
 ```
 
-The placement controller owns server assignments and their versions; media servers handle active packet forwarding. Established media can continue through a controller restart using retained connection state. After a media-server failure, affected clients need a new connection, restored track subscriptions and a fresh decoding start.
+After a media-server failure, receivers resume restored video subscriptions from a keyframe.
 
 Reserve failover capacity before accepting meetings at the advertised target. Reassignment advances `assignment_epoch`. Once a client has received a newer assignment, it discards older assignment responses; media servers reject commands carrying old assignment or connection versions. These checks prevent delayed control messages from overriding newer session state. Data-residency constraints can override nearest-region placement; expose that policy to the participant.
 
@@ -425,9 +425,9 @@ Transport encryption secures each client/server leg. End-to-end encryption addit
 
 - **Explicit meeting trust modes — recommended:** Choose and disclose a compatible encryption/recording mode before joining. Capabilities have a clear trust contract; mode negotiation and participant-visible changes add product and key-management work.
 
-A server recording feature and a server-blind media mode have different trust requirements. We accept explicit mode limits and audited key handling rather than presenting incompatible features as available under one opaque setting.
+A recorder needs media decryption keys to save readable content. In transport-encrypted mode, a trusted server can record; in E2EE mode, recording requires an authorized participant or client that holds the keys. We choose explicit meeting modes so users can see which devices or services can access the media before joining.
 
-In E2EE mode, clients encrypt media frames before sending them to the SFU, which uses visible routing metadata to forward them. [Secure Frame (SFrame)](https://www.rfc-editor.org/rfc/rfc9605.html) provides a standardized frame-encryption format. A separate, reviewed group-key protocol authenticates participating devices, distributes keys to authorized members and updates them as membership changes.
+In E2EE mode, clients encrypt media frames before sending them to the SFU, which uses visible routing metadata to forward them. [Secure Frame (SFrame)](https://www.rfc-editor.org/rfc/rfc9605.html) provides a standardized frame-encryption format. Authorized devices establish shared media keys through a reviewed, [authenticated group-key exchange](https://www.rfc-editor.org/rfc/rfc9420.html#section-1). The meeting service relays encrypted key-exchange messages; the media keys remain with authorized devices and are updated as membership changes.
 
 A member who receives media keys can access that meeting's media. Membership verification, consent and client security therefore remain part of the trust model.
 
@@ -439,11 +439,11 @@ In transport-encrypted mode, the SFU terminates the transport and trusted server
 %%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart TB
   subgraph TRANSPORT["Transport encryption · service can process media"]
-    T1["Sending client"] <-->|"Encrypted transport"| S["Trusted media service<br>can decode or record"]
+    T1["Sending client"] <-->|"Encrypted transport"| S["Media server (SFU)<br>can decode or record"]
     S <-->|"Encrypted transport"| T2["Receiving client"]
   end
   subgraph E2EE["End-to-end encryption · clients hold media keys"]
-    E1["Authorized sending client<br>encrypts payload"] -->|"Encrypted media"| F["Forwarding service<br>routing metadata only"]
+    E1["Authorized sending client<br>encrypts payload"] -->|"Encrypted media"| F["Media server (SFU)<br>routing metadata only"]
     F -->|"Encrypted media"| E2["Authorized receiving client<br>decrypts payload"]
   end
   style TRANSPORT fill:#fef7e0,stroke:#9aa0a6,color:#202124
@@ -457,4 +457,4 @@ class T1,S,T2,E1,F,E2 request;
 
 Give each sender distinct media keys and an increasing frame counter; receivers reject replayed frames. A sender restarts its counter only after changing its key, keeping each encryption key/counter pair unique. After a member leaves or is removed, deliver fresh keys only to remaining authorized devices. Previously received keys or decoded media remain part of the prior trust exposure. Authenticate the participant list and host actions so signaling manipulation cannot silently add a receiver.
 
-If E2EE recording is required, use an explicitly authorized recording participant/client under the chosen trust policy, rather than claiming the SFU can decrypt transparently. Display the mode and consent before joining. Verify key-rotation and late-join behavior against the reviewed protocol version; a generic “encrypted” label does not explain who can access the content.
+Display the encryption mode, recording consent and authorized recorder before joining. Verify key updates after participant removal and admission of a late-joining device against the reviewed protocol version.

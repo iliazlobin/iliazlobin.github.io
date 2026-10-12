@@ -78,6 +78,27 @@ the recommendation using this design's workload, correctness and recovery needs.
 These tradeoffs require editorial review; a heading or word count is not evidence
 of a useful explanation.
 
+For prerequisite review, read the article from the beginning and list the important
+concepts before checking prose, entity/API fields and diagram labels. A first-use
+explanation needs the concept's purpose and mechanism; an acronym expansion or
+linked name alone is insufficient. Keep dependent details after that explanation.
+
+Zoom has a reviewer-authored regression ledger in `tests/design-concepts/zoom.json`:
+
+```sh
+node tests/check_design_concepts.mjs _designs/system-design-video-conferencing-zoom.md tests/design-concepts/zoom.json
+node --test tests/design-concepts.test.mjs
+```
+
+The dependency-free checker scans reading order, including code fields and visible
+flowchart/graph/sequence labels; unsupported Mermaid statements fail explicitly.
+It ignores metadata, link targets and diagram styling, and reports unregistered
+acronyms as manual-review advisories. Its purpose/mechanism signatures
+are reviewed regression contracts, not a semantic evaluator. A passing scan covers
+only registered terms: independently review definitions, prerequisites, terminology
+and diagrams for clarity, and update the ledger only after reviewing a changed
+explanation. Other designs need their own reviewed ledger before claiming coverage.
+
 **Every Mermaid block MUST be COMPLETE and VALID — a broken block renders as a red
 "Syntax error in text" box on the live page (HARD):**
 - **NEVER ship a truncated diagram or any `... (truncated)` / placeholder text** inside a
