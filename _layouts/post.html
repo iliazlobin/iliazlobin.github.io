@@ -6,6 +6,9 @@ layout: default
 {%- if page.collection == 'designs' %}
 <link rel="stylesheet" href="{{ '/assets/css/documents.css' | relative_url }}?v={{ site.time | date: '%s' }}">
 {%- endif %}
+{%- if page.collection == 'designs' %}
+<link rel="stylesheet" href="{{ '/assets/css/article-toc.css' | relative_url }}?v={{ site.time | date: '%s' }}">
+{%- endif %}
 {%- assign words = content | number_of_words -%}
 {%- assign minutes = words | divided_by: 200 | plus: 1 -%}
 <article class="post post--google-diagrams{% if page.collection == 'designs' %} post--document{% endif %}" itemscope itemtype="https://schema.org/BlogPosting">
@@ -45,9 +48,16 @@ layout: default
     {%- endif %}
   </header>
 
+  {%- if page.collection == 'designs' %}
+  <div class="document-body">
+    {% include article-toc.html content=content %}
+  {%- endif %}
   <div class="post-content" itemprop="articleBody">
     {{ content }}
   </div>
+  {%- if page.collection == 'designs' %}
+  </div>
+  {%- endif %}
 </article>
 
 {%- unless page.collection == 'designs' %}
@@ -66,6 +76,13 @@ layout: default
   .mvp-btn:hover { border-color: #1f6feb; color: #1f6feb; background: #f0f6ff; text-decoration: none; }
   .mvp-btn svg { flex: 0 0 auto; }
 </style>
+
+{%- if page.collection == 'designs' %}
+<script type="module">
+  import { setupArticleToc } from "{{ '/assets/js/article-toc.mjs' | relative_url }}?v={{ site.time | date: '%s' }}";
+  setupArticleToc(document.querySelector(".post--document"));
+</script>
+{%- endif %}
 
 <!-- Mermaid: render fenced ```mermaid blocks (client-side, GitHub-Pages safe) -->
 <script type="module">

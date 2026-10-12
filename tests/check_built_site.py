@@ -5,6 +5,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urljoin, urlsplit
 
+from check_article_outline import ArticleOutline
+
 
 SITE_ORIGIN = "https://iliazlobin.com"
 NAVIGATION = ["Resume", "Portfolio", "Design", "Infra", "About"]
@@ -97,6 +99,11 @@ def check_document_layout(root, errors):
         styles = [urlsplit(resource).path for resource in page.resources if ".css" in resource]
         if any(path not in styles for path in ("/assets/css/documents.css", "/assets/css/diagrams.css")) or styles.index("/assets/css/documents.css") < styles.index("/assets/css/diagrams.css"):
             errors.append(f"{source}: compact styles must load after diagram styles")
+        if "/assets/css/article-toc.css" not in styles:
+            errors.append(f"{source}: missing document outline styles")
+        outline = ArticleOutline()
+        outline.feed(source.read_text(encoding="utf-8"))
+        errors.extend(f"{source}: {error}" for error in outline.validate())
     if not document_count:
         errors.append("No document articles found")
 
@@ -104,8 +111,12 @@ def check_document_layout(root, errors):
         source = route_file(root, route)
         if source.is_file():
             html = source.read_text(encoding="utf-8")
-            if "post--document" in html or "/assets/css/documents.css" in html:
+            if "post--document" in html or "/assets/css/documents.css" in html or "data-article-toc" in html:
                 errors.append(f"{route}: document styles leaked outside articles")
+
+    for source in (root / "blog").glob("**/index.html"):
+        if "data-article-toc" in source.read_text(encoding="utf-8"):
+            errors.append(f"{source}: document outline leaked into an ordinary blog post")
 
     page = Page()
     source = route_file(root, "/designs/infra-news-feed/")

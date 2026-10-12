@@ -1,0 +1,66 @@
+/* Design/document articles only. The article keeps its existing width until
+   there is enough room for a separate, non-overlapping right-hand outline. */
+.post--document .document-body { display: grid; grid-template-columns: minmax(0, 1fr); }
+.post--document .document-body > .post-content { min-width: 0; }
+.post--document .article-toc { min-width: 0; margin-bottom: 1.25rem; }
+.post--document .article-toc-panel {
+  border: 1px solid #dadce0; border-radius: 8px; background: #f8faff;
+  color: var(--ink-soft);
+}
+.post--document .article-toc summary {
+  padding: .65rem .85rem; cursor: pointer; font-size: .88rem; font-weight: 600;
+  color: var(--ink); line-height: 1.35;
+}
+.post--document .article-toc nav {
+  max-height: min(55vh, 28rem); overflow-y: auto; overscroll-behavior: contain;
+  padding: 0 .5rem .6rem; scrollbar-width: thin;
+}
+.post--document .article-toc ol { list-style: none; padding: 0; margin: 0; }
+.post--document .article-toc ol ol { padding-left: .85rem; }
+.post--document .article-toc li { margin: 0; }
+.post--document .article-toc a {
+  display: block; border-left: 2px solid transparent; border-radius: 0 4px 4px 0;
+  padding: .28rem .5rem; color: var(--ink-soft); font-size: .78rem;
+  line-height: 1.4; overflow-wrap: anywhere; text-decoration: none;
+}
+.post--document .article-toc .article-toc-list > li > a { font-weight: 600; }
+.post--document .article-toc a:hover { color: #174ea6; background: #e8f0fe; }
+.post--document .article-toc a[aria-current="location"] {
+  color: #174ea6; background: #e8f0fe; border-left-color: #4285f4;
+}
+.post--document .article-toc :is(a, summary):focus-visible {
+  outline: 2px solid #1a73e8; outline-offset: 2px;
+}
+.post--document .post-content :is(h2, h3, h4) { scroll-margin-top: 1.5rem; }
+.post--document .post-content :is(h2, h3, h4):focus { outline: none; }
+.post--document .post-content :is(h2, h3, h4):focus-visible {
+  outline: 2px solid #1a73e8; outline-offset: .3rem;
+}
+
+@media (min-width: 1240px) {
+  .page-content > .wrapper:has(.post--document .document-body) { max-width: 1440px; }
+  .post--document:has(.article-toc) { max-width: none; }
+  .post--document .document-body:has(.article-toc) {
+    grid-template-columns: minmax(0, 1fr) 240px; gap: 2rem; align-items: start;
+  }
+  .post--document .document-body > .post-content { grid-column: 1; grid-row: 1; }
+  .post--document .article-toc {
+    grid-column: 2; grid-row: 1; position: sticky; top: 1.25rem;
+    align-self: start; margin: 0;
+  }
+  .post--document .article-toc-panel { border: 0; border-left: 1px solid #dadce0; border-radius: 0; background: none; }
+  .post--document .article-toc summary { cursor: default; list-style: none; }
+  .post--document .article-toc summary::-webkit-details-marker { display: none; }
+  /* The server-rendered outline is open for no-JS readers. The enhancement
+     keeps desktop persistent and collapses this disclosure on narrow screens. */
+  .post--document .article-toc nav {
+    max-height: calc(100vh - 5rem); max-height: calc(100dvh - 5rem);
+    padding-top: .15rem;
+  }
+}
+
+@media print {
+  .post--document .article-toc { display: none; }
+  .post--document .document-body { display: block !important; }
+  .post--document { max-width: none; }
+}
