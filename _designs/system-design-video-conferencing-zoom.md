@@ -18,7 +18,7 @@ Design of a meeting service with live audio, video, screen sharing, chat and opt
 
 Users need to join a meeting quickly, hear each other clearly and share content across home, mobile and corporate networks. Each participant has a different connection and device, so the service must adapt the streams delivered to each receiver.
 
-Meeting setup and host controls use a reliable application connection. Audio and video use a separate real-time transport, where late packets can be less useful than a lower-quality frame delivered on time.
+Meeting setup and host controls need reliable delivery. Live audio and video need to arrive in time for playback, so they use a separate transport that can favor timely packets over retransmitting outdated media.
 
 ## Requirements
 
@@ -120,7 +120,7 @@ message ChatMessage {
 ```
 ## API
 
-Meeting creation, joining and recording use HTTP endpoints. After joining, the client opens a WebSocket control connection for **signaling**: the exchange of setup messages, host controls and chat. This design uses [WebRTC](https://webrtc.org/getting-started/overview) to establish encrypted audio and video transport.
+Meeting creation, joining and recording use HTTP endpoints. After joining, the client opens a WebSocket control connection for **signaling**: the exchange of setup messages, host controls and chat. Live media needs connection negotiation, encrypted transport and feedback about network conditions; the browser's [WebRTC standard](https://www.w3.org/TR/webrtc/) supplies these capabilities.
 
 An `offer` describes media formats and connection settings; the `answer` supplies the other side's accepted settings. An `ice_candidate` carries a possible network address. [Interactive Connectivity Establishment (ICE)](https://www.rfc-editor.org/rfc/rfc8445) tests these possible paths, including a TURN relay when needed, and selects a working address pair.
 
@@ -154,7 +154,7 @@ Signaling commands have IDs so retries can return the existing result. Retained 
 
 ## High-level design
 
-The meeting service checks access and assigns a media server to each participant. The media server receives participants' audio, video and screen streams and forwards the streams each receiving device needs. This type of server is called a [selective forwarding unit (SFU)](https://docs.livekit.io/reference/internals/livekit-sfu/).
+The meeting service checks access and assigns a media server to each participant. Each participant sends its streams to that server, which forwards the streams requested by receiving devices. Each device keeps one media-server connection as the meeting grows. This forwarding role is called a [selective forwarding unit (SFU)](https://www.rfc-editor.org/rfc/rfc9605.html#section-6.1).
 
 A device tells the SFU which streams it wants to receive as the user changes the meeting layout. A recording worker receives authorized streams and saves them; meeting and chat records use separate storage.
 
@@ -178,9 +178,9 @@ class M control;
 ```
 ## Storage
 
-- **[PostgreSQL](/designs/tech-postgresql/):** meeting metadata, host permissions, recording jobs and retained chat messages need durable updates and indexed access by meeting. Message IDs deduplicate retries; a meeting-local sequence supports replay.
+- **Relational database — [PostgreSQL](/designs/tech-postgresql/):** meeting metadata, permissions, recording jobs and retained chat need durable transactions and indexed access by meeting. A transaction saves a chat message, its unique message ID and its meeting-local sequence together, supporting retry deduplication and ordered replay.
 
-- **[Redis](/designs/tech-redis/):** active session routing, participant-list snapshots and presence are short-lived coordination state. Media servers retain established connection state so they can continue forwarding during a temporary control-store outage.
+- **In-memory key-value store — [Redis](/designs/tech-redis/):** session-routing, participant-list and presence snapshots need fast lookups and expiry. These are short-lived coordination records; durable permissions remain in PostgreSQL. Media servers retain established connection state so they can continue forwarding during a temporary cache outage.
 
 - **Object storage:** immutable recording segments, manifests and final outputs support large sequential writes and authorized downloads. A manifest identifies the segments that completed before an interruption.
 
@@ -263,7 +263,7 @@ A group call creates many subscriptions, and users have limited uplink and decod
 
 - **Selective forwarding — recommended:** Forward existing encoded streams and select subscriptions/layers per receiver. Server encoding work is avoided; receiver bandwidth and decode limits still require bounded visible tiles and layer choices.
 
-Group meetings need efficient publisher uplink without server re-encoding every layout. We accept SFU bandwidth and per-receiver subscription state, with mixing reserved for a separately authorized recording or constrained-client mode.
+In a 20-person mesh, sending a 2Mbps camera stream separately to 19 peers requires 38Mbps of upload bandwidth per participant. Selective forwarding sends a bounded set of quality versions to one media server, which distributes them to receivers. We choose it because client upload bandwidth and server encoding capacity are limited. The cost moves to server outbound bandwidth and per-receiver subscription state; mixing remains useful for authorized recording or constrained clients.
 
 The [Real-time Transport Protocol (RTP) topology specification](https://www.rfc-editor.org/rfc/rfc7667.html#section-3.7) describes these packet-forwarding and mixing approaches. Bound the number of visible video subscriptions so each device stays within its receive-bandwidth and decoding capacity.
 
@@ -427,7 +427,7 @@ Transport encryption secures each client/server leg. End-to-end encryption addit
 
 A server recording feature and a server-blind media mode have different trust requirements. We accept explicit mode limits and audited key handling rather than presenting incompatible features as available under one opaque setting.
 
-Use a reviewed group-key protocol and rotate keys as membership changes. The SFU retains only the routing metadata required for forwarding. [Zoom's cryptography whitepaper](https://github.com/zoom/zoom-e2e-whitepaper) provides a concrete group-call design; its protocol details should be treated as a versioned reference.
+In E2EE mode, clients encrypt media frames before sending them to the SFU, which uses visible routing metadata to forward them. [Secure Frame (SFrame)](https://www.rfc-editor.org/rfc/rfc9605.html) provides a standardized frame-encryption format. A separate, reviewed group-key protocol authenticates participating devices, distributes keys to authorized members and updates them as membership changes.
 
 A member who receives media keys can access that meeting's media. Membership verification, consent and client security therefore remain part of the trust model.
 
@@ -455,6 +455,6 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 class T1,S,T2,E1,F,E2 request;
 ```
 
-Membership changes trigger the protocol's group-key update. A removed member should not receive future keys; previously received keys or decoded media remain part of the prior trust exposure. Authenticate the roster and host actions so signaling manipulation cannot silently add a receiver.
+Give each sender distinct media keys and an increasing frame counter; receivers reject replayed frames. A sender restarts its counter only after changing its key, keeping each encryption key/counter pair unique. After a member leaves or is removed, deliver fresh keys only to remaining authorized devices. Previously received keys or decoded media remain part of the prior trust exposure. Authenticate the participant list and host actions so signaling manipulation cannot silently add a receiver.
 
 If E2EE recording is required, use an explicitly authorized recording participant/client under the chosen trust policy, rather than claiming the SFU can decrypt transparently. Display the mode and consent before joining. Verify key-rotation and late-join behavior against the reviewed protocol version; a generic “encrypted” label does not explain who can access the content.
