@@ -5,7 +5,7 @@ category: system-design
 date: 2026-07-07
 tags: [Video-Conferencing, WebRTC, Real-Time, Zoom, Meeting-Systems, SFU]
 thumbnail: /images/posts/system-design-video-conferencing-zoom.svg
-last_modified_at: 2026-10-11
+last_modified_at: 2026-10-12
 description: "Design of a meeting service with live audio, video, screen sharing, chat and optional recording."
 notion_source: https://app.notion.com/p/395d865005a8819d84b0d7e67f55a378
 ---
@@ -189,6 +189,12 @@ Chat retention follows the meeting policy. Media packets remain in bounded trans
 
 ## From request to response
 
+### Creating a meeting
+
+The host submits an access policy and encryption mode to `POST /v1/meetings`. The meeting service validates those settings, saves the meeting with the host's user ID and returns a meeting ID and join URL.
+
+The host shares that URL with participants. Each join request is checked against the saved access policy. Participant roles determine who can change meeting controls or start a recording.
+
 ### Meeting join and media flow
 
 ```mermaid
@@ -220,33 +226,126 @@ The meeting service authorizes the join and relays setup messages to the assigne
 
 ### Joining a meeting
 
-The client authenticates and submits the meeting ID. The meeting service checks access and capacity, creates a participant session and returns a short-lived token for the control connection and a media-server assignment.
+The client sends the meeting ID, its authenticated identity and device capabilities to the join endpoint. The meeting service checks the meeting's access policy and available media capacity, then creates the participant and media-session records. It returns the participant ID, a short-lived session token, the control-connection address and the assigned media server.
 
-The device completes connection setup with its assigned media server, then starts sending and receiving tracks. On reconnect, it keeps its participant identity while establishing a new connection. The deep dives explain [path selection](#how-do-meetings-survive-restrictive-networks) and [session-version checks](#how-do-retries-and-reconnects-preserve-the-current-session).
+The client uses that token to open its WebSocket control connection. The meeting service relays connection-setup messages to the assigned SFU and updates the participant roster—the list of users in the meeting. Once the media connection is ready, the device can send its own tracks and request tracks from other participants.
+
+An access or capacity failure returns a clear join error. If an established connection fails, the client shows a reconnecting state and restores the connection using the same participant identity. The deep dives explain [path selection](#how-do-meetings-survive-restrictive-networks) and [session-version checks](#how-do-retries-and-reconnects-preserve-the-current-session).
 
 ### Sending and receiving audio and video
 
-The client compresses each track for transmission using a **codec**, an audio or video encoder/decoder. Sending a track is called **publishing**; requesting another participant's track is **subscribing**. For video, it can send separately encoded quality versions, or a base stream with additional layers of detail. The SFU selects the version or layers that fit each receiving device's bandwidth.
+The user grants microphone or camera access, and the client captures those inputs as tracks. It compresses each track for transmission using a **codec**, an audio or video encoder/decoder. Sending a track is called **publishing**; requesting another participant's track is **subscribing**.
 
-The SFU uses each receiver's requested tracks and network feedback to select what it forwards. Receivers briefly queue incoming packets to smooth arrival-time variation, then decode and play the streams. The quality-control deep dive explains how those versions and layers are encoded and selected.
+The client announces its published tracks through the control connection and sends their encoded media to the SFU. Other participants receive the available track IDs and request the tracks needed for their layout. A large speaker tile may need higher-quality video than a small thumbnail; changing the layout updates those requests.
 
-Audio receives priority during congestion. Forwarding all camera streams at full quality grows downstream bandwidth rapidly; selective subscriptions and layer selection address that cost.
+For video, the sender can provide separately encoded quality versions, or a base stream with additional layers of detail. The SFU selects the version or layers that fit each receiving device's bandwidth. Receivers briefly queue incoming packets to smooth arrival-time variation, then decode and play the streams. Their network feedback lets the SFU adjust delivery as conditions change.
+
+Audio receives priority during congestion, with video quality reduced first. Forwarding every camera at full quality grows downstream bandwidth rapidly; selective subscriptions and layer selection address that cost. The [quality-control deep dive](#how-do-we-keep-quality-consistent-across-receivers) explains the encoding and adaptation mechanisms.
 
 ### Sharing a screen
 
-A user with permission publishes a screen track alongside the camera. The client selects encoding settings appropriate to text or motion. Receiving clients update their layouts, and the SFU adjusts the forwarded tracks and video quality to match their requests.
+A user selects Share, and the browser prompts them to choose a tab, window or screen. This grants capture access for that sharing session, as described in the [W3C Screen Capture draft](https://www.w3.org/TR/screen-capture/#dom-mediadevices-getdisplaymedia). The meeting service separately checks whether that participant is allowed to publish a screen track, and the SFU enforces that permission.
 
-Stopping sharing unpublishes that track. Host controls request a permitted action; device permissions and the user's microphone/camera controls remain enforced by the client.
+Once authorized, the client announces the screen track and sends it alongside the camera and microphone tracks. Receiving clients request the screen track and update their layouts. The sender chooses encoding settings suited to readable text or moving content; the SFU adapts the forwarded quality for each receiver.
+
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+sequenceDiagram
+  participant P as Presenting client
+  participant M as Meeting service
+  participant F as Media server (SFU)
+  participant R as Receiving client
+  rect rgb(254, 247, 224)
+    P->>P: User selects a display source
+    P->>M: Request screen-track publication
+    M->>M: Check presenter permission
+    M->>F: Allow the screen track
+    M-->>R: Announce the available track
+  end
+  rect rgb(232, 240, 254)
+    R->>F: Request the screen track
+    P->>F: Send encoded screen frames
+    F-->>R: Forward the screen stream
+  end
+  rect rgb(230, 244, 234)
+    P->>M: Stop sharing
+    M->>F: Remove the screen track
+    M-->>R: Announce track removal
+  end
+```
+
+The control connection handles permission and track availability; the media connection carries the screen frames. Stopping sharing ends local capture, removes the published track and restores receiving layouts. Cancelling the capture prompt leaves the existing microphone and camera streams running. Host restrictions are enforced by the service, while starting device capture requires the user's local permission.
 
 ### Sending chat and reactions
 
-The meeting service validates membership and assigns a sequence to a retained chat message before acknowledging it. Repeated message IDs return the existing result. Reconnecting clients request messages after their last sequence.
+The sender submits the message body and a client-generated message ID over the control connection. The meeting service checks membership, stores the message with its ID and sequence number, and acknowledges it after the database commit. That acknowledgment confirms the message is saved; delivery to other participants follows.
 
-Reactions are short-lived events and can tolerate loss. Separating their retention prevents high reaction rates from expanding the durable chat log.
+Each recipient orders messages by sequence and merges repeated deliveries by message ID. The client keeps the last sequence it has synchronized from stored history, separately from live notifications. Periodic catch-up and reconnect both request retained messages after that position; each completed history read advances it. Repeated submissions with the same message ID return the saved result; the [retry deep dive](#how-do-retries-and-reconnects-preserve-the-current-session) covers the transaction and replay rules.
+
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+sequenceDiagram
+  participant S as Sending client
+  participant M as Meeting service
+  participant D as PostgreSQL
+  participant R as Receiving client
+  rect rgb(230, 244, 234)
+    S->>M: Submit message ID and body
+    M->>M: Check membership
+    M->>D: Save message and sequence
+    D-->>M: Commit complete
+    M-->>S: Acknowledge the saved message
+    M-->>R: Deliver message and sequence
+  end
+  rect rgb(232, 240, 254)
+    opt Messages missed or connection restored
+      R->>M: Request history after synchronized position
+      M->>D: Read retained messages
+      D-->>M: Return ordered messages
+      M-->>R: Return ordered history and next position
+    end
+  end
+```
+
+The database commit precedes the sender's acknowledgment, and retained messages support catch-up after missed live delivery. Reactions share the WebSocket connection but are transient events: the service forwards them to connected participants and omits them from chat history. A participant who is disconnected may miss a reaction; reconnecting retrieves retained chat messages.
 
 ### Recording a meeting
 
-The host starts an authorized recording and participants see its state and consent requirements. A recording subscriber receives permitted tracks and writes segments. It keeps an index of completed segments, called a **manifest**, so work can resume after an interruption. Finalization assembles the output and updates the recording status.
+The host sends a recording-start request with an `Idempotency-Key`. The meeting service checks the host's permission, the encryption mode and required participant consent, then saves a recording job. It returns the recording ID with `starting`; participants see that recording has been requested.
+
+A recording worker picks up the saved job and requests the permitted tracks from the SFU. When capture begins, the job becomes `recording` and participants see the active recording indicator. The worker writes media segments to object storage and keeps an index of completed segments, called a **manifest**, so finalization can resume from saved segments after an interruption.
+
+```mermaid
+%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+sequenceDiagram
+  participant H as Host client
+  participant M as Meeting service
+  participant W as Recording worker
+  participant F as Media server (SFU)
+  participant O as Object storage
+  rect rgb(254, 247, 224)
+    H->>M: Start recording with request ID
+    M->>M: Check permission and consent
+    M->>M: Save the recording job
+    M-->>H: Return recording ID and starting
+  end
+  rect rgb(232, 240, 254)
+    W->>M: Pick up the saved job
+    W->>F: Request authorized tracks
+    F-->>W: Forward selected streams
+    W->>M: Mark recording after capture starts
+    W->>O: Save segments and manifest
+  end
+  rect rgb(230, 244, 234)
+    H->>M: Stop recording
+    M->>W: Finalize the saved segments
+    W->>W: Assemble the saved segments
+    W->>O: Save the final output
+    W->>M: Mark ready with output reference
+  end
+```
+
+Stopping moves the job to `processing` while workers finish the segments and assemble the output. Once it is `ready`, the status endpoint returns a download URL after checking the requesting user's access. Interrupted capture is marked `failed`, with completed segments retained for recovery. Finalization can retry from the saved manifest.
 
 Transport-encrypted meetings can support a trusted cloud recorder. End-to-end encrypted meetings require an explicitly authorized key-holding recorder or client-side recording, according to the meeting policy.
 
@@ -358,7 +457,11 @@ The service first authorizes the caller and checks for a saved result under the 
 
 For a new persisted operation, a PostgreSQL transaction locks the participant's session row, checks the current versions and records the command ID, its effect and the response together. Reconnect and reassignment updates take the same row lock, serializing those changes with the command. Live media-server commands are serialized against that server's current session state so a reconnect or reassignment cannot occur between the version check and the change. A timeout after commit can therefore be retried safely; a database outage leaves new durable operations unavailable until storage recovers.
 
-A client-generated `Idempotency-Key` identifies a recording-start request so retrying it returns the same recording job. A PostgreSQL transaction saves each chat message with its unique ID and meeting-local sequence. Reconnecting clients replay messages after their last sequence; a repeated message ID returns the existing message. Retain command results through the supported retry window. Clients stop automatic retries once that window closes and show an unresolved outcome for recovery. Measure duplicate-result hits, rejected old-version commands and replay lag.
+A client-generated `Idempotency-Key` identifies a recording-start request so retrying it returns the same recording job.
+
+For chat, a PostgreSQL transaction locks the meeting-local sequence counter, assigns the next number, and saves the message, its unique ID and the updated counter together. The next writer acquires that lock after commit, keeping higher sequence numbers from becoming visible before earlier messages. Reconnecting clients replay messages after their last synchronized history position; live notifications leave that position unchanged. A repeated message ID returns the existing message.
+
+Retain command results through the supported retry window. Clients stop automatic retries once that window closes and show an unresolved outcome for recovery. Measure duplicate-result hits, rejected old-version commands and replay lag.
 
 ### How do we keep quality consistent across receivers?
 

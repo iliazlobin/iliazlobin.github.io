@@ -71,7 +71,11 @@ roles. Article rendering and offline SVG generation use this same configuration.
 The Mermaid version is pinned so a CDN update cannot silently change layout.
 
 Every system design needs a simplified functional sequence with an accompanying
-explanation in its functional-flow section. Keep HLD conceptual and top-down;
+explanation in its functional-flow section. Describe the user's action, the
+component steps, persisted state and visible outcome; include relevant permission,
+retry and failure behavior. Add a small sequence for a distinct workflow when it
+clarifies responsibilities or ordering, rather than repeating an existing view.
+Keep detailed protocol algorithms in their owning deep dives. Keep HLD conceptual and top-down;
 put mechanisms and failure paths in functional flows and deep dives. For each
 deep-dive alternative, explain the engineering benefit and cost, then justify
 the recommendation using this design's workload, correctness and recovery needs.
