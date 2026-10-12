@@ -133,10 +133,12 @@ POST /v1/meetings/{meeting_id}/join:
              signaling_url: string, media_server: string}
 
 WebSocket /v1/meetings/{meeting_id}/signal:
-  message_categories: [connection_setup, track_selection, host_controls, chat, reactions]
+  message_categories: [connection_setup, track_selection,
+                       host_controls, chat, reactions]
 
 POST /v1/meetings/{meeting_id}/recordings:
-  headers: {Idempotency-Key: request_id}  # Identifies one recording-start request
+  headers:
+    Idempotency-Key: request_id  # Identifies one recording-start request
   response: {recording_id: string, status: starting}
 
 POST /v1/recordings/{recording_id}/stop:
