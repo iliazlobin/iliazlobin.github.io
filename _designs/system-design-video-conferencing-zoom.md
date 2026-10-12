@@ -97,7 +97,7 @@ message MediaSession {
   string session_id;
   string participant_id;
   string forwarding_node;          // Assigned media server
-  int64 assignment_epoch;          // Advance on reassignment; reject older commands
+  int64 assignment_epoch;          // Media-server assignment version
   repeated string published_tracks; // Tracks this participant sends
 }
 
@@ -113,20 +113,14 @@ message ChatMessage {
   string message_id;
   string meeting_id;
   string sender_id;
-  int64 sequence;                  // Meeting-local order for replay after reconnect
+  int64 sequence;                  // Order of messages within the meeting
   string body;
 }
 
 ```
 ## API
 
-Meeting creation, joining and recording use HTTP endpoints. Before audio or video can flow, the client and its assigned media server agree on supported media formats and exchange network addresses they can try. This connection-setup exchange is called [**signaling**](https://www.rfc-editor.org/rfc/rfc8829.html#section-1.1).
-
-The meeting service relays these setup messages between the client and media server. The client uses a persistent, two-way [WebSocket connection](https://datatracker.ietf.org/doc/html/rfc6455) to the meeting service; host controls, chat and reactions share that connection. Audio and video travel over a separate encrypted media connection. Browser clients use [Web Real-Time Communication (WebRTC)](https://www.w3.org/TR/webrtc/) to negotiate media settings, test connectivity and establish that media connection.
-
-The client proposes media formats and connection settings in an `offer`; the media server returns its accepted settings in an `answer`. Each endpoint advertises possible network addresses in `ice_candidate` messages. Devices may need a direct address or a TURN relay, so [Interactive Connectivity Establishment (ICE)](https://www.rfc-editor.org/rfc/rfc8445.html) sends test packets across possible device/server address pairs and selects a working path.
-
-The client requests the tracks it wants to receive using `subscribe`. Control messages carry the current connection version (`session_epoch`) and media-server assignment version (`assignment_epoch`). Reconnecting advances the first; changing servers advances the second. Rejecting older versions prevents delayed commands from changing the current session. A client-generated `Idempotency-Key` identifies a recording-start request so retrying it returns the same recording job.
+HTTP endpoints manage meetings and recordings. A persistent, two-way [WebSocket connection](https://datatracker.ietf.org/doc/html/rfc6455) carries connection-setup messages—[signaling](#how-do-meetings-survive-restrictive-networks)—alongside host controls, chat and reactions. Audio and video use a separate encrypted media connection.
 
 ```yaml
 POST /v1/meetings:
@@ -135,15 +129,14 @@ POST /v1/meetings:
 
 POST /v1/meetings/{meeting_id}/join:
   body: {user_token: string, device_capabilities: object}
-  response: {participant_id: string, session_token: string, signaling_url: string,
-             media_server: string, session_epoch: integer, assignment_epoch: integer}
+  response: {participant_id: string, session_token: string,
+             signaling_url: string, media_server: string}
 
 WebSocket /v1/meetings/{meeting_id}/signal:
-  commands: [offer, answer, ice_candidate, subscribe, host_control, chat, reaction]
-  envelope: {command_id: string, session_epoch: integer, assignment_epoch: integer, payload: object}
+  message_categories: [connection_setup, track_selection, host_controls, chat, reactions]
 
 POST /v1/meetings/{meeting_id}/recordings:
-  headers: {Idempotency-Key: recording-request}
+  headers: {Idempotency-Key: request_id}  # Identifies one recording-start request
   response: {recording_id: string, status: starting}
 
 POST /v1/recordings/{recording_id}/stop:
@@ -154,7 +147,7 @@ GET /v1/recordings/{recording_id}:
 
 ```
 
-Each control command has a unique ID so retries return its existing result. Retained chat messages have sequence numbers so reconnecting clients can request messages they missed.
+Connection negotiation and [retry/reconnect handling](#how-do-retries-and-reconnects-preserve-the-current-session) are covered in the deep dives.
 
 ## High-level design
 
@@ -182,11 +175,11 @@ class M control;
 ```
 ## Storage
 
-- **Relational database — [PostgreSQL](/designs/tech-postgresql/):** meeting metadata, permissions, recording jobs and retained chat need durable transactions and indexed access by meeting. A transaction saves a chat message, its unique message ID and its meeting-local sequence together, supporting retry deduplication and ordered replay.
+- **Relational database — [PostgreSQL](/designs/tech-postgresql/):** meeting metadata, permissions, recording jobs and retained chat need durable transactions and indexed access by meeting. Store current server assignments and command results here so recovery state survives service restarts.
 
-- **In-memory key-value store — [Redis](/designs/tech-redis/):** media-server assignments and connected-participant lists need fast lookups and expiry. These are short-lived coordination records; durable permissions remain in PostgreSQL. Media servers retain established connection state so they can continue forwarding during a temporary cache outage.
+- **In-memory key-value store — [Redis](/designs/tech-redis/):** cached media-server assignments and connected-participant lists need fast lookups and expiry. These are short-lived coordination records; durable permissions and assignments remain in PostgreSQL.
 
-- **Object storage:** immutable recording segments and final outputs support large sequential writes and authorized downloads. Workers keep an index of completed segments, called a **manifest**, so finalization can resume after an interruption.
+- **Object storage:** immutable recording segments and final outputs need large sequential writes and authorized downloads.
 
 - **Durable job queue:** stores pending recording-finalization and retention jobs so workers can retry them after a crash, separately from the live meeting.
 
@@ -221,15 +214,13 @@ sequenceDiagram
 
 ```
 
-The meeting service checks access and relays connection-setup messages between the device and its assigned SFU. The device and SFU then select a working path and establish the encrypted media connection. The device sends its tracks and requests the tracks it needs to receive; the SFU forwards those selected streams. A TURN relay carries the device-to-SFU connection when direct connectivity is unavailable.
+The meeting service authorizes the join and relays setup messages to the assigned SFU. The device then establishes its media connection, sends its tracks and requests the tracks it wants to receive. The SFU forwards those selected streams; a TURN relay can carry the connection on restrictive networks.
 
 ### Joining a meeting
 
 The client authenticates and submits the meeting ID. The meeting service checks access and capacity, creates a participant session and returns a short-lived token for the control connection and a media-server assignment.
 
-The client exchanges its supported media formats and possible network addresses through signaling. ICE checks those address pairs and chooses a working direct or TURN-relayed path. After the encrypted media connection is established, the client starts sending tracks and requesting the tracks it needs to receive.
-
-On reconnect, the participant identity stays the same but the connection version (`session_epoch`) advances. A change of assigned media server advances `assignment_epoch` separately. The service rejects commands carrying an older relevant version.
+The device completes connection setup with its assigned media server, then starts sending and receiving tracks. On reconnect, it keeps its participant identity while establishing a new connection. The deep dives explain [path selection](#how-do-meetings-survive-restrictive-networks) and [session-version checks](#how-do-retries-and-reconnects-preserve-the-current-session).
 
 ### Sending and receiving audio and video
 
@@ -253,7 +244,7 @@ Reactions are short-lived events and can tolerate loss. Separating their retenti
 
 ### Recording a meeting
 
-The host starts an authorized recording and participants see its state and consent requirements. A recording subscriber receives permitted tracks, writes segments and records progress in a manifest. Finalization assembles the output and updates the recording status.
+The host starts an authorized recording and participants see its state and consent requirements. A recording subscriber receives permitted tracks and writes segments. It keeps an index of completed segments, called a **manifest**, so work can resume after an interruption. Finalization assembles the output and updates the recording status.
 
 Transport-encrypted meetings can support a trusted cloud recorder. End-to-end encrypted meetings require an explicitly authorized key-holding recorder or client-side recording, according to the meeting policy.
 
@@ -297,7 +288,7 @@ On a layout change, the receiver requests a new subscription. The SFU requests a
 
 ### How do meetings survive restrictive networks?
 
-A direct media path sends individual packets without waiting for transport-level retransmission, using **User Datagram Protocol (UDP)**. This suits time-sensitive audio/video. A home router may translate a device's private address to a public address; this is **network address translation (NAT)**. That translation and firewall rules can make some advertised addresses unreachable, which is why ICE tests possible paths.
+A direct media path sends individual packets without waiting for transport-level retransmission, using **User Datagram Protocol (UDP)**. This suits time-sensitive audio/video. A home router may translate a device's private address to a public address; this is **network address translation (NAT)**. That translation and firewall rules can make some advertised addresses unreachable. Connectivity checks, called [Interactive Connectivity Establishment (ICE)](https://www.rfc-editor.org/rfc/rfc8445.html), find a usable device-to-server path.
 
 - **Direct transport only:** Use a direct supported media candidate. Relay spending is low, but restrictive NATs or firewalls prevent some participants from connecting.
 
@@ -306,6 +297,12 @@ A direct media path sends individual packets without waiting for transport-level
 - **ICE with relay fallback — recommended:** Check candidate pairs and use a working direct or TURN path. Most sessions can avoid unnecessary relay; candidate setup, relay capacity and connectivity metrics remain required.
 
 Participants use heterogeneous enterprise and mobile networks. We accept connectivity-check setup and provision measured TURN capacity so reachability does not depend on one assumed UDP path.
+
+**How connection setup works**
+
+Before audio or video can flow, the client and its assigned media server agree on supported media formats and exchange network addresses they can try. This setup exchange is [**signaling**](https://www.rfc-editor.org/rfc/rfc8829.html#section-1.1). The meeting service relays these messages over the client's WebSocket control connection. Browser clients use [Web Real-Time Communication (WebRTC)](https://www.w3.org/TR/webrtc/) to negotiate media settings, test connectivity and establish the encrypted media connection.
+
+The client proposes media formats and connection settings in an `offer`; the media server returns its accepted settings in an `answer`. Each endpoint advertises possible network addresses in `ice_candidate` messages. ICE sends test packets across these device/server address pairs and selects a working direct or TURN-relayed path. Once connected, the client requests the tracks it wants to receive using `subscribe`.
 
 Deploy TURN near users and require short-lived credentials. A client reserves a temporary relay address through a **TURN allocation**; monitor those reservations, relay bandwidth and transport mix. For restrictive networks, TURN can use **Transmission Control Protocol (TCP)**, encrypting the connection and authenticating the relay server with **Transport Layer Security (TLS)**. TCP delivers data in order, so a missing packet can delay newer media behind its retransmission; this is **head-of-line blocking**.
 
@@ -332,6 +329,34 @@ class S,G,C,N,M,R request;
 Monitor the control connection and media path separately: either can fail while the other remains available. Record the selected address type, the time for a packet and reply to complete a round trip (**RTT**), packet loss and relay use to locate connectivity failures.
 
 Expire relay allocations and enforce per-user abuse limits. Test enterprise firewalls and Wi-Fi-to-mobile handoff with real clients. After a path changes, estimate its capacity before restoring the previous video bitrate.
+
+### How do retries and reconnects preserve the current session?
+
+A client can lose a response after a command succeeds, and messages from an old connection can arrive after a reconnect. The service must recognize a repeated request while keeping delayed messages from changing the current session.
+
+- **Retry each command as a new request:** little retained state, but a repeated recording-start or chat submission can create duplicate work.
+
+- **Deduplicate within the live connection:** inexpensive and useful for local retries, but the cache disappears on restart and a reconnect creates a new connection.
+
+- **Stable request IDs and service-checked versions — recommended:** retain command outcomes and check the current connection and server assignment. Retries recover the original result, while obsolete commands are rejected. This requires durable state, atomic updates and a bounded retention policy.
+
+Meetings frequently reconnect and can outlive a service process. We choose stable request identities plus independent versions so a reconnect preserves the participant, a retry preserves its original operation, and a reassignment takes effect once. PostgreSQL owns the durable records; Redis caches copies for fast routing. Media servers retain established connection state during a temporary cache or placement-controller outage.
+
+Each control message carries a unique `command_id`. The current connection version is `session_epoch`; reconnecting advances it. The media-server assignment version is `assignment_epoch`; changing servers advances that separately. New commands must match the current versions, keeping delayed messages from changing the current session. The join response includes both versions so the client can attach them to subsequent control messages.
+
+```yaml
+command: offer | answer | ice_candidate | subscribe | host_control | chat | reaction
+command_id: client_generated_id
+session_epoch: current_connection_version
+assignment_epoch: current_server_assignment_version
+payload: command_specific_data
+```
+
+The service first authorizes the caller and checks for a saved result under the request ID. Repeating the same operation returns that result, including after a reconnect. Scope IDs to the requesting participant or user, compare the submitted operation, and reject reuse for different input.
+
+For a new persisted operation, a PostgreSQL transaction locks the participant's session row, checks the current versions and records the command ID, its effect and the response together. Reconnect and reassignment updates take the same row lock, serializing those changes with the command. Live media-server commands are serialized against that server's current session state so a reconnect or reassignment cannot occur between the version check and the change. A timeout after commit can therefore be retried safely; a database outage leaves new durable operations unavailable until storage recovers.
+
+A client-generated `Idempotency-Key` identifies a recording-start request so retrying it returns the same recording job. A PostgreSQL transaction saves each chat message with its unique ID and meeting-local sequence. Reconnecting clients replay messages after their last sequence; a repeated message ID returns the existing message. Retain command results through the supported retry window. Clients stop automatic retries once that window closes and show an unresolved outcome for recovery. Measure duplicate-result hits, rejected old-version commands and replay lag.
 
 ### How do we keep quality consistent across receivers?
 

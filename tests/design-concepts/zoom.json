@@ -1,6 +1,6 @@
 {
   "article": "_designs/system-design-video-conferencing-zoom.md",
-  "reviewNote": "Reviewer-authored first-use contracts, not semantic proof. Purpose/mechanism signatures record important explanatory relationships without copying full paragraphs. Independently review changed wording, code comments and prerequisite edges.",
+  "reviewNote": "Reviewer-authored first-use contracts, not semantic proof. Optional purpose/meaning introductions permit breadth-first overviews; full purpose/mechanism definitions remain independently required in the owning flows/deep dives. Introduction prerequisites may omit details introduced later, but full-definition dependencies remain unchanged. Independently review changed wording, section abstraction, code comments and prerequisite edges.",
   "assumedKnown": ["browser", "server", "media", "network", "database", "encryption", "HTTP", "API", "POST", "GET", "ID", "CPU"],
   "concepts": [
     {
@@ -18,16 +18,21 @@
     },
     {
       "id": "assignment-version", "aliases": ["assignment_epoch"], "prerequisites": ["server"],
+      "introductionSurfaces": ["prose", "model"],
+      "introduction": {"purpose": "media.server assignment", "meaning": "assignment version"},
       "definitionSurfaces": ["prose", "model"],
-      "definition": {"purpose": "reject.*older|older.*reject|delayed commands", "mechanism": "advance.*reassignment|changing servers advances|assignment.*version"}
+      "definition": {"purpose": "reject.*older|older.*reject|delayed (?:commands|messages)", "mechanism": "advance.*reassignment|changing servers advances|assignment.*version"}
     },
     {
       "id": "chat-sequence", "aliases": ["sequence"], "prerequisites": ["media"],
+      "introductionSurfaces": ["prose", "model"],
+      "introduction": {"purpose": "messages within the meeting", "meaning": "order of messages"},
       "definitionSurfaces": ["prose", "model"],
       "definition": {"purpose": "replay.*reconnect|reconnect.*replay", "mechanism": "meeting.local order|meeting.local sequence"}
     },
     {
       "id": "signaling", "aliases": ["signaling", "signaling_url"], "prerequisites": ["media", "server", "network"],
+      "introduction": {"purpose": "connection.setup", "meaning": "connection.setup messages.*signaling"},
       "definition": {"purpose": "before.*(?:audio|video).*flow|establish.*media connection", "mechanism": "(?:agree|exchange).*(?:formats|settings|addresses|credentials)"}
     },
     {
@@ -52,6 +57,7 @@
     },
     {
       "id": "ice", "aliases": ["ICE", "Interactive Connectivity Establishment"], "prerequisites": ["signaling", "candidate", "turn"],
+      "introduction": {"purpose": "find.*usable.*device.to.server path", "meaning": "connectivity checks", "prerequisites": ["network", "signaling", "turn"]},
       "definition": {"purpose": "select.*working.*(?:path|pair)", "mechanism": "test packets.*address pairs|tests.*candidate pairs"}
     },
     {
@@ -61,10 +67,12 @@
     },
     {
       "id": "connection-version", "aliases": ["session_epoch"], "prerequisites": ["signaling"],
-      "definition": {"purpose": "rejecting older versions.*delayed commands", "mechanism": "connection version.*session_epoch.*reconnecting advances"}
+      "definition": {"purpose": "rejecting older versions.*delayed commands|new commands must match the current versions.*delayed messages.*current session", "mechanism": "connection version.*session_epoch.*reconnecting advances"}
     },
     {
       "id": "idempotency", "aliases": ["Idempotency-Key"], "prerequisites": ["HTTP"],
+      "introductionSurfaces": ["prose", "api"],
+      "introduction": {"purpose": "recording.start request", "meaning": "identifies one"},
       "definition": {"purpose": "retrying.*same recording job", "mechanism": "client.generated.*identifies.*recording.start request"}
     },
     {

@@ -78,10 +78,15 @@ the recommendation using this design's workload, correctness and recovery needs.
 These tradeoffs require editorial review; a heading or word count is not evidence
 of a useful explanation.
 
-For prerequisite review, read the article from the beginning and list the important
-concepts before checking prose, entity/API fields and diagram labels. A first-use
-explanation needs the concept's purpose and mechanism; an acronym expansion or
-linked name alone is insufficient. Keep dependent details after that explanation.
+Read breadth first: requirements establish capabilities, entities establish the
+important records, API shows the interface contract, and HLD establishes component
+responsibilities. Keep these sections compact. A short purpose/meaning introduction
+can make an unfamiliar term usable here, with an internal link to its owning
+functional flow or deep dive. Put negotiation steps, algorithms, retries, failure
+handling and tradeoff reasoning in those later sections rather than expanding the
+API or HLD to satisfy a terminology check. Introduce prerequisites before dependent
+prose, entity/API fields or diagram labels; an acronym expansion or linked name alone
+does not explain a concept.
 
 Zoom has a reviewer-authored regression ledger in `tests/design-concepts/zoom.json`:
 
@@ -93,11 +98,16 @@ node --test tests/design-concepts.test.mjs
 The dependency-free checker scans reading order, including code fields and visible
 flowchart/graph/sequence labels; unsupported Mermaid statements fail explicitly.
 It ignores metadata, link targets and diagram styling, and reports unregistered
-acronyms as manual-review advisories. Its purpose/mechanism signatures
-are reviewed regression contracts, not a semantic evaluator. A passing scan covers
-only registered terms: independently review definitions, prerequisites, terminology
-and diagrams for clarity, and update the ledger only after reviewing a changed
-explanation. Other designs need their own reviewed ledger before claiming coverage.
+acronyms as manual-review advisories. Optional purpose/meaning introduction contracts
+permit a brief first use, while the purpose/mechanism definition remains independently
+required later. An introduction can declare only the prerequisites needed for its
+broad meaning; the detailed definition must still satisfy its full dependency list.
+These signatures are reviewer-authored regression contracts, not a
+semantic evaluator. A passing scan covers only registered terms and does not verify
+section abstraction, natural style or explanatory depth. Independently review the
+article for all three, along with definitions, prerequisites, terminology and diagrams;
+update the ledger only after reviewing a changed explanation. Other designs need
+their own reviewed ledger before claiming coverage.
 
 **Every Mermaid block MUST be COMPLETE and VALID — a broken block renders as a red
 "Syntax error in text" box on the live page (HARD):**

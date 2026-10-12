@@ -265,28 +265,54 @@ export function checkConceptPrerequisites(markdown, ledger) {
   if (ids.size !== concepts.length) throw new Error("Duplicate concept IDs");
   const contracts = concepts.map(concept => {
     if (!concept.id || !concept.aliases?.length || !concept.definition?.purpose || !concept.definition?.mechanism) throw new Error("Each concept needs an ID, aliases and reviewed purpose/mechanism signatures");
-    for (const prerequisite of concept.prerequisites || []) {
+    if (concept.introduction && (!concept.introduction.purpose || !concept.introduction.meaning)) throw new Error(`${concept.id}: a brief introduction needs reviewed purpose/meaning signatures`);
+    for (const prerequisite of [...(concept.prerequisites || []), ...(concept.introduction?.prerequisites || [])]) {
       if (!ids.has(prerequisite) && !assumedKnown.has(prerequisite)) throw new Error(`${concept.id}: unknown prerequisite ${prerequisite}`);
     }
-    return { ...concept, pattern: aliasPattern(concept.aliases), signatures: Object.entries(concept.definition).map(([name, pattern]) => [name, new RegExp(pattern, "iu")]) };
+    return { ...concept, pattern: aliasPattern(concept.aliases),
+      signatures: Object.entries(concept.definition).map(([name, pattern]) => [name, new RegExp(pattern, "iu")]),
+      introductionSignatures: concept.introduction ? ["purpose", "meaning"].map(name => [name, new RegExp(concept.introduction[name], "iu")]) : [],
+    };
   });
-  const diagnostics = [], introduced = new Set(assumedKnown), recorded = new Set(), observations = [];
+  const diagnostics = [], introduced = new Set(assumedKnown), defined = new Set(), recorded = new Set(), observations = [];
   const isDefinition = (concept, unit) => (concept.definitionSurfaces || ["prose"]).includes(unit.surface)
     && concept.pattern.test(unit.text) && concept.signatures.every(([, pattern]) => pattern.test(unit.text.replace(/\s+/g, " ")));
+  const isIntroduction = (concept, unit) => concept.introductionSignatures.length
+    && (concept.introductionSurfaces || ["prose"]).includes(unit.surface)
+    && concept.pattern.test(unit.text) && concept.introductionSignatures.every(([, pattern]) => pattern.test(unit.text.replace(/\s+/g, " ")));
+  const isExplanation = (concept, unit) => isDefinition(concept, unit) || isIntroduction(concept, unit);
+  const introductionPrerequisites = concept => concept.introduction?.prerequisites ?? concept.prerequisites ?? [];
+  const readyForIntroduction = (concept, unit) =>
+    (isDefinition(concept, unit) && (concept.prerequisites || []).every(id => introduced.has(id)))
+    || (isIntroduction(concept, unit) && introductionPrerequisites(concept).every(id => introduced.has(id)));
   for (const [index, unit] of units.entries()) {
     const uses = contracts.filter(concept => concept.pattern.test(unit.text));
-    // A definition may share the first-use paragraph. Same-paragraph prerequisites
-    // are accepted only when they also satisfy their own reviewed signatures.
-    const pending = uses.filter(concept => !introduced.has(concept.id) && isDefinition(concept, unit));
+    // A concise purpose/meaning introduction may establish a prerequisite without
+    // putting its full mechanism in an overview. Full detail is checked separately.
+    // Same-paragraph prerequisites must satisfy their own reviewed contracts.
+    const pending = uses.filter(concept => !introduced.has(concept.id) && isExplanation(concept, unit));
     let changed = true;
     while (changed) {
       changed = false;
       for (const concept of pending) {
-        if (!introduced.has(concept.id) && (concept.prerequisites || []).every(id => introduced.has(id))) {
+        if (!introduced.has(concept.id) && readyForIntroduction(concept, unit)) {
           introduced.add(concept.id);
-          observations.push({ concept: concept.id, definitionLine: unit.line, surface: unit.surface });
+          observations.push({ concept: concept.id, introductionLine: unit.line,
+            definitionLine: isDefinition(concept, unit) && (concept.prerequisites || []).every(id => introduced.has(id)) ? unit.line : null, surface: unit.surface });
           changed = true;
         }
+      }
+    }
+    for (const concept of uses) {
+      if (isDefinition(concept, unit) && (concept.prerequisites || []).every(id => introduced.has(id))) {
+        defined.add(concept.id);
+        const observation = observations.find(item => item.concept === concept.id);
+        if (observation && observation.definitionLine === null) observation.definitionLine = unit.line;
+      } else if (isDefinition(concept, unit) && introduced.has(concept.id) && !recorded.has(concept.id)) {
+        recorded.add(concept.id);
+        const missing = (concept.prerequisites || []).filter(id => !introduced.has(id));
+        diagnostics.push({ code: "missing-prerequisite", concept: concept.id, line: unit.line, surface: unit.surface,
+          message: `Explain ${missing.join(", ")} before the detailed ${concept.id} mechanism.` });
       }
     }
     for (const concept of uses) {
@@ -294,14 +320,21 @@ export function checkConceptPrerequisites(markdown, ledger) {
       recorded.add(concept.id);
       const match = concept.pattern.exec(unit.text);
       const line = unit.line + unit.text.slice(0, match.index).split("\n").length - 1;
-      const missing = (concept.prerequisites || []).filter(id => !introduced.has(id));
-      const future = units.slice(index + 1).find(candidate => isDefinition(concept, candidate));
-      const code = isDefinition(concept, unit) && missing.length ? "missing-prerequisite" : future ? "use-before-definition" : "missing-definition";
+      const missing = (isIntroduction(concept, unit) ? introductionPrerequisites(concept) : concept.prerequisites || []).filter(id => !introduced.has(id));
+      const future = units.slice(index + 1).find(candidate => isExplanation(concept, candidate));
+      const code = isExplanation(concept, unit) && missing.length ? "missing-prerequisite" : future ? "use-before-definition" : "missing-definition";
       const message = code === "missing-prerequisite" ? `Introduce ${missing.join(", ")} before ${concept.id}.`
-        : future ? `${concept.id} is used before its reviewed definition at line ${future.line}.`
-          : `${concept.id} needs a local explanation matching its reviewed purpose/mechanism signatures; a name or link alone is insufficient.`;
+        : future ? `${concept.id} is used before its reviewed explanation at line ${future.line}.`
+          : `${concept.id} needs a reviewed purpose/meaning introduction or full definition; a name or link alone is insufficient.`;
       diagnostics.push({ code, concept: concept.id, line, surface: unit.surface, message });
     }
+  }
+  for (const concept of contracts) {
+    if (!introduced.has(concept.id) || defined.has(concept.id) || recorded.has(concept.id)) continue;
+    const observation = observations.find(item => item.concept === concept.id);
+    if (!observation) continue;
+    diagnostics.push({ code: "missing-definition", concept: concept.id, line: observation.introductionLine, surface: observation.surface,
+      message: `${concept.id} has a brief introduction but still needs its reviewed purpose/mechanism explanation in the owning functional flow or deep dive.` });
   }
   const registered = new Set([...assumedKnown, ...contracts.flatMap(concept => concept.aliases)].map(alias => alias.toUpperCase()));
   const advisory = [], seenAcronyms = new Set();

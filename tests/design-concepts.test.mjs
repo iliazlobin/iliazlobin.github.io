@@ -15,6 +15,11 @@ const ice = {
 };
 const ledger = { assumedKnown: ["media", "HTTP"], concepts: [signaling] };
 const explanation = "Signaling exchanges connection settings and network addresses before devices send audio or video. The client and media server use these messages to establish their media connection.";
+const signalingWithIntroduction = {
+  ...signaling,
+  introduction: {purpose: "establish.*media connection", meaning: "connection.setup exchange"},
+};
+const briefIntroduction = "Signaling is the connection-setup exchange used to establish the media connection; the connection deep dive explains the steps.";
 
 test("a name, acronym expansion, link or vague setup-message gloss is not a reviewed explanation", () => {
   for (const source of ["Signaling.", "Signaling is the exchange of setup messages.", "[Signaling](https://example.org/connection-settings-before-sending-audio)"]) {
@@ -30,6 +35,60 @@ test("a later definition cannot repair an earlier dependent paragraph", () => {
   assert.equal(result.diagnostics[0]?.code, "use-before-definition");
   assert.equal(result.diagnostics[0]?.line, 1);
   assert.equal(result.observations[0]?.definitionLine, 3);
+});
+
+test("a brief purpose/meaning introduction permits breadth first while later detail remains required", () => {
+  const result = checkConceptPrerequisites(`${briefIntroduction}\n\n\`\`\`yaml\nsignaling_url: string\n\`\`\`\n\n${explanation}`, {assumedKnown: ["media"], concepts: [signalingWithIntroduction]});
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.observations[0]?.introductionLine, 1);
+  assert.equal(result.observations[0]?.definitionLine, 7);
+});
+
+test("an introduction contract still rejects a raw term, link or acronym expansion alone", () => {
+  for (const source of ["Signaling.", "[Signaling](#connection-setup)", "Signaling stands for connection setup."]) {
+    const result = checkConceptPrerequisites(`${source}\n\n${explanation}`, {assumedKnown: ["media"], concepts: [signalingWithIntroduction]});
+    assert.equal(result.diagnostics[0]?.code, "use-before-definition", source);
+  }
+});
+
+test("a brief introduction without the later mechanism fails independently", () => {
+  const result = checkConceptPrerequisites(`${briefIntroduction}\n\nSignaling controls the call.`, {assumedKnown: ["media"], concepts: [signalingWithIntroduction]});
+  assert.equal(result.diagnostics[0]?.code, "missing-definition");
+  assert.match(result.diagnostics[0]?.message, /brief introduction.*purpose\/mechanism/);
+  assert.equal(result.observations[0]?.definitionLine, null);
+});
+
+test("a future brief introduction cannot repair an earlier use", () => {
+  const result = checkConceptPrerequisites(`Signaling controls the call.\n\n${briefIntroduction}\n\n${explanation}`, {assumedKnown: ["media"], concepts: [signalingWithIntroduction]});
+  assert.equal(result.diagnostics[0]?.code, "use-before-definition");
+  assert.equal(result.diagnostics[0]?.line, 1);
+  assert.equal(result.observations[0]?.introductionLine, 3);
+  assert.equal(result.observations[0]?.definitionLine, 5);
+});
+
+test("brief introductions do not erase prerequisites on code surfaces", () => {
+  const result = checkConceptPrerequisites(`\`\`\`yaml\n# ICE is a path-selection procedure for reaching the media server.\n\`\`\`\n\n${explanation}\n\nICE tests candidate address pairs and selects a working media path.`, {
+    assumedKnown: ["media"], concepts: [signalingWithIntroduction, {
+      ...ice, introductionSurfaces: ["prose", "api"],
+      introduction: {purpose: "reaching.*media server", meaning: "path.selection procedure"},
+    }],
+  });
+  assert.equal(result.diagnostics[0]?.code, "missing-prerequisite");
+  assert.equal(result.diagnostics[0]?.surface, "api");
+  assert.match(result.diagnostics[0]?.message, /signaling/);
+});
+
+test("a broad introduction can precede deeper prerequisites without weakening the mechanism dependency", () => {
+  const broadIce = {...ice, introduction: {
+    purpose: "reach.*media server", meaning: "connectivity checks", prerequisites: ["media"],
+  }};
+  const shortIce = "ICE is a set of connectivity checks used to reach the media server.";
+  const fullIce = "ICE tests candidate address pairs and selects a working media path.";
+  const contracts = {assumedKnown: ["media"], concepts: [signaling, broadIce]};
+  assert.deepEqual(checkConceptPrerequisites(`${shortIce}\n\n${explanation}\n\n${fullIce}`, contracts).diagnostics, []);
+  const wrongOrder = checkConceptPrerequisites(`${shortIce}\n\n${fullIce}\n\n${explanation}`, contracts);
+  assert.equal(wrongOrder.diagnostics[0]?.code, "missing-prerequisite");
+  assert.match(wrongOrder.diagnostics[0]?.message, /signaling.*detailed ice/);
 });
 
 test("first use is checked inside both models and API blocks", () => {
@@ -124,6 +183,7 @@ test("unregistered acronyms are advisory and do not pretend to establish full co
 test("invalid ledgers and unclosed fences fail clearly", () => {
   assert.throws(() => checkConceptPrerequisites(explanation, {concepts: [signaling]}), /unknown prerequisite media/);
   assert.throws(() => checkConceptPrerequisites(explanation, {assumedKnown: ["media"], concepts: [signaling, signaling]}), /Duplicate concept/);
+  assert.throws(() => checkConceptPrerequisites(explanation, {assumedKnown: ["media"], concepts: [{...signaling, introduction: {meaning: "connection setup"}}]}), /purpose\/meaning/);
   assert.throws(() => readingUnits("```protobuf\nmessage Missing {"), /Unclosed code fence/);
   assert.throws(() => readingUnits("```mermaid\nclassDiagram\nclass Signaling\n```"), /Unsupported Mermaid type/);
 });
@@ -132,6 +192,23 @@ test("Zoom preserves the reviewed concept prerequisite contracts", () => {
   const article = readFileSync(new URL("../_designs/system-design-video-conferencing-zoom.md", import.meta.url), "utf8");
   const zoomLedger = JSON.parse(readFileSync(new URL("./design-concepts/zoom.json", import.meta.url), "utf8"));
   assert.deepEqual(checkConceptPrerequisites(article, zoomLedger).diagnostics, []);
+});
+
+test("Zoom keeps API contracts abstract and puts protocol/recovery mechanisms in deep dives", () => {
+  const article = readFileSync(new URL("../_designs/system-design-video-conferencing-zoom.md", import.meta.url), "utf8");
+  const zoomLedger = JSON.parse(readFileSync(new URL("./design-concepts/zoom.json", import.meta.url), "utf8"));
+  const api = article.split("## API\n")[1]?.split("## High-level design\n")[0];
+  assert.ok(api, "API section exists");
+  assert.match(api, /message_categories:/);
+  assert.match(api, /Idempotency-Key: request_id.*Identifies one recording-start request/);
+  assert.match(api, /\[signaling\]\(#how-do-meetings-survive-restrictive-networks\)/);
+  assert.match(api, /\[retry\/reconnect handling\]\(#how-do-retries-and-reconnects-preserve-the-current-session\)/);
+  assert.doesNotMatch(api, /\b(?:offer|answer|ice_candidate|session_epoch|assignment_epoch)\b/);
+  const deepDiveLine = article.slice(0, article.indexOf("## Deep dives\n")).split("\n").length;
+  const observations = checkConceptPrerequisites(article, zoomLedger).observations;
+  for (const id of ["signaling", "webrtc", "offer", "answer", "candidate", "ice", "assignment-version", "connection-version", "idempotency", "chat-sequence"]) {
+    assert.ok(observations.find(item => item.concept === id)?.definitionLine > deepDiveLine, `${id}: full mechanism belongs in its deep dive`);
+  }
 });
 
 test("the CLI rejects a different article instead of silently claiming ledger coverage", () => {
