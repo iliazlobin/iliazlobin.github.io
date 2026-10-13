@@ -1,0 +1,23 @@
+<dialog id="site-search-dialog" class="site-search" data-site-search data-search-index="{{ '/search-index.json' | relative_url }}?v={{ site.time | date: '%s' }}" aria-labelledby="site-search-title">
+  <h2 id="site-search-title" class="site-search-sr">Search the entire website</h2>
+  <div class="site-search-input-row">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m16 16 5 5"></path></svg>
+    <input data-search-query type="search" placeholder="Search the entire site…" aria-label="Search the entire website" aria-controls="site-search-results" aria-describedby="site-search-help" autocomplete="off" spellcheck="false" maxlength="256">
+    <button data-search-close type="button" class="site-search-close" aria-label="Close search">Esc</button>
+  </div>
+  <div class="site-search-controls">
+    <label>Category <select data-search-category><option value="">All</option></select></label>
+    <label>Tag <select data-search-tag><option value="">Add a tag</option></select></label>
+    <button data-search-reset type="button" class="site-search-reset" disabled>Reset</button>
+  </div>
+  <div class="site-search-filters" data-search-filters aria-label="Active search filters" hidden></div>
+  <div class="site-search-results-area">
+    <p class="site-search-status" data-search-status role="status" aria-live="polite">Search titles, article text, technologies and projects.</p>
+    <button data-search-retry type="button" class="site-search-retry" hidden>Try again</button>
+    <ol id="site-search-results" class="site-search-results" data-search-results aria-label="Search results"></ol>
+  </div>
+  <footer class="site-search-footer" id="site-search-help">
+    <span>Try <code>type:tech tag:caching</code> · Categories match any; tags match all.</span>
+    <span>↓ results · Enter open · Esc close</span>
+  </footer>
+</dialog>

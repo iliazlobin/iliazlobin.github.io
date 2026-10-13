@@ -1,5 +1,7 @@
 """Check the published-site contract without third-party dependencies."""
 
+import json
+import re
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
@@ -40,6 +42,9 @@ class Page(HTMLParser):
         self.library_links = []
         self.current_articles = []
         self.article_skip_links = []
+        self.search_dialogs = 0
+        self.search_triggers = 0
+        self.ids = set()
         self._navigation_text = None
         self._heading_text = None
         self._row = None
@@ -47,6 +52,12 @@ class Page(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if attrs.get("id"):
+            self.ids.add(attrs["id"])
+        if "data-site-search" in attrs:
+            self.search_dialogs += 1
+        if "data-open-site-search" in attrs:
+            self.search_triggers += 1
         if "data-document-shell" in attrs:
             self.document_shells += 1
         if tag == "nav" and attrs.get("aria-label") == "Article navigation":
@@ -118,6 +129,8 @@ def check_document_layout(root, errors):
             continue
         document_count += 1
         route = "/" + source.parent.relative_to(root).as_posix() + "/"
+        if page.search_dialogs != 1 or page.search_triggers != 1:
+            errors.append(f"{route}: missing or duplicate universal search UI")
         if page.document_shells != 1 or page.article_navigations != 1:
             errors.append(f"{source}: missing or duplicate documentation shell/navigation")
         if len(page.library_links) != len(expected_articles) or set(page.library_links) != expected_articles:
@@ -161,6 +174,50 @@ def check_document_layout(root, errors):
     return document_count
 
 
+def check_search_index(root, errors):
+    source = root / "search-index.json"
+    try:
+        entries = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        errors.append(f"Search index unavailable: {exc}")
+        return 0
+    if not isinstance(entries, list) or not entries:
+        errors.append("Search index must be a nonempty array")
+        return 0
+    urls = set()
+    article_urls = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or not all(isinstance(entry.get(key), str) for key in ("url", "title", "category", "html")):
+            errors.append("Search index entry is missing typed metadata/content")
+            continue
+        url = entry["url"]
+        parsed = urlsplit(url)
+        if not url.startswith("/") or parsed.netloc or parsed.scheme or url in urls:
+            errors.append(f"Search index has a duplicate or nonlocal URL: {url!r}")
+            continue
+        urls.add(url)
+        target = route_file(root, parsed.path)
+        if not target.is_file():
+            errors.append(f"Search index links to a missing page: {url}")
+            continue
+        page = Page()
+        page.feed(target.read_text(encoding="utf-8"))
+        if any("post--document" in classes for classes in page.articles):
+            article_urls.add(parsed.path)
+        for anchor in re.findall(r'<h[1-6]\b[^>]*\bid=["\']([^"\']+)', entry["html"], re.I):
+            if anchor not in page.ids:
+                errors.append(f"Search index heading has no destination: {url}#{anchor}")
+    expected_articles = {"/" + path.parent.relative_to(root).as_posix() + "/"
+                         for path in (root / "designs").glob("*/index.html")
+                         if "post--document" in path.read_text(encoding="utf-8")}
+    if article_urls != expected_articles:
+        errors.append("Universal search must cover every design/technology article")
+    for url in ("/", "/resume/", "/portfolio/", "/designs/", "/infrastructure/", "/advisory/"):
+        if url not in urls:
+            errors.append(f"Universal search is missing a main page: {url}")
+    return len(entries)
+
+
 def check_site(root):
     errors = []
     resource_count = 0
@@ -173,6 +230,8 @@ def check_site(root):
         page.feed(source.read_text(encoding="utf-8"))
         if page.navigation != NAVIGATION:
             errors.append(f"{route}: unexpected navigation {page.navigation!r}")
+        if page.search_dialogs != 1 or page.search_triggers != 1:
+            errors.append(f"{route}: missing or duplicate universal search UI")
         if heading not in page.headings:
             errors.append(f"{route}: missing heading {heading!r}")
         for resource in page.resources:
@@ -194,12 +253,13 @@ def check_site(root):
         errors.append("Missing or invalid resume PDF")
 
     document_count = check_document_layout(root, errors)
+    search_count = check_search_index(root, errors)
 
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
         return 1
-    print(f"Checked {len(ROUTES)} routes, {document_count} document layouts, {len(REDIRECTS)} redirects, {resource_count} local links/assets, and the resume PDF.")
+    print(f"Checked {len(ROUTES)} routes, {document_count} document layouts, {search_count} search entries, {len(REDIRECTS)} redirects, {resource_count} local links/assets, and the resume PDF.")
     return 0
 
 

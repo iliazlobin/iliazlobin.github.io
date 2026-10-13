@@ -245,6 +245,31 @@ generated SVGs with the article changes.
   as CSS/JS), so each deploy serves a fresh URL — browsers and Cloudflare (`max-age=14400`) can't keep showing
   a stale placeholder. Without that versioning a re-rendered diagram stays invisible for up to 4h behind cache.
 
+## Site-wide search
+
+The shared header opens a native search dialog with Ctrl/Cmd+K. Categories match
+any selected category; tags must all match. Inline filters such as `type:tech`
+and `tag:"Data Pipelines"` use the same filtering rules as the visible controls.
+Search state is independent of the Design/Portfolio listing filters.
+
+Jekyll builds `/search-index.json` automatically from public design articles,
+posts and the configured `header_pages`. Titles, descriptions, tags and rendered
+article sections are searchable, including Portfolio project anchors. Set
+`search_disabled: true` to omit content; unpublished records and redirects are
+also excluded. Keep heading IDs stable so section results remain valid.
+
+The browser fetches the index lazily once per page, extracts plain text, then
+ranks results locally. It never executes indexed markup, stores queries or sends
+them to a search provider. Mermaid source and page controls are excluded from
+matching. The shared build checker verifies corpus coverage and destination IDs.
+
+```sh
+node --test tests/search-core.test.mjs tests/site-search.test.mjs
+```
+
+Verify native result links, category/tag removal, Enter/Escape/Tab behavior,
+focus/scroll restoration, and narrow/short viewports in Chrome after changes.
+
 ## Publication checks
 
 Publish through a task branch and a ready pull request targeting `master`. Require

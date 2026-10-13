@@ -1,0 +1,40 @@
+---
+layout: null
+permalink: /search-index.json
+search_disabled: true
+---
+{%- comment -%}
+  Public source content only, rendered by the same Markdown engine as articles.
+  The browser extracts plain text/sections and removes source-only diagrams,
+  scripts, styles and Liquid controls without executing any indexed markup.
+{%- endcomment -%}
+[
+{%- assign search_first = true -%}
+{%- assign search_empty_tags = '' | split: ',' -%}
+{%- for header_path in site.header_pages -%}
+  {%- assign entry = site.pages | where: 'path', header_path | first -%}
+  {%- if entry and entry.search_disabled != true and entry.redirect_to == nil and entry.published != false -%}
+    {%- unless search_first -%},{%- endunless -%}{%- assign search_first = false -%}
+    {%- assign search_tags = entry.tags | default: search_empty_tags -%}
+    {%- if entry.projects -%}
+      {%- for project in entry.projects -%}
+        {%- assign search_tags = search_tags | concat: project[1].tags -%}
+      {%- endfor -%}
+    {%- endif -%}
+    {"url":{{ entry.url | relative_url | jsonify }},"title":{{ entry.title | jsonify }},"description":{{ entry.description | default: '' | jsonify }},"category":"page","categoryLabel":"Pages","tags":{{ search_tags | uniq | jsonify }},"html":{{ entry.content | markdownify | jsonify }}}
+  {%- endif -%}
+{%- endfor -%}
+{%- for entry in site.designs -%}
+  {%- if entry.search_disabled != true and entry.redirect_to == nil and entry.published != false -%}
+    {%- unless search_first -%},{%- endunless -%}{%- assign search_first = false -%}
+    {%- assign search_group = site.data.document_navigation | where: 'category', entry.category | first -%}
+    {"url":{{ entry.url | relative_url | jsonify }},"title":{{ entry.title | jsonify }},"description":{{ entry.description | default: '' | jsonify }},"category":{{ entry.category | jsonify }},"categoryLabel":{{ search_group.label | default: entry.category | jsonify }},"tags":{{ entry.tags | default: search_empty_tags | jsonify }},"html":{{ entry.content | markdownify | jsonify }}}
+  {%- endif -%}
+{%- endfor -%}
+{%- for entry in site.posts -%}
+  {%- if entry.search_disabled != true and entry.redirect_to == nil and entry.published != false -%}
+    {%- unless search_first -%},{%- endunless -%}{%- assign search_first = false -%}
+    {"url":{{ entry.url | relative_url | jsonify }},"title":{{ entry.title | jsonify }},"description":{{ entry.description | default: '' | jsonify }},"category":"blog","categoryLabel":"Blog","tags":{{ entry.tags | default: search_empty_tags | jsonify }},"html":{{ entry.content | markdownify | jsonify }}}
+  {%- endif -%}
+{%- endfor -%}
+]
