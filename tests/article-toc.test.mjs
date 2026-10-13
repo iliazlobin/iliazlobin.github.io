@@ -157,7 +157,8 @@ test("collection-scoped markup provides nested plain anchors with a responsive s
   const include = readFileSync(new URL("../_includes/article-toc.html", import.meta.url), "utf8");
   const css = readFileSync(new URL("../assets/css/article-toc.css", import.meta.url), "utf8");
   assert.match(layout, /if page\.collection == 'designs' %}\s*<link[^\n]+article-toc\.css/);
-  assert.match(layout, /if page\.collection == 'designs' %}\s*<div class="document-body">\s*\{% include article-toc.html content=content %}/);
+  assert.match(layout, /if page\.collection == 'designs' %}\s*<div class="document-shell" data-document-shell>\s*\{% include document-nav.html %}\s*\{% include article-toc.html content=content %}/);
+  assert.match(layout, /setupArticleToc\(document\.querySelector\("\[data-document-shell\]"\)\)/);
   assert.match(include, /<nav aria-label="On this page">/);
   assert.match(include, /<details class="article-toc-panel" open>/);
   assert.match(include, /<ol class="article-toc-list" role="list">/);
@@ -166,10 +167,10 @@ test("collection-scoped markup provides nested plain anchors with a responsive s
   assert.doesNotMatch(include, /slugify|<script|<h[234]/);
   assert.match(css, /@media \(min-width: 1240px\)/);
   assert.doesNotMatch(css, /\.wrapper/);
-  assert.match(css, /grid-template-columns: minmax\(0, 1fr\) 240px/);
+  assert.match(css, /grid-template-columns: 210px minmax\(0, 1fr\) 220px/);
   assert.match(css, /position: sticky; top: calc\(var\(--site-header-height\) \+ 1\.25rem\)/);
   assert.match(css, /max-height: calc\(100dvh - var\(--site-header-height\) - 5rem\)/);
   assert.match(css, /overflow-y: auto/);
   assert.match(css, /focus-visible/);
-  assert.doesNotMatch(css, /overflow(?:-x)?\s*:\s*hidden/);
+  assert.doesNotMatch(css.match(/\.document-shell \{([^}]*)\}/)[1], /overflow(?:-x)?\s*:\s*hidden/);
 });

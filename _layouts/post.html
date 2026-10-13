@@ -11,7 +11,12 @@ layout: default
 {%- endif %}
 {%- assign words = content | number_of_words -%}
 {%- assign minutes = words | divided_by: 200 | plus: 1 -%}
-<article class="post post--google-diagrams{% if page.collection == 'designs' %} post--document{% endif %}" itemscope itemtype="https://schema.org/BlogPosting">
+{%- if page.collection == 'designs' %}
+<div class="document-shell" data-document-shell>
+  {% include document-nav.html %}
+  {% include article-toc.html content=content %}
+{%- endif %}
+<article class="post post--google-diagrams{% if page.collection == 'designs' %} post--document{% endif %}"{% if page.collection == 'designs' %} id="document-article" tabindex="-1"{% endif %} itemscope itemtype="https://schema.org/BlogPosting">
   <header class="post-header">
     <div class="meta">
       <time datetime="{{ page.date | date_to_xmlschema }}" itemprop="datePublished">
@@ -48,17 +53,13 @@ layout: default
     {%- endif %}
   </header>
 
-  {%- if page.collection == 'designs' %}
-  <div class="document-body">
-    {% include article-toc.html content=content %}
-  {%- endif %}
   <div class="post-content" itemprop="articleBody">
     {{ content }}
   </div>
-  {%- if page.collection == 'designs' %}
-  </div>
-  {%- endif %}
 </article>
+{%- if page.collection == 'designs' %}
+</div>
+{%- endif %}
 
 {%- unless page.collection == 'designs' %}
 <nav class="post-footer">
@@ -80,7 +81,9 @@ layout: default
 {%- if page.collection == 'designs' %}
 <script type="module">
   import { setupArticleToc } from "{{ '/assets/js/article-toc.mjs' | relative_url }}?v={{ site.time | date: '%s' }}";
-  setupArticleToc(document.querySelector(".post--document"));
+  import { setupDocumentNav } from "{{ '/assets/js/document-nav.mjs' | relative_url }}?v={{ site.time | date: '%s' }}";
+  setupArticleToc(document.querySelector("[data-document-shell]"));
+  setupDocumentNav(document.querySelector("[data-document-nav]"));
 </script>
 {%- endif %}
 
