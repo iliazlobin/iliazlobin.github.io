@@ -9,13 +9,14 @@ from check_article_outline import ArticleOutline
 
 
 SITE_ORIGIN = "https://iliazlobin.com"
-NAVIGATION = ["Resume", "Portfolio", "Design", "Infra", "About"]
+NAVIGATION = ["Resume", "Portfolio", "Design", "Infra", "Advisory", "About"]
 ROUTES = {
     "/": "About",
     "/resume/": "Resume",
     "/portfolio/": "Portfolio",
     "/designs/": "Design",
     "/infrastructure/": "Infrastructure",
+    "/advisory/": "Advisory",
     "/designs/system-design-bitly-url-shortener/": "SD: Bitly / URL Shortener",
     "/designs/tech-memcached/": "TECH: Memcached",
     "/designs/low-level-design-feature-flag-evaluator/": "LD: Feature Flag Evaluator",
