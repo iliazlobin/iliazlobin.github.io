@@ -189,7 +189,7 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
       if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close();
     }
   }
-  function onArrow(event) {
+  function onDialogKeydown(event) {
     // A search input otherwise consumes the first Escape to clear its value.
     if (event.key === 'Escape' && !event.isComposing) {
       event.preventDefault(); dialog.close(); return;
@@ -228,7 +228,7 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
   reset.addEventListener('click', onReset);
   retry.addEventListener('click', load);
   dialog.addEventListener('click', onClick);
-  dialog.addEventListener('keydown', onArrow);
+  dialog.addEventListener('keydown', onDialogKeydown);
   dialog.addEventListener('close', restore);
   const controller = { open, destroy() {
     destroyed = true;
@@ -242,7 +242,7 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
     reset.removeEventListener('click', onReset);
     retry.removeEventListener('click', load);
     dialog.removeEventListener('click', onClick);
-    dialog.removeEventListener('keydown', onArrow);
+    dialog.removeEventListener('keydown', onDialogKeydown);
     dialog.removeEventListener('close', restore);
     controllers.delete(doc);
   } };
