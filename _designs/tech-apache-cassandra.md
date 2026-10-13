@@ -96,7 +96,7 @@ sequenceDiagram
     Replica2-->>Coordinator: ACK
     Replica1-->>Coordinator: ACK
     Coordinator-->>Client: Success
-    Note over Memtable,SSTable: Flush when full (64 MB)<br/> -> immutable SSTable on disk
+    Note over Memtable,SSTable: Flush when full (64 MB) -> immutable SSTable on disk
 ```
 
 **The four-step path:**

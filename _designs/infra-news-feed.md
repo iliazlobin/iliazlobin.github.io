@@ -128,7 +128,7 @@ The News Feed is a tier-0 service: a stale or empty feed is a degraded user expe
 
 | SLI | Measurement | SLO |
 |---|---|---|
-| Feed read availability | `rate(http_requests_total{status=~"2.. | 4.."}[1m]) / rate(http_requests_total[1m])` |
+| Feed read availability | <code>rate(http_requests_total{status=~"2.. &#124; 4.."}[1m]) / rate(http_requests_total[1m])</code> | 99.95% monthly |
 | Feed read P99 latency | `histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))` | <200 ms |
 | Fan-out propagation P99 | `histogram_quantile(0.99, rate(fanout_propagation_seconds_bucket[5m]))`  •  time from `post_created` event to last follower's `ZADD` | <1 second |
 | Post create availability | `rate(post_create_requests_total{status=~"2.."}[1m]) / rate(post_create_requests_total[1m])` | 99.9% monthly |

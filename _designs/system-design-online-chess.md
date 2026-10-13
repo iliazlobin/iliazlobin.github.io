@@ -7,7 +7,7 @@ tags: [Real-Time, WebSocket, Game]
 thumbnail: /images/posts/2026-07-01-system-design-online-chess.svg
 redirect_from:
   - /2026/07/01/system-design-online-chess.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-12
 description: "Design of an online chess service with skill-based pairing, authoritative moves and clocks, ratings and game replay."
 notion_source: https://app.notion.com/p/38fd865005a881e6b638d328a41171cb
 ---
@@ -151,31 +151,71 @@ WebSocket gateways route each game to its current owner. The owner validates mov
 
 ```mermaid
 flowchart TB
-  U[User chess client] <-->|moves and state| G[WebSocket gateway]
+  U["User chess<br>client"] <-->|moves and state| G["WebSocket<br>gateway"]
   G <-->|game channel| S[Game owners]
   S -->|move transaction| DB[(MongoDB)]
   M[Matchmaking] -->|candidate pool| R[(Redis)]
   M -->|pairing transaction| DB
   T[Tournaments] -->|pairing requests| M
-  DB -->|completed-game events| W[Rating and standings]
+  DB -->|completed-game events| W["Rating and<br>standings"]
   W --> DB
   W --> R
-  DB -->|analysis jobs| A[Engine and anti-cheat]
-  A --> O[(Analysis archive)]
+  DB -->|analysis jobs| A["Engine and<br>anti-cheat"]
+  A --> O[("Analysis<br>archive")]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class U,G,S,DB,M,T,W,A request
+  class R,O background
 ```
 
 ## Storage
 
 - **MongoDB:** owns game heads, moves, pairing claims, results and ratings. Transactions commit a move with its updated head and event record using the configured majority/journal durability policy. Moves have unique `(game_id, ply)` and retry-identity indexes.
 - **Game ownership:** the game head stores owner epoch and lease. Every commit checks that epoch; changing the ownership registry alone cannot fence a stale writer.
-- **Match claims:** one active-player claim per user and a unique pairing ID make game creation transactional. Redis pool removal is a cache update after that commit.
+- **Match claims:** one active-player claim per user and a unique pairing ID make game creation transactional. [Redis](/designs/tech-redis/) pool removal is a cache update after that commit.
 - **Redis:** indexes pending requests by rating and stores leaderboard projections. New versions prevent an old rating event from replacing a newer value.
 - **Completed games:** compact move/clock sequences for single-game replay and build a separate player/time index. Keep large analysis output in object storage rather than an ever-growing game document.
 - **Recovery:** backups and tested restore procedures protect durable records. Delayed replicas can be useful, but are not a substitute for independent backups.
 
 [Lichess's open-source server](https://github.com/lichess-org/lila) and its linked modules are implementation references, not a claim that this proposal reproduces their current deployment.
 
-## From request to response
+## Functional scenarios
+
+### Accepting a move and updating both players
+
+The game owner checks the player, expected ply, turn, legality and clock deadline. It computes the next position and clocks from server-controlled timing, then commits the move and updated head with the current owner epoch.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as Player
+    participant A as WebSocket gateway
+    participant W as Game owner
+  end
+  box rgb(230,244,234) Durable state
+    participant D as Game log
+  end
+  box rgb(232,240,254) Client delivery
+    participant C as Opponent
+  end
+  rect rgb(232,240,254)
+    U->>A: Move with client ID and expected ply
+    A->>W: Route to current owner
+    W->>W: Validate turn, legal move and clock
+    W->>D: Commit move and state under fenced epoch
+  end
+  rect rgb(230,244,234)
+    D-->>W: Committed ply and clock state
+    W-->>A: Committed move and outcome
+    A-->>U: Move acknowledgment
+    A-->>C: Accepted move and new ply
+  end
+```
+
+After commit, the owner updates its in-memory projection and returns the outcome to the WebSocket gateway, which delivers the acknowledgment and opponent update. A repeated client move ID returns the stored outcome; a conflicting move or sequence gap returns the current state for resynchronization.
+
+Clock and move decisions share the same ordering boundary. If a timeout and move race, the authoritative transaction decides which transition was eligible first under the timing policy.
 
 ### Pairing users
 
@@ -185,13 +225,36 @@ The selected pair is claimed in a database transaction that creates the game and
 
 Queue cancellation checks the request version. If pairing has committed, the API returns that game instead of silently deleting one side of the match.
 
-### Applying a move
+### Reconnecting and retrying moves
 
-The game owner checks the player, expected ply, turn, legality and clock deadline. It computes the next position and clocks from server-controlled timing, then commits the move and updated head with the current owner epoch.
+A reconnecting player supplies its last known ply; the gateway routes the request to the current owner, which restores committed state and any missing moves.
 
-After commit, it updates its in-memory projection, acknowledges the mover and sends the state delta to the opponent. A repeated client move ID returns the stored outcome. A conflicting move or sequence gap returns the current state for resynchronization.
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    participant U as Player
+    participant G as Game gateway
+    participant O as Game owner
+    participant D as Game store
+    rect rgb(232, 240, 254)
+        U->>G: Reconnect with game and known ply
+        G->>O: Route to current owner
+        O->>D: Read committed game and missing moves
+        D-->>O: Current board, clocks and ply
+        O-->>G: State and moves after known ply
+        G-->>U: State and moves after known ply
+    end
+    rect rgb(254, 247, 224)
+        U->>G: Retry move with same move ID
+        G->>O: Route retry to current owner
+        O->>D: Check recorded move ID and current epoch
+        D-->>O: Original result or current rejection
+        O-->>G: Authoritative outcome
+        G-->>U: Authoritative outcome
+    end
+```
 
-Clock and move decisions share the same ordering boundary. If a timeout and move race, the authoritative transaction decides which transition was eligible first under the timing policy.
+The gateway keeps the player's WebSocket connection and routes reconnection and move retries to the current owner. Reconnection restores committed board and clock state; it does not treat the disconnected client's board as authority. Retrying a move uses its original move ID, so a lost acknowledgment cannot apply it twice. Owner takeover and platform-clock compensation are covered in the ownership deep dive.
 
 ### Finishing, rating and replaying a game
 
@@ -211,20 +274,26 @@ Use a tested pairing implementation such as [bbpPairings](https://github.com/cya
 
 **Problem.** In-memory state gives fast validation, but two servers must not accept different next moves after routing or membership changes.
 
-| Approach | Strength | Limitation |
-| --- | --- | --- |
-| Stateless validation from storage | Simple ownership | Repeated reads and reconstruction |
-| Sticky in-memory owner | Fast normal path | Routing alone leaves split-brain risk |
-| Leased owner with fenced commits | Fast validation and recoverable state | Requires lease, log and reconnect handling |
+**Options and tradeoffs.**
 
-**Recommendation:** use a leased game owner with a durable epoch. A replacement acquires a higher epoch transactionally. Every move write checks that epoch and expected ply, so an old owner cannot commit afterward.
+- **Stateless storage validation:** load and reconstruct game state for every command. Ownership is simple, but repeated reads and replay add move latency and storage pressure.
+- **Sticky in-memory owner:** keep board/clock state on one routed server. Normal validation is fast, but stale routing after replacement can leave two owners accepting different next moves.
+- **Leased owner with fenced commits:** retain fast local state and require a durable epoch/expected ply on each write. Replacement replays the accepted log and stale writes fail; lease renewal, replay and reconnect handling add control state.
+
+**Choice and rationale.** Use a leased game owner with a durable epoch. A replacement acquires a higher epoch transactionally. Every move write checks that epoch and expected ply, so an old owner cannot commit afterward. A fenced owner fits low-latency move validation and one authoritative game history. We accept a durable commit on each accepted move and brief takeover recovery rather than allowing routing alone to decide ownership.
 
 ```mermaid
 sequenceDiagram
+  box rgb(232,240,254) Request path
   participant U as User
   participant A as Game owner
+  end
+  box rgb(230,244,234) Durable state
   participant D as Game store
+  end
+  box rgb(232,240,254) Replacement
   participant B as Replacement
+  end
   U->>A: Move with stable ID
   A->>D: Commit move and clock state
   D-->>A: Durable acknowledgment
@@ -243,15 +312,19 @@ A disconnect does not automatically pause a player's clock. Lag compensation is 
 
 If the response is lost, retry M returns the stored move rather than playing it again. If an old owner and its successor both propose different move 41 records, only the current epoch can commit; the unique ply/head check prevents two next moves.
 
-Recovery reconstructs from durable position and moves. Process-local monotonic time cannot be transferred directly to another host, so persist the recovery timing anchor and apply the documented platform-pause policy. The UI distinguishes a reconnecting game from a player disconnect, whose clock policy may be different.
+**Tradeoffs and recovery.** Recovery reconstructs from durable position and moves. Process-local monotonic time cannot be transferred directly to another host, so persist the recovery timing anchor and apply the documented platform-pause policy. The UI distinguishes a reconnecting game from a player disconnect, whose clock policy may be different.
 
 ### How can matchmaking balance quality and waiting time?
 
 **Problem.** A narrow rating band improves pairing quality but can leave very high- or low-rated users waiting. A large optimizer may consume the whole wave interval.
 
-**Options:** nearest-rating greedy pairing; immediate sorted-set claims; or bounded weighted matching over a sparse compatibility graph.
+**Options and tradeoffs.**
 
-**Recommendation:** use short waves with a sparse graph and a bounded matching budget. Each edge includes rating difference, waiting time, repeat-opponent restrictions and declared preferences. Widen acceptable ranges gradually, within user-visible limits.
+- **Nearest-rating greedy pairing:** take a compatible nearby rating when a player arrives. Decisions are quick, but early choices can consume opponents needed by unusual ratings and ignore the wider waiting set.
+- **Immediate sorted-set claims:** atomically remove a candidate pair from cache. Concurrent matching is straightforward, but the local choice still lacks global compatibility/fairness and durable game creation must recover after a claim failure.
+- **Bounded weighted matching:** build a sparse compatibility graph over a short wave and optimize rating/wait preferences under a deadline. More players' constraints are considered together; batch delay and solver cost require a greedy fallback and durable player claims.
+
+**Choice and rationale.** Use short waves with a sparse graph and a bounded matching budget. Each edge includes rating difference, waiting time, repeat-opponent restrictions and declared preferences. Widen acceptable ranges gradually, within user-visible limits. Short bounded waves fit two-sided compatibility without inventing a bipartite partition for arbitrary chess players. We accept a small matching wait and a possibly suboptimal fallback; no policy can guarantee an opponent where no compatible user exists.
 
 Chess pairing is a general graph problem: either participant can pair with either other eligible participant. A bipartite assignment algorithm such as Hungarian needs a genuine two-sided partition; it is not automatically the correct solver for arbitrary player pairs.
 
@@ -261,15 +334,19 @@ Fall back to a compatible greedy pairing if the optimizer exceeds its budget. Du
 
 The optimizer runs within the wave budget; if it times out, retain feasible pairs or use the compatible greedy fallback. For each chosen pair, a transaction inserts active-player claims and game identity. Two waves proposing the same player produce one successful claim, not two games.
 
-Remove successful claims from Redis after commit. A stale cache entry may be proposed again, but the authority rejects it. A failed pairing commit releases neither user's durable identity into a fabricated game. Track queue wait by rating band and compatibility group so average wait does not hide an isolated tail.
+**Tradeoffs and recovery.** Remove successful claims from Redis after commit. A stale cache entry may be proposed again, but the authority rejects it. A failed pairing commit releases neither user's durable identity into a fabricated game. Track queue wait by rating band and compatibility group so average wait does not hide an isolated tail.
 
 ### How should ratings and ranks be updated?
 
 **Problem.** New users have uncertain skill estimates, while inactive users retain old ratings with growing uncertainty.
 
-**Options:** fixed-K Elo; Glicko-style uncertainty; or Glicko-2 with volatility.
+**Options and tradeoffs.**
 
-**Recommendation:** use [Glicko-2](https://www.glicko.net/glicko/glicko2.pdf) with an explicitly configured rating-period policy and separate pools for variants/time controls. Store rating, deviation and volatility; uncertainty increases during inactivity. Validate the implementation against the published examples instead of mixing Elo and Glicko formulas.
+- **Fixed-K Elo:** update a rating from expected versus actual results with one step size. It is simple and familiar, but new/inactive players' uncertainty is not represented directly.
+- **Glicko-style uncertainty:** maintain rating deviation and adjust confidence with inactivity/results. Skill estimates adapt to uncertain players; rating-period and uncertainty policies require validation.
+- **Glicko-2:** add volatility to rating and deviation. This fits changing or uncertain skill across time controls; the numerical iteration and period configuration are more involved than Elo and must match published examples.
+
+**Choice and rationale.** Use [Glicko-2](https://www.glicko.net/glicko/glicko2.pdf) with an explicitly configured rating-period policy and separate pools for variants/time controls. Store rating, deviation and volatility; uncertainty increases during inactivity. Validate the implementation against the published examples instead of mixing Elo and Glicko formulas. Glicko-2 fits separate chess pools with new, inactive and evolving players. We accept configured rating periods and implementation complexity; idempotent period/result identities keep replay from changing skill twice.
 
 Record result application and rating changes transactionally with an idempotent period/game identity. Publish profile versions to Redis. High-to-low rank uses reverse rank, and tied ratings follow a stated rule; display provisional users separately if eligibility requires sufficient certainty.
 
@@ -281,21 +358,30 @@ The leaderboard is a projection: update a player only when the incoming profile 
 
 ```mermaid
 flowchart TB
-  G["Durable game result"] --> P["Rating-period calculation"]
-  P --> T["Idempotent profile transaction"]
-  T --> E["Versioned rating events"]
-  E --> R["Leaderboard projection"]
+  G["Durable game<br>result"] --> P["Rating-period<br>calculation"]
+  P --> T["Idempotent<br>profile<br>transaction"]
+  T --> E["Versioned<br>rating events"]
+  E --> R["Leaderboard<br>projection"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class P,T,E,R request
+  class G background
 ```
 
-Reversing a result after review needs an explicit correction/recalculation policy and retained inputs. Editing a cached rating directly would lose the audit path and diverge from durable profile records.
+**Tradeoffs and recovery.** Reversing a result after review needs an explicit correction/recalculation policy and retained inputs. Editing a cached rating directly would lose the audit path and diverge from durable profile records.
 
 ### How should anti-cheat analysis be staged?
 
 **Problem.** Engine agreement alone can flag strong legitimate play, and full engine analysis of every position is expensive.
 
-**Options:** one accuracy threshold; a cheap behavioral model; or a staged pipeline with engine analysis and human review.
+**Options and tradeoffs.**
 
-**Recommendation:** score inexpensive timing and account signals first, then prioritize engine analysis for selected games. Combine position difficulty, move quality, time usage and multi-game patterns into a versioned review record. [Fishnet](https://github.com/lichess-org/fishnet) is an open-source reference for distributed engine work.
+- **One accuracy threshold:** flag engine agreement above a cutoff. Compute and explanation are simple, but forced positions and strong legitimate play create false positives.
+- **Cheap behavioral model:** score timing and account/play patterns before expensive analysis. More games can be screened, but a screening score alone lacks sufficient evidence for enforcement.
+- **Staged engine analysis and review:** shortlist games, analyze difficult positions with pinned engine settings and aggregate multi-game evidence for human review. Evidence is stronger and compute is targeted; review delay, appeals and retained analysis state are required.
+
+**Choice and rationale.** Score inexpensive timing and account signals first, then prioritize engine analysis for selected games. Combine position difficulty, move quality, time usage and multi-game patterns into a versioned review record. [Fishnet](https://github.com/lichess-org/fishnet) is an open-source reference for distributed engine work. Staged analysis fits a high-trust game result where a false accusation is costly. We accept delayed enforcement and review work while gameplay remains authoritative; an inexpensive selector is a prioritization signal rather than proof of cheating.
 
 Keep enforcement evidence separate from gameplay state. Confirm labels through review and appeals, evaluate precision by skill/time-control cohort, and retain model versions. A delayed analysis pipeline reduces review freshness but must not produce speculative in-game losses.
 
@@ -303,4 +389,4 @@ Keep enforcement evidence separate from gameplay state. Confirm labels through r
 
 Strong engine agreement in forced positions is different from repeated exceptional choices in difficult positions. Aggregate evidence across games and cohorts before escalating; a single accuracy number is insufficient.
 
-Keep analysis jobs repeatable by game and analysis generation. A newer policy can re-evaluate retained evidence without rewriting moves or results. Human review and appeals create versioned enforcement outcomes. Monitor how often the first-stage selector misses confirmed cases, as well as the review queue's precision; an accurate second stage does not compensate for systematically omitted games.
+**Tradeoffs and recovery.** Keep analysis jobs repeatable by game and analysis generation. A newer policy can re-evaluate retained evidence without rewriting moves or results. Human review and appeals create versioned enforcement outcomes. Monitor how often the first-stage selector misses confirmed cases, as well as the review queue's precision; an accurate second stage does not compensate for systematically omitted games.

@@ -1,0 +1,70 @@
+{%- comment -%}
+  Build from rendered headings, not Markdown text: custom Kramdown IDs and inline
+  heading markup stay aligned with the article. Plain anchors work without JS.
+  The level stack also handles skipped levels (h2 followed directly by h4).
+{%- endcomment -%}
+{%- assign toc_parts = include.content | split: '<h' -%}
+{%- assign toc_levels = '' -%}
+{%- assign toc_count = 0 -%}
+{%- capture toc_items -%}
+{%- for toc_part in toc_parts -%}
+  {%- assign toc_level = toc_part | slice: 0, 1 | plus: 0 -%}
+  {%- assign toc_opening = toc_part | split: '>' | first -%}
+  {%- assign toc_attributes = toc_opening | normalize_whitespace -%}
+  {%- assign toc_tag_boundary = toc_part | slice: 1, 1 | strip -%}
+  {%- if toc_level >= 2 and toc_level <= 4 and toc_tag_boundary == '' -%}
+    {%- assign toc_id = '' -%}
+    {%- if toc_attributes contains ' id="' -%}
+      {%- assign toc_id = toc_attributes | split: ' id="' | last | split: '"' | first -%}
+    {%- elsif toc_attributes contains " id='" -%}
+      {%- assign toc_id = toc_attributes | split: " id='" | last | split: "'" | first -%}
+    {%- endif -%}
+    {%- if toc_id != '' -%}
+      {%- assign toc_closing = '</h' | append: toc_level | append: '>' -%}
+      {%- assign toc_heading = toc_part | split: toc_closing | first -%}
+      {%- assign toc_opening_length = toc_opening | size | plus: 1 -%}
+      {%- assign toc_label = toc_heading | slice: toc_opening_length, toc_heading.size | strip_html | strip_newlines | strip -%}
+      {%- if toc_count == 0 -%}
+        <ol class="article-toc-list" role="list">
+        {%- assign toc_levels = toc_level | append: '' -%}
+      {%- else -%}
+        {%- assign toc_stack = toc_levels | split: ',' -%}
+        {%- for toc_open_level in toc_stack reversed -%}
+          {%- assign toc_open_level_number = toc_open_level | plus: 0 -%}
+          {%- if toc_open_level_number > toc_level and forloop.last == false -%}
+            </li></ol>
+            {%- assign toc_remaining = toc_stack.size | minus: forloop.index -%}
+            {%- assign toc_levels = toc_stack | slice: 0, toc_remaining | join: ',' -%}
+          {%- else -%}
+            {%- break -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {%- assign toc_current = toc_levels | split: ',' | last | plus: 0 -%}
+        {%- if toc_level > toc_current -%}
+          <ol role="list">
+          {%- assign toc_levels = toc_levels | append: ',' | append: toc_level -%}
+        {%- else -%}
+          </li>
+          {%- assign toc_stack = toc_levels | split: ',' -%}
+          {%- assign toc_remaining = toc_stack.size | minus: 1 -%}
+          {%- assign toc_levels = toc_stack | slice: 0, toc_remaining | join: ',' -%}
+          {%- if toc_levels != '' -%}{%- assign toc_levels = toc_levels | append: ',' -%}{%- endif -%}
+          {%- assign toc_levels = toc_levels | append: toc_level -%}
+        {%- endif -%}
+      {%- endif -%}
+      <li data-heading-level="{{ toc_level }}"><a href="#{{ toc_id | url_encode | replace: '+', '%20' | escape }}">{{ toc_label }}</a>
+      {%- assign toc_count = toc_count | plus: 1 -%}
+    {%- endif -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- assign toc_stack = toc_levels | split: ',' -%}
+{%- for toc_open_level in toc_stack -%}</li></ol>{%- endfor -%}
+{%- endcapture -%}
+{%- if toc_count > 0 -%}
+<aside class="article-toc" data-article-toc>
+  <details class="article-toc-panel" open>
+    <summary>On this page</summary>
+    <nav aria-label="On this page">{{ toc_items }}</nav>
+  </details>
+</aside>
+{%- endif -%}

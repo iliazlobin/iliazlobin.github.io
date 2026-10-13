@@ -19,6 +19,8 @@
   --shadow:        0 1px 2px rgba(16,24,40,.04), 0 4px 16px rgba(16,24,40,.06);
   --shadow-lg:     0 8px 30px rgba(16,24,40,.12);
   --maxw:          820px;
+  --site-shell-width: 1340px;
+  --site-gutter:    30px;
   --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
@@ -120,6 +122,16 @@ a:hover { color: var(--accent-dark); text-decoration: underline; }
 
 .load-sentinel { height: 1px; }
 
-/* Slightly wider, more readable content column than minima default */
-.wrapper { max-width: 1080px; }
+/* One outer shell for navigation, page bodies and footer. Inner reading
+   columns and component grids keep their own layout within this boundary. */
+.wrapper {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--site-shell-width);
+  margin-inline: auto;
+  padding-inline: var(--site-gutter);
+}
+@media (max-width: 800px) {
+  :root { --site-gutter: 15px; }
+}
 .page-content { padding: 2.2rem 0 3rem; }

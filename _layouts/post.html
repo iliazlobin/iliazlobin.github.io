@@ -3,9 +3,15 @@ layout: default
 ---
 <link rel="stylesheet" href="{{ '/assets/css/blog.css' | relative_url }}?v={{ site.time | date: '%s' }}">
 <link rel="stylesheet" href="{{ '/assets/css/diagrams.css' | relative_url }}?v={{ site.time | date: '%s' }}">
+{%- if page.collection == 'designs' %}
+<link rel="stylesheet" href="{{ '/assets/css/documents.css' | relative_url }}?v={{ site.time | date: '%s' }}">
+{%- endif %}
+{%- if page.collection == 'designs' %}
+<link rel="stylesheet" href="{{ '/assets/css/article-toc.css' | relative_url }}?v={{ site.time | date: '%s' }}">
+{%- endif %}
 {%- assign words = content | number_of_words -%}
 {%- assign minutes = words | divided_by: 200 | plus: 1 -%}
-<article class="post post--google-diagrams" itemscope itemtype="https://schema.org/BlogPosting">
+<article class="post post--google-diagrams{% if page.collection == 'designs' %} post--document{% endif %}" itemscope itemtype="https://schema.org/BlogPosting">
   <header class="post-header">
     <div class="meta">
       <time datetime="{{ page.date | date_to_xmlschema }}" itemprop="datePublished">
@@ -42,9 +48,16 @@ layout: default
     {%- endif %}
   </header>
 
+  {%- if page.collection == 'designs' %}
+  <div class="document-body">
+    {% include article-toc.html content=content %}
+  {%- endif %}
   <div class="post-content" itemprop="articleBody">
     {{ content }}
   </div>
+  {%- if page.collection == 'designs' %}
+  </div>
+  {%- endif %}
 </article>
 
 {%- unless page.collection == 'designs' %}
@@ -64,74 +77,45 @@ layout: default
   .mvp-btn svg { flex: 0 0 auto; }
 </style>
 
+{%- if page.collection == 'designs' %}
+<script type="module">
+  import { setupArticleToc } from "{{ '/assets/js/article-toc.mjs' | relative_url }}?v={{ site.time | date: '%s' }}";
+  setupArticleToc(document.querySelector(".post--document"));
+</script>
+{%- endif %}
+
 <!-- Mermaid: render fenced ```mermaid blocks (client-side, GitHub-Pages safe) -->
 <script type="module">
-  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
-  import { normalizeDiagramStyles } from "{{ '/assets/js/diagram-palette.mjs' | relative_url }}?v={{ site.time | date: '%s' }}";
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.esm.min.mjs";
+  import { createDiagramConfig, normalizeDiagramStyles } from "{{ '/assets/js/diagram-palette.mjs' | relative_url }}?v={{ site.time | date: '%s' }}";
   const blocks = document.querySelectorAll(".post-content .language-mermaid");
   blocks.forEach((block) => {
     const code = block.querySelector("code") || block;
     const div = document.createElement("div");
-    div.className = "mermaid";
+    div.className = "mermaid mermaid--pending";
+    div.setAttribute("aria-busy", "true");
     div.dataset.source = code.textContent.trim();
     div.textContent = normalizeDiagramStyles(div.dataset.source);
     const container = block.matches("code") ? block.closest("pre") : block;
     container.parentNode.replaceChild(div, container);
   });
   if (document.querySelector(".post-content .mermaid")) {
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: "base",
-      securityLevel: "strict",
-      fontFamily: "Inter, -apple-system, Segoe UI, Roboto, sans-serif",
-      // Shared Google Cloud-inspired presentation; article geometry stays in blog.css.
-      themeVariables: {
-        background: "#ffffff",
-        primaryColor: "#ffffff",
-        primaryTextColor: "#202124",
-        primaryBorderColor: "#9aa0a6",
-        secondaryColor: "#e8f0fe",
-        secondaryTextColor: "#202124",
-        secondaryBorderColor: "#9aa0a6",
-        tertiaryColor: "#e6f4ea",
-        tertiaryTextColor: "#202124",
-        tertiaryBorderColor: "#dadce0",
-        lineColor: "#5f6368",
-        textColor: "#202124",
-        edgeLabelBackground: "#ffffff",
-        clusterBkg: "#e8f0fe",
-        clusterBorder: "#e8f0fe",
-        actorBkg: "#ffffff",
-        actorBorder: "#9aa0a6",
-        actorTextColor: "#202124",
-        actorLineColor: "#dadce0",
-        signalColor: "#5f6368",
-        signalTextColor: "#3c4043",
-        noteBkgColor: "#e8f0fe",
-        noteBorderColor: "#d2e3fc",
-        noteTextColor: "#202124",
-        labelBoxBkgColor: "#e6f4ea",
-        labelBoxBorderColor: "#dadce0",
-        labelTextColor: "#202124",
-        loopTextColor: "#3c4043",
-      },
-      flowchart: { curve: "linear", padding: 18, nodeSpacing: 35, rankSpacing: 55 },
-      sequence: { mirrorActors: false, wrap: true, actorMargin: 35, diagramMarginX: 20 },
-    });
-    try {
-      await mermaid.run({ nodes: document.querySelectorAll(".post-content .mermaid") });
-      document.querySelectorAll(".post--google-diagrams .mermaid svg").forEach((svg) => {
+    mermaid.initialize(createDiagramConfig());
+    for (const div of document.querySelectorAll(".post-content .mermaid")) {
+      try {
+        await mermaid.run({ nodes: [div] });
+        const svg = div.querySelector("svg");
         svg.style.setProperty("--diagram-natural-width", `${svg.viewBox.baseVal.width}px`);
-      });
-    }
-    catch (e) {
-      console.error("Mermaid render error:", e);
-      // Keep the source readable if a diagram cannot render.
-      document.querySelectorAll(".post--google-diagrams .mermaid").forEach((div) => {
-        const pre = document.createElement("pre");
-        pre.textContent = div.dataset.source;
-        div.replaceWith(pre);
-      });
+      } catch (e) {
+        console.error("Mermaid render error:", e);
+        // Keep the source in data-source for recovery, without exposing raw code.
+        // A failed diagram does not prevent later diagrams from rendering.
+        div.textContent = "Diagram unavailable. Please reload this page.";
+        div.setAttribute("role", "status");
+      } finally {
+        div.classList.remove("mermaid--pending");
+        div.setAttribute("aria-busy", "false");
+      }
     }
   }
 </script>

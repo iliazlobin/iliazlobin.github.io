@@ -7,7 +7,7 @@ tags: [Distributed-Systems, Interview-Prep, Security, Real-Time, Sandbox, Scalab
 thumbnail: /images/posts/2026-07-02-system-design-leetcode.svg
 redirect_from:
   - /2026/07/02/system-design-leetcode.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-12
 description: "Design of an online coding platform with searchable problems, isolated solution judging and live contest standings."
 notion_source: https://app.notion.com/p/38fd865005a881538614e0b53039e116
 ---
@@ -139,39 +139,71 @@ The submission service stores accepted work with an outbox. Dispatchers publish 
 
 ```mermaid
 flowchart TB
-  U[User] -->|browse and submit| API[Application API]
+  U[User] -->|browse and submit| API["Application<br>API"]
   API -->|problems and submissions| DB[(PostgreSQL)]
-  DB -->|outbox| D[Submission dispatcher]
+  DB -->|outbox| D["Submission<br>dispatcher"]
   D -->|contest or practice| Q[(Judge queues)]
   Q --> W[Judge workers]
-  W -->|isolated execution| VM[MicroVM sandbox]
+  W -->|isolated execution| VM["MicroVM<br>sandbox"]
   W -->|tests and source| O[(Object storage)]
   W -->|verdict transaction| DB
-  DB -->|result events| S[Scoring and notifications]
+  DB -->|result events| S["Scoring and<br>notifications"]
   S -->|standings| R[(Redis)]
   S -->|updates| U
   API -->|read standings| R
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class U,API,D,VM,S request
+  class DB,Q,W,O,R background
 ```
 
 ## Storage
 
-- **PostgreSQL:** owns problems, submissions, contests, registrations, results and outbox rows. Use `(user_id, accepted_at, submission_id)` for history and a unique user/idempotency-key record for submission retries.
+- **[PostgreSQL](/designs/tech-postgresql/):** owns problems, submissions, contests, registrations, results and outbox rows. Use `(user_id, accepted_at, submission_id)` for history and a unique user/idempotency-key record for submission retries.
 - **Submission partitions:** time partitioning supports retention and recent-history scans. A separate unpartitioned identity registry or a partition-aware key enforces submission identity; a global unique index cannot simply omit the partition key.
 - **Object storage:** contains source archives and immutable test/checker bundles. Workers verify bundle versions and cache approved tests locally. Cold archives need an explicit retrieval service rather than assuming `postgres_fdw` reads object storage directly.
-- **Kafka or another durable work queue:** absorbs bursts and redelivers work after failures. Contest and practice pools have reserved capacity and separate backlog metrics.
-- **Redis:** stores versioned contest score projections and sorted sets. Durable results can rebuild standings; the cache is not the authority for contest eligibility or accepted submissions.
+- **[Kafka](/designs/tech-kafka/) or another durable work queue:** absorbs bursts and redelivers work after failures. Contest and practice pools have reserved capacity and separate backlog metrics.
+- **[Redis](/designs/tech-redis/):** stores versioned contest score projections and sorted sets. Durable results can rebuild standings; the cache is not the authority for contest eligibility or accepted submissions.
 
-## From request to response
+## Functional scenarios
 
-### Browsing and submitting a solution
+### Submitting code and receiving a verdict
 
-The problem service filters a small catalog in PostgreSQL, using indexes for tags and difficulty. It returns the chosen language's starter code and public examples. Hidden test bundles are accessible only to the judge control plane.
+The submission ID is returned after durable acceptance, before code execution.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as User
+    participant A as Submission API
+  end
+  box rgb(230,244,234) Durable state
+    participant D as Submission database
+  end
+  box rgb(232,240,254) Execution
+    participant W as Judge host
+    participant C as Contest projector
+  end
+  rect rgb(232,240,254)
+    U->>A: Submit source and language
+    A->>D: Commit submission and outbox
+    A-->>U: Submission ID
+    D->>W: Lease attempt and pinned bundles
+  end
+  rect rgb(230,244,234)
+    W->>W: Compile and run under host limits
+    W->>D: Commit verdict under current token
+    D->>C: Recompute ordered contest score
+    C-->>U: Verdict and versioned standings
+  end
+```
+
+The trusted judge leases an attempt and runs pinned artifacts in a disposable sandbox; only its current attempt token can commit a verdict and update standings.
 
 On submission, the API validates size, language, problem availability and contest registration. It checks the contest deadline using server time in the durable acceptance transaction. The transaction inserts the submission and an outbox row, then the API returns `202`.
 
 The outbox dispatcher publishes later and may publish again after a crash. A database transaction encloses database writes only; it does not also commit a Kafka publication. Workers therefore recognize submissions by ID.
-
-### Running the judge
 
 A worker atomically claims a queued submission or an expired attempt, incrementing its attempt epoch. It obtains a clean sandbox from the approved language image, compiles the code and runs the versioned tests under limits.
 
@@ -179,9 +211,38 @@ The worker records compile errors, wrong answers, time limits, memory limits or 
 
 Queue wait, compilation and execution all contribute to response time. Warm pools and contest capacity reservations address the burst; a stale worker cannot overwrite a newer result.
 
+### Browsing a problem
+
+The problem service filters a small catalog in PostgreSQL, using indexes for tags and difficulty. It returns the chosen language's starter code and public examples. Hidden test bundles are accessible only to the judge control plane.
+
 ### Updating contest standings
 
 A scoring worker reads committed results in each user's server-accepted submission order. It determines the first successful submission for each problem and counts eligible wrong attempts according to the contest rules.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    participant D as Submission store
+    participant S as Scoring worker
+    participant C as Standings cache
+    participant A as Standings API
+    participant U as User
+    rect rgb(230, 244, 234)
+        D-->>S: Versioned result event
+        S->>D: Read accepted submissions in order
+        D-->>S: Current verdicts and acceptance times
+        S->>S: Recompute score and penalty
+        S->>C: Publish newer projection version
+    end
+    rect rgb(232, 240, 254)
+        U->>A: Read standings
+        A->>C: Read current projection
+        C-->>A: Score and version
+        A-->>U: Score and provisional status
+    end
+```
+
+Judging can finish out of order; scoring follows durable submission acceptance order. A delayed earlier verdict or a rejudge recomputes the affected user's projection. Replayed result events cannot replace a newer cached score, and incomplete judging remains visibly provisional.
 
 A later-completing early submission can change the score. The worker recomputes the user's projection and publishes a higher score version. Redis accepts only newer versions. The leaderboard sorts by solved problems and penalty, with an explicit tie rule.
 
@@ -197,24 +258,42 @@ History queries are limited to the authenticated user and use cursor pagination 
 
 **Problem.** Submitted programs can exhaust resources, probe the environment or exploit runtime vulnerabilities. Compilers are also processing untrusted input.
 
-| Approach | Strength | Tradeoff |
-| --- | --- | --- |
-| Ordinary containers | Fast startup and familiar tools | Share the host kernel |
-| User-space kernel sandbox | Reduces direct host-kernel interaction | Compatibility and performance depend on workload |
-| MicroVMs | Separate guest kernel and hardware virtualization | Requires host hardening and image/pool operations |
 
-**Recommendation:** compile and execute in disposable Firecracker microVMs on dedicated judge hosts. Follow the project's [production host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md), use the jailer and keep the host, KVM, guest kernel and language images patched.
+**Options and tradeoffs.**
+
+- **Ordinary containers:** isolate processes/files while sharing the host kernel. Startup and tooling are familiar, but a kernel exploit from untrusted code threatens other executions and host state.
+- **User-space kernel sandbox:** intercept guest system calls through a restricted implementation. Host-kernel exposure is reduced; compiler/runtime compatibility and syscall-heavy performance depend on the selected sandbox.
+- **MicroVMs:** execute inside a separate guest kernel using hardware virtualization. The boundary suits hostile submissions, but clean images, patched KVM/hosts, pool startup and bounded result channels require dedicated operations.
+
+**Choice and rationale.** Compile and execute in disposable Firecracker microVMs on dedicated judge hosts. Follow the project's [production host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md), use the jailer and keep the host, KVM, guest kernel and language images patched. Disposable Firecracker microVMs fit intentionally untrusted code better than a convenience container boundary. We accept dedicated host/image operations and prewarm cost; host-enforced resource and network limits remain necessary even with virtualization.
 
 The trusted host controls VM resources, egress and deadlines. Guest-side restrictions are additional defense, not the enforcement boundary after a guest compromise. Give the guest only its input and required files; compare output with hidden expected results in the trusted judge control plane. Authenticate result channels and cap output bytes.
 
-```text
-Trusted judge host
-  ├─ validates test/checker version
-  ├─ limits VM resources and elapsed time
-  ├─ compares captured output
-  └─ disposable microVM
-       ├─ untrusted compiler and solution
-       └─ isolated scratch disk
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryTextColor":"#202124","primaryBorderColor":"#9aa0a6","lineColor":"#5f6368","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteTextColor":"#202124","noteBorderColor":"#9aa0a6","signalColor":"#5f6368","signalTextColor":"#202124","labelBoxBkgColor":"#fef7e0","labelBoxBorderColor":"#9aa0a6"}}}%%
+flowchart TB
+  subgraph Host["Trusted judge host"]
+    V["Validate test<br>and checker<br>versions"]
+    L["Enforce VM<br>resource<br>limits<br>and<br>elapsed-time<br>deadline"]
+    C["Compare<br>bounded<br>captured<br>output<br>using the<br>trusted<br>checker"]
+    subgraph VM["Disposable microVM"]
+      U["Untrusted<br>compiler and<br>solution"]
+      D[("Isolated<br>scratch disk")]
+      U --> D
+    end
+    V -->|"Approved inputs"| U
+    L -.->|"Host enforcement"| U
+    U -->|"Bounded output channel"| C
+  end
+  class V,L,C control
+  class U danger
+  class D data
+  style Host fill:#e8f0fe,stroke:#9aa0a6,color:#202124
+  style VM fill:#fce8e6,stroke:#9aa0a6,color:#202124
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Use [cgroup v2](https://docs.kernel.org/admin-guide/cgroup-v2.html) for host resource controls and a host watchdog for total time budgets. CPU bandwidth throttling is different from a total CPU-time deadline. Guest process limits alone do not enforce a budget for the whole VM.
@@ -225,15 +304,19 @@ Restore only pristine, approved snapshots; regenerate guest identity and randomn
 
 Transfer only required inputs to the guest. Capture output through bounded channels and evaluate it with the trusted checker; hidden expected outputs stay outside the untrusted environment. Apply limits to compilation as well as execution, including elapsed time, memory, disk and output.
 
-The result identifies S, T and every bundle version. The database accepts it only if T still owns the attempt. After a crash, another host may execute S again; the fenced result commit prevents duplicate score application. Destroy per-submission disks and state instead of recycling a possibly compromised guest into the next user's execution. Isolation also requires patching and resource controls on the host, not just a VM boundary.
+**Tradeoffs and recovery.** The result identifies S, T and every bundle version. The database accepts it only if T still owns the attempt. After a crash, another host may execute S again; the fenced result commit prevents duplicate score application. Destroy per-submission disks and state instead of recycling a possibly compromised guest into the next user's execution. Isolation also requires patching and resource controls on the host, not just a VM boundary.
 
 ### How can standings stay correct when results arrive out of order?
 
 **Problem.** A slow early submission can finish after a fast later one. Scoring in completion order could select the wrong solve time or penalty.
 
-**Options:** serialize all judging per user; increment counters as results arrive; or derive a versioned score from the ordered submission record.
+**Options and tradeoffs.**
 
-**Recommendation:** derive the score from durable acceptance order. Judge executions can run independently, while each user's contest projection is recomputed when relevant results change. Publish solved count, penalty and projection version together.
+- **Serialize judging per user:** finish one submission before running the next. Completion order follows acceptance, but one slow program delays all later feedback for that user.
+- **Increment counters on completion:** update solves/penalties as verdicts arrive. Processing is cheap, but an earlier failed submission arriving later can change the correct first-solve penalty and duplicate deliveries can drift totals.
+- **Versioned projection from ordered submissions:** recompute a user's score from durable acceptance order and result versions. Rejudges and late verdicts produce reproducible standings; reads are provisional while judging remains incomplete and projection work must be bounded.
+
+**Choice and rationale.** Derive the score from durable acceptance order. Judge executions can run independently, while each user's contest projection is recomputed when relevant results change. Publish solved count, penalty and projection version together. Versioned projections fit parallel judging and rejudges while preserving contest rules based on submission order. We accept brief standings lag and provisional labels rather than serializing execution or treating completion order as contest order.
 
 For a bounded contest rule, an integer score such as `solved × M - penalty` fits a Redis sorted set if M exceeds maximum penalty and the largest value remains within exact integer precision of the double score. Keep tie-breaking in explicit fields or a deterministic member ordering; avoid arbitrary fractional hash adjustments.
 
@@ -245,22 +328,31 @@ Compute from submissions ordered by durable acceptance time/sequence, not judge 
 
 ```mermaid
 flowchart TB
-  S["Submission accepted and ordered"] --> J["Parallel judge attempts"]
-  J --> D["Versioned durable results"]
-  D --> P["Recompute user contest score"]
-  P --> V["Versioned standing projection"]
-  V --> C["Public contest generation"]
+  S["Submission<br>accepted and<br>ordered"] --> J["Parallel judge<br>attempts"]
+  J --> D["Versioned<br>durable<br>results"]
+  D --> P["Recompute user<br>contest score"]
+  P --> V["Versioned<br>standing<br>projection"]
+  V --> C["Public contest<br>generation"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class S,J,P,V,C request
+  class D background
 ```
 
-Publish the user's whole solved/penalty state conditionally by projection version. Replaying an older projection cannot restore the wrong score. Contest freeze and disclosure policy apply at response assembly, while the authority retains the complete underlying records.
+**Tradeoffs and recovery.** Publish the user's whole solved/penalty state conditionally by projection version. Replaying an older projection cannot restore the wrong score. Contest freeze and disclosure policy apply at response assembly, while the authority retains the complete underlying records.
 
 ### How should capacity handle a contest burst?
 
 **Problem.** Reactive scaling can arrive after the first submission wave. A queue prevents loss but cannot guarantee a short verdict time without sufficient execution capacity.
 
-**Options:** rely on reactive scaling; prewarm the entire peak pool; or combine scheduled reserved capacity with queue-age scaling.
+**Options and tradeoffs.**
 
-**Recommendation:** prewarm the modeled contest capacity before the event, including language images and test bundles. Then scale from oldest queued age, execution duration and free slots. Maintain a practice reservation so one contest does not indefinitely starve ordinary users.
+- **Reactive scaling:** start workers after queue age or load rises. Idle cost is low, but image startup arrives after a synchronized contest wave and early users wait.
+- **Prewarm the full peak:** reserve all expected capacity before the event. Initial latency is predictable if the estimate is right; unused slots and language-specific pools cost money.
+- **Scheduled reserve plus queue-age scaling:** prewarm the modeled baseline, retain practice capacity and scale additional slots from queued work. This balances startup and cost; forecasts can still miss the peak, so admission limits and explicit overload remain necessary.
+
+**Choice and rationale.** Prewarm the modeled contest capacity before the event, including language images and test bundles. Then scale from oldest queued age, execution duration and free slots. Maintain a practice reservation so one contest does not indefinitely starve ordinary users. Scheduled prewarming fits known contest start times, while queue-age scaling handles uncertain submission mix. We accept reserved idle capacity before the event and a bounded queue when demand exceeds the verified pool.
 
 ```text
 Required slots ≈ arrival rate × average occupied time / target utilization
@@ -273,4 +365,4 @@ Drain workers before scale-down and let expired leases recover interrupted attem
 
 Prewarm approved language images and bundles before scheduled contests. Scale from oldest queued age and estimated queued work, not only CPU utilization—workers waiting on startup or I/O can leave CPU low while users wait.
 
-Reserve practice capacity and enforce per-user/contest submission limits. Scale-down first marks a host draining, stops new leases and lets existing attempts finish. A forced termination expires its attempt token and requeues safely. Record verdict latency from API acceptance so waiting time is visible alongside actual compile and run time.
+**Tradeoffs and recovery.** Reserve practice capacity and enforce per-user/contest submission limits. Scale-down first marks a host draining, stops new leases and lets existing attempts finish. A forced termination expires its attempt token and requeues safely. Record verdict latency from API acceptance so waiting time is visible alongside actual compile and run time.

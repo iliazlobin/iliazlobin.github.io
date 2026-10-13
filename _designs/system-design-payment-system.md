@@ -7,7 +7,7 @@ tags: [Interview-Prep, Distributed-Systems, Fintech]
 thumbnail: /images/posts/2026-07-02-system-design-payment-system.svg
 redirect_from:
   - /2026/07/02/system-design-payment-system.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-12
 description: "Design of a payment service with safe retries, provider integration, a balanced ledger and settlement reconciliation."
 notion_source: https://app.notion.com/p/391d865005a8810a97d2c11a3162b469
 ---
@@ -139,30 +139,67 @@ The API commits an operation before a worker contacts the provider. Responses an
 
 ```mermaid
 flowchart TB
-    U["Merchant application"] --> P["Payment API"]
-    P --> D[("Payments and operations")]
-    D --> Q["Durable work queue"]
-    Q --> W["Provider worker"]
-    W --> X["Payment provider"]
-    X --> H["Verified response<br/>or webhook"]
-    H --> S["Operation state machine"]
-    S --> L[("Balanced journal")]
-    X --> R["Settlement reconciliation"]
+    U["Merchant<br>application"] --> P["Payment API"]
+    P --> D[("Payments and<br>operations")]
+    D --> Q["Durable work<br>queue"]
+    Q --> W["Provider<br>worker"]
+    W --> X["Payment<br>provider"]
+    X --> H["Verified<br>response<br>or webhook"]
+    H --> S["Operation<br>state machine"]
+    S --> L[("Balanced<br>journal")]
+    X --> R["Settlement<br>reconciliation"]
     L --> R
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class U,P,D,X,H,S,L request
+  class Q,W,R background
 ```
 
 ## Storage
 
-- **PostgreSQL:** payments, operations, idempotency records, journal postings and outbox rows. Unique merchant/operation keys prevent duplicate local operations; locks or versions serialize captures and refunds.
+- **[PostgreSQL](/designs/tech-postgresql/):** payments, operations, idempotency records, journal postings and outbox rows. Unique merchant/operation keys prevent duplicate local operations; locks or versions serialize captures and refunds.
 - **Durable queue:** provider work is delivered at least once. Expiring worker leases recover crashes; each delivery carries the stable operation ID.
 - **Object storage:** original settlement files and normalized import manifests, with checksums and access controls.
-- **Redis:** optional status caching and rate limits. PostgreSQL remains authoritative for identity and outcomes.
+- **[Redis](/designs/tech-redis/):** optional status caching and rate limits. PostgreSQL remains authoritative for identity and outcomes.
 
 Postings are append-only. Corrections use linked reversals or adjustments. Retention follows legal and operational policy rather than a cache TTL.
 
-## From request to response
+## Functional scenarios
 
-### Creating and authorizing a payment
+### Authorizing a payment and recovering its outcome
+
+The service commits one payment operation and provider key before making an external call.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as Merchant
+    participant A as Payment API
+  end
+  box rgb(230,244,234) Durable state
+    participant D as PostgreSQL
+  end
+  box rgb(232,240,254) External participants
+    participant W as Provider
+  end
+  box rgb(230,244,234) Background processing
+    participant C as Webhook worker
+  end
+  rect rgb(232,240,254)
+    U->>A: Confirm payment under idempotency key
+    A->>D: Commit pending operation and provider key
+    A->>W: Submit operation with stable provider key
+    W-->>A: Confirmed result or ambiguous timeout
+  end
+  rect rgb(230,244,234)
+    A->>D: Record outcome, post confirmed ledger entries
+    D->>C: Committed state-change outbox
+    C-->>U: Signed versioned payment event
+  end
+```
+
+A timeout preserves an unknown outcome for recovery; a confirmed result advances the ledger and webhook outbox in a transaction, using the same identities on every retry.
 
 Validate merchant access, amount, currency and funding token. In one transaction, reserve the request key and create the payment, authorization operation and work item.
 
@@ -179,6 +216,30 @@ If the result is delayed, return processing status. A second capture must not sp
 ### Refunding a payment
 
 Verify captured and previously refunded amounts, including pending reservations. Persist a distinct refund operation and submit it to the provider.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    participant M as Merchant
+    participant A as Payment API
+    participant D as Payment store
+    participant W as Payment worker
+    participant P as Provider
+    rect rgb(232, 240, 254)
+        M->>A: Refund amount and request key
+        A->>D: Reserve refundable amount and operation
+        D-->>A: Committed refund identity
+        A-->>M: Processing status
+    end
+    rect rgb(230, 244, 234)
+        W->>P: Refund with stable provider key
+        P-->>W: Confirmed result or unknown outcome
+        W->>D: Record evidence and refund transition
+        D-->>W: Linked journal posting when completed
+    end
+```
+
+Concurrent refund requests include pending reservations when checking the remaining refundable amount. A confirmed failure releases that reservation; a timeout remains pending until provider evidence resolves it. Repeated merchant or worker requests reuse the same refund identity rather than reserving the amount again.
 
 Record requested, accepted and completed states from provider evidence. A failed refund releases its reservation through a documented transition; a successful refund creates the corresponding linked posting.
 
@@ -198,13 +259,17 @@ Provider cutoffs determine the pending window. Unmatched records remain visible 
 
 ### How do retries avoid a second charge?
 
-The database and external provider have separate transactional boundaries.
+**Problem.** The database and external provider have separate transactional boundaries.
 
-- **Cache-only deduplication:** fast, but eviction and crashes can erase identity.
-- **Database-only deduplication:** preserves local identity, with uncertain external outcomes after lost responses.
-- **Durable operation plus provider idempotency — recommended:** keep one local operation and reuse its provider key throughout recovery.
+**Options and tradeoffs.**
 
-[Stripe](https://docs.stripe.com/api/idempotent_requests) and [Adyen](https://docs.adyen.com/development-resources/api-idempotency/) document their key scope and retention. Adyen uses an idempotency header; a merchant reference alone is not equivalent. Provider retention differs from the local 30-day client replay window.
+- **Cache-only deduplication:** remember request keys in memory/Redis. Duplicate requests are rejected quickly, but eviction, failover or TTL expiry can erase the identity of an existing charge.
+- **Database-only deduplication:** retain one operation under a unique local request key. Local retries recover safely, but a provider accepting before a lost response leaves the external outcome unknown.
+- **Durable operation plus provider idempotency:** persist one operation/key before dispatch and reuse the provider key through status queries/retries. Both boundaries retain identity; provider retention/scope limits and delayed reconciliation still require a pending state.
+
+**Choice and rationale.** The combined identity fits irreversible external money movement. We accept unresolved pending operations and recovery work rather than creating a second charge to resolve a timeout; local retention deliberately outlives the provider's retry window.
+
+Each provider adapter declares the operation types, key scope and retention covered by its idempotency contract. A merchant reference identifies a payment; duplicate prevention requires an explicit provider guarantee for that key. Treat the provider's retention window separately from the local 30-day client replay window.
 
 ```python
 operation = get_or_create_operation(merchant_id, key, request_hash)
@@ -222,10 +287,16 @@ Create one durable payment operation and provider key before dispatch. If the pr
 
 ```mermaid
 sequenceDiagram
-    participant C as Client
-    participant P as Payment service
-    participant D as Database
-    participant X as Provider
+  box rgb(232,240,254) Request path
+  participant C as Client
+  participant P as Payment service
+  end
+  box rgb(230,244,234) Durable state
+  participant D as Database
+  end
+  box rgb(232,240,254) External participants
+  participant X as Provider
+  end
     C->>P: Submit with idempotency key
     P->>D: Commit operation and work
     P->>X: Execute with stable provider key
@@ -238,15 +309,19 @@ sequenceDiagram
 
 Store a canonical request hash with the merchant-scoped key. The same key and different amount/currency is a conflict. Provider idempotency protects only its documented scope/retention; once that expires, status reconciliation takes priority over another execution.
 
-A webhook and synchronous response can race. Both converge on the same provider operation identity and conditional state transition. Duplicate evidence is idempotent; contradictory evidence is retained for investigation. Retry at another provider only after the old outcome is definitively resolved under the payment workflow.
+**Tradeoffs and recovery.** A webhook and synchronous response can race. Both converge on the same provider operation identity and conditional state transition. Duplicate evidence is idempotent; contradictory evidence is retained for investigation. Retry at another provider only after the old outcome is definitively resolved under the payment workflow.
 
 ### Where does the outbox help?
 
-A database write followed by publication can fail between steps.
+**Problem.** A database write followed by publication can fail between steps.
 
-- **Publish after commit:** simple, with a lost-work window.
-- **Distributed transaction:** requires cooperation the external API usually cannot provide.
-- **Transactional outbox — recommended:** commit the pending operation and work row together.
+**Options and tradeoffs.**
+
+- **Publish after commit:** save a payment, then enqueue work in a separate call. The normal path is simple, but a crash between steps leaves durable pending work without a queue record.
+- **Distributed transaction:** coordinate database and external participants into one commit. Supported databases can align writes, but payment APIs generally do not participate and long coordination reduces availability.
+- **Transactional outbox:** commit the operation and dispatch intent together, then publish under leases. Recovery always finds pending work; delivery can duplicate and the outbox does not itself prove that an external charge happened only once.
+
+**Choice and rationale.** An outbox fits the local operation-to-work boundary without requiring cooperation from a payment network. We accept at-least-once dispatch and pair it with provider idempotency and reconciliation rather than keeping a database transaction open over the network call.
 
 Workers claim bounded batches with leases, call the provider outside a long database transaction and record confirmed outcomes in a new transaction. The outbox preserves work; provider idempotency and reconciliation handle duplicate delivery and uncertain results.
 
@@ -256,24 +331,41 @@ LISTEN/NOTIFY can wake a polling worker sooner, while periodic polling recovers 
 
 In one database transaction, create the pending operation and an outbox row. A poller claims the row with an expiring lease, commits that claim, then calls the provider outside the transaction. A crash releases work through lease expiry, and the next owner uses the same operation/provider key.
 
-```text
-Crash before commit        → no accepted local operation
-Crash after commit         → outbox delivers later
-Crash after provider call  → same-key recovery or reconciliation
-Crash after result commit  → duplicate delivery returns saved result
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryTextColor":"#202124","primaryBorderColor":"#9aa0a6","lineColor":"#5f6368","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteTextColor":"#202124","noteBorderColor":"#9aa0a6","signalColor":"#5f6368","signalTextColor":"#202124","labelBoxBkgColor":"#fef7e0","labelBoxBorderColor":"#9aa0a6"}}}%%
+flowchart TB
+    A["Operation and<br>outbox<br>transaction"] -->|"Commit"| B["Durable<br>pending<br>operation"]
+    B --> C["Provider call"]
+    C --> D["Result<br>transaction<br>commits"]
+    A -.->|"Crash before commit"| E["No accepted<br>local<br>operation"]
+    B -.->|"Crash after commit"| F["Outbox<br>delivers later"]
+    C -.->|"Crash after call"| G["Same-key<br>recovery<br>or<br>reconciliation"]
+    D -.->|"Duplicate delivery"| H["Return saved<br>result"]
+    class A,C,F request;
+    class B,D,H data;
+    class G control;
+    class E danger;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Claim ownership uses a generation/lease version. A stale worker can record observed provider evidence, but cannot overwrite a newer operation state blindly. Retain incomplete work until confirmed resolution; repeatedly publishing an event cannot substitute for provider outcome evidence.
 
-The result transaction updates business state and creates its downstream event together. Consumers deduplicate event IDs and versions. Polling recovers missed wakeups, so notification delivery is a latency optimization rather than the sole durability mechanism.
+**Tradeoffs and recovery.** The result transaction updates business state and creates its downstream event together. Consumers deduplicate event IDs and versions. Polling recovers missed wakeups, so notification delivery is a latency optimization rather than the sole durability mechanism.
 
 ### How does the ledger stay balanced?
 
-A payment status alone does not explain account balances.
+**Problem.** A payment status alone does not explain account balances.
 
-- **Mutable balances:** efficient reads, weak auditability on their own.
-- **Application-paired entries:** clear postings, but every writer must honor the invariant.
-- **Restricted journal-posting transaction — recommended:** validate a whole batch and commit all entries together.
+**Options and tradeoffs.**
+
+- **Mutable balances:** update each account total in place. Reads are inexpensive, but the final number alone cannot explain or audit prior money movements.
+- **Application-paired entries:** have each writer insert debit/credit rows. History is explicit, but one buggy or partial writer can violate balance equality unless the whole posting is checked atomically.
+- **Restricted journal transaction:** validate a complete posting batch under a stable source identity and commit all entries together. Currency balance and retry invariants are centralized; writers must use the posting interface and balance queries may need derived projections.
+
+**Choice and rationale.** A restricted immutable journal fits auditable captures, refunds and fees. We accept a stricter write interface and derived balance reads to make every correction a traceable balanced posting instead of editing history.
 
 Within each currency, total debits equal total credits. Each entry names an account; each posting references its source operation. Enforce idempotent posting, valid accounts, positive amounts and balance equality through the database's posting interface and constraints.
 
@@ -299,15 +391,19 @@ Settlement with 3-unit fee
 
 Account conventions and merchant fee policy determine the exact account mapping; the invariant is per-currency balance in one posting transaction. Use integer minor units or an explicitly defined currency precision, not binary floating-point amounts.
 
-The posting interface checks source-operation uniqueness, account/currency validity and the whole batch sum, then inserts all entries atomically. A repeated capture event returns the existing posting. A refund or correction references the original operation with a new balanced reversal/adjustment; it does not mutate the historic capture entries.
+**Tradeoffs and recovery.** The posting interface checks source-operation uniqueness, account/currency validity and the whole batch sum, then inserts all entries atomically. A repeated capture event returns the existing posting. A refund or correction references the original operation with a new balanced reversal/adjustment; it does not mutate the historic capture entries.
 
 ### What does reconciliation compare?
 
-Authorization, capture and bank payout are different stages of money movement.
+**Problem.** Authorization, capture and bank payout are different stages of money movement.
 
-- **Payment totals:** cheap, but hide fees, timing and missing individual transactions.
-- **Raw report hashes:** detect identical imports, while different schemas and cutoffs prevent financial comparison.
-- **Normalized transaction matching — recommended:** match provider operation references and types, then reconcile gross amount, fees, net settlement and payout totals.
+**Options and tradeoffs.**
+
+- **Payment totals:** compare a day's sums. Work is small, but missing transactions, offsetting errors, fees and timing differences can hide behind an equal total.
+- **Raw report hashes:** identify identical imported files. Duplicate import protection is useful, but schema/cutoff differences mean a different hash says nothing about whether money reconciles.
+- **Normalized transaction matching:** join provider references/types within account/currency context, compare gross/fees/net, then reconcile payouts. Differences become actionable; retained originals, normalization versions and unmatched-case operations add processing and review cost.
+
+**Choice and rationale.** Transaction-level matching fits separate authorization, capture and settlement stages. We accept a monitored unmatched backlog and normalization effort so a payout discrepancy can be traced to specific evidence rather than hidden in aggregate totals.
 
 Batch matching avoids one database query per row. File checksums identify duplicate files; transaction keys identify repeated rows. Currency, provider account and settlement period form the matching context.
 
@@ -319,12 +415,16 @@ Import a provider file under a unique checksum, preserve the original, and norma
 
 Batch-join normalized operations to local captures/refunds, then compare amounts and state. Next group their net amounts by settlement/payout identity and compare bank movement.
 
-```text
-Local capture/refund evidence
-             ↕ operation-level matching
-Provider settlement rows
-             ↕ grouped net plus fees/timing
-Bank payout evidence
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryTextColor":"#202124","primaryBorderColor":"#9aa0a6","lineColor":"#5f6368","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteTextColor":"#202124","noteBorderColor":"#9aa0a6","signalColor":"#5f6368","signalTextColor":"#202124","labelBoxBkgColor":"#fef7e0","labelBoxBorderColor":"#9aa0a6"}}}%%
+flowchart TB
+    A["Local capture<br>and refund<br>evidence"] <-->|"Operation-level matching"| B["Provider<br>settlement<br>rows"]
+    B <-->|"Grouped net amounts,<br/>fees and timing"| C["Bank payout<br>evidence"]
+    class A,B,C data;
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
-Keep pending, timing-difference, amount-mismatch and orphan cases separate. A transaction can be captured today and settle later; a daily total mismatch alone does not establish missing money. Corrections create new linked accounting records after review of the actual discrepancy. Reconciliation is also the recovery path for provider-key expiry and unknown results, with age-based escalation and explicit unresolved exposure.
+**Tradeoffs and recovery.** Keep pending, timing-difference, amount-mismatch and orphan cases separate. A transaction can be captured today and settle later; a daily total mismatch alone does not establish missing money. Corrections create new linked accounting records after review of the actual discrepancy. Reconciliation is also the recovery path for provider-key expiry and unknown results, with age-based escalation and explicit unresolved exposure.

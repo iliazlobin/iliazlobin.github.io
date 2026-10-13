@@ -5,7 +5,7 @@ category: system-design
 date: 2026-07-08
 tags: [Distributed-Systems, Geospatial, Real-Time, Event-Driven, Recommendation, Kafka, Food-Delivery]
 thumbnail: /images/posts/system-design-doordash-uber-eats.svg
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-12
 description: "Design of a food-delivery marketplace covering restaurant discovery, checkout, driver assignment and live order tracking."
 notion_source: https://app.notion.com/p/396d865005a8812d96bdd73abd3ee5b4
 ---
@@ -133,29 +133,34 @@ Checkout commits the order and its outgoing event together. Dispatch consumes ac
 
 ```mermaid
 flowchart TB
-    U["User"] --> C["Catalog and checkout"]
+    U["User"] --> C["Catalog and<br>checkout"]
     C --> O[("Order database")]
-    O --> E["Outbox and event log"]
-    E --> D["Dispatch and routing"]
-    P["Driver app"] --> L[("Current locations")]
+    O --> E["Outbox and<br>event log"]
+    E --> D["Dispatch and<br>routing"]
+    P["Driver app"] --> L[("Current<br>locations")]
     L --> D
-    D --> A["Driver offer and acceptance"]
-    E --> T["Tracking and ETA"]
+    D --> A["Driver offer<br>and acceptance"]
+    E --> T["Tracking and<br>ETA"]
     L --> T
-    T --> V["User tracking view"]
+    T --> V["User tracking<br>view"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class U,D,P,L,A,T,V request
+  class C,O,E background
 ```
 
 ## Storage
 
-- **PostgreSQL:** orders, price snapshots, idempotency records and assignments need transactions, unique constraints and conditional state changes. An order update and its outbox row commit in the same transaction. Partition historical orders as retention grows; 400 creates/s alone is not a reason to discard transactional storage.
+- **[PostgreSQL](/designs/tech-postgresql/):** orders, price snapshots, idempotency records and assignments need transactions, unique constraints and conditional state changes. An order update and its outbox row commit in the same transaction. Partition historical orders as retention grows; 400 creates/s alone is not a reason to discard transactional storage.
 - **PostgreSQL with PostGIS:** restaurant coordinates and service areas support indexed distance and containment queries. [ST_DWithin](https://postgis.net/docs/ST_DWithin.html) accepts meters for geography values and can use a spatial index.
-- **Redis:** recent driver positions and city-level geospatial indexes support frequent updates and nearby-driver queries. [GEOSEARCH](https://redis.io/docs/latest/commands/geosearch/) finds candidates within a radius; application-level freshness checks exclude stale positions. A cleanup job removes expired members from the geo index.
-- **Kafka:** durable order and location events support dispatch, tracking and feature updates. Order IDs provide ordering for order changes; driver IDs provide ordering for position streams.
+- **[Redis](/designs/tech-redis/):** recent driver positions and city-level geospatial indexes support frequent updates and nearby-driver queries. [GEOSEARCH](https://redis.io/docs/latest/commands/geosearch/) finds candidates within a radius; application-level freshness checks exclude stale positions. A cleanup job removes expired members from the geo index.
+- **[Kafka](/designs/tech-kafka/):** durable order and location events support dispatch, tracking and feature updates. Order IDs provide ordering for order changes; driver IDs provide ordering for position streams.
 - **Object storage and analytical tables:** retained events and delivery outcomes support offline ETA training and operational analysis with restricted location access.
 
 A tracking connection reads a current snapshot after reconnecting. Redis pub/sub updates improve responsiveness; durable order state provides recovery.
 
-## From request to response
+## Functional scenarios
 
 ### Finding a restaurant
 
@@ -163,19 +168,80 @@ The catalog service searches within the delivery area, filters closed or unavail
 
 Cache restaurant details separately from availability. A cached menu improves browsing latency, while checkout revalidates item availability and prices.
 
-### Placing an order
+### Placing an order and assigning a driver
+
+An order becomes dispatchable after its durable checkout and restaurant state are recorded.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as User
+    participant A as Order API
+  end
+  box rgb(230,244,234) Durable state
+    participant D as PostgreSQL
+  end
+  box rgb(254,247,224) Decision authority
+    participant W as Dispatch service
+  end
+  box rgb(232,240,254) External participants
+    participant C as Driver
+  end
+  rect rgb(232,240,254)
+    U->>A: Submit order under request key
+    A->>D: Commit order and workflow intent
+    D->>W: Order ready for dispatch
+    W->>W: Shortlist fresh drivers and score routes
+  end
+  rect rgb(230,244,234)
+    W->>C: Send expiring assignment offer
+    C->>W: Accept current offer
+    W->>D: Commit order ownership and driver capacity
+    W-->>U: Confirm driver and updated ETA
+  end
+```
+
+The location index supplies candidates; only an assignment transaction can reserve driver capacity and confirm an accepted offer.
+
+**Checkout.**
 
 The checkout service validates the cart and address, reserves an idempotency key and creates a pending order. It authorizes payment through the provider with a stable payment-attempt ID, then records the accepted order and restaurant-notification event.
 
 If authorization succeeds but the response is lost, reconciliation checks the same provider reference before retrying. Restaurant rejection or cancellation triggers a recorded compensation, such as releasing an authorization. Workers retry each step using the order and event IDs.
 
-### Assigning a driver
+**Dispatch and acceptance.**
 
 Dispatch searches nearby available drivers, rejects stale positions and scores feasible order/driver pairs. The service sends a time-limited offer. Acceptance commits only while the offer is current and the order and driver remain eligible.
 
 Competing acceptances use database preconditions and uniqueness constraints. One assignment succeeds; another request receives a conflict and refreshed availability. A driver can carry multiple orders only when the accepted route satisfies capacity and deadline rules.
 
 ### Tracking a delivery
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    accTitle: Delivering a current driver position
+    participant D as Driver app
+    participant I as Position ingestion
+    participant L as Current locations
+    participant T as Tracking and ETA
+    participant U as User tracking view
+    rect rgb(232, 240, 254)
+        D->>I: Position, observation time and sequence
+        I->>L: Conditionally store newer sequence
+        alt Newer position accepted
+            L-->>I: Position and freshness stored
+            I->>T: Publish accepted position update
+            T->>T: Refresh remaining-delivery estimate
+            T-->>U: Position age and revised ETA
+        else Delayed or repeated update
+            L-->>I: Keep latest accepted position
+        end
+    end
+```
+
+The map changes only from accepted newer positions. The displayed age separates the driver's observation time from processing delay; losing the mobile connection leaves a visibly stale last-known position. Tracking can tolerate that gap, while order and assignment ownership remain in durable storage.
+
 
 The driver app reports timestamped positions. Ingestion accepts newer sequence numbers, updates the current-position store and publishes an update to the order's tracking channel. The user receives the position, freshness timestamp and revised ETA.
 
@@ -191,19 +257,23 @@ Checking every possible route becomes expensive as orders accumulate. Candidate 
 
 ### How do we assign drivers without delaying other orders?
 
-Independent nearest-driver decisions can assign a scarce driver to an easy order while leaving another order with no feasible pickup.
+**Problem.** Independent nearest-driver decisions can assign a scarce driver to an easy order while leaving another order with no feasible pickup.
 
-- **Nearest available driver:** fast and easy to explain; ignores preparation time, existing routes and competing orders.
-- **Score each pair greedily:** incorporates travel and readiness estimates, but still optimizes one decision at a time.
-- **Bounded batch optimization — recommended:** compare a small city's recent orders and eligible drivers together, with a greedy fallback for the compute deadline.
+**Options and tradeoffs.**
+
+- **Nearest available driver:** choose the closest eligible position. Candidate selection is fast, but straight-line distance ignores restaurant readiness, accepted routes and another order's limited choices.
+- **Greedy pair scoring:** rank each order/driver pair using pickup and lateness estimates, then take feasible pairs one at a time. It adds useful prediction signals cheaply, but an early choice can consume the only driver for a harder order.
+- **Bounded batch optimization:** compare recent orders and eligible drivers together under capacity and offer constraints. Scarce drivers can be allocated across competing orders; solver time and prediction error require a deadline and a feasible fallback.
+
+**Choice and rationale.** Small city-level batches fit a marketplace with competing simultaneous orders. We accept a short dispatch wait and bounded solver cost to improve collective assignments, while greedy fallback prevents optimization from consuming the response budget.
 
 Use a short dispatch interval, prune distant pairs and estimate pickup time, lateness risk and added route distance. The optimizer selects compatible assignments subject to driver capacity and offer state. Offers become final only through the assignment transaction.
 
-[DoorDash's dispatch design](https://careersatdoordash.com/blog/using-ml-and-optimization-to-solve-doordashs-dispatch-problem/) combines prediction and optimization. This proposal uses the same separation: models estimate outcomes; an optimizer selects feasible assignments.
+Prediction estimates pickup time and lateness for each feasible pair; optimization selects a compatible set of assignments. Keeping those responsibilities separate lets the dispatch deadline bound search work without turning a model score into an assignment guarantee.
 
 If the optimizer times out, use its best feasible result or the greedy fallback. Re-run expired offers with refreshed driver state.
 
-**One dispatch batch from candidates to accepted work**
+**How it works — One dispatch batch from candidates to accepted work.**
 
 Build a bipartite graph: recent unassigned orders on one side, eligible drivers on the other. First prune by service area, stale location, driver capacity and whether pickup/delivery windows can still be met. Compute route/restaurant-readiness estimates only for surviving edges.
 
@@ -211,27 +281,36 @@ An edge cost combines expected pickup wait, delivery lateness and added travel u
 
 ```mermaid
 flowchart TB
-    O["Recent orders"] --> C["Pruned order-driver pairs"]
-    D["Fresh eligible drivers"] --> C
-    C --> E["Route and readiness estimates"]
-    E --> M["Bounded matching optimization"]
-    M --> T["Transactional offers<br>order and driver versions"]
-    T --> A["Driver acceptance"]
+    O["Recent orders"] --> C["Pruned<br>order-driver<br>pairs"]
+    D["Fresh eligible<br>drivers"] --> C
+    C --> E["Route and<br>readiness<br>estimates"]
+    E --> M["Bounded<br>matching<br>optimization"]
+    M --> T["Transactional<br>offers order<br>and driver<br>versions"]
+    T --> A["Driver<br>acceptance"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class O,C,E,M,T,A request
+  class D control
 ```
 
 Suppose driver A can serve orders X or Y, while driver B can serve only X. Greedily giving X to A strands Y; selecting B-X and A-Y serves both. This is why pair scoring alone is not the final decision.
 
-Persist offers with expiry and expected order/driver versions. Acceptance conditionally claims the actual assignment; stale optimizer output is rejected and the order re-enters dispatch. Optimizer timeout returns its best feasible solution or the bounded greedy fallback, never a partially committed set of conflicting assignments.
+**Tradeoffs and recovery.** Persist offers with expiry and expected order/driver versions. Acceptance conditionally claims the actual assignment; stale optimizer output is rejected and the order re-enters dispatch. Optimizer timeout returns its best feasible solution or the bounded greedy fallback, never a partially committed set of conflicting assignments.
 
 ### How do we search fresh driver positions at high write rates?
 
-Putting every GPS update in the order database would add a large write workload unrelated to checkout.
+**Problem.** Putting every GPS update in the order database would add a large write workload unrelated to checkout.
 
-- **Relational location history:** durable and queryable, but expensive for the live update path.
-- **One global in-memory geo index:** simple, with concentrated traffic and large queries.
-- **Regional geo indexes — recommended:** partition by city or geographic cell and query neighboring partitions near boundaries.
+**Options and tradeoffs.**
 
-Keep coordinates, observation time and sequence together. The geospatial index provides candidates; the position record provides the freshness check. An expired driver record must also be removed from the geo index because a geo member has no independent key TTL.
+- **Relational location history:** persist every update with queryable indexes. Durable audit and historical queries are straightforward, but frequent GPS writes compete with checkout and assignment transactions.
+- **Global in-memory geo index:** update one searchable location space. Radius lookup is simple, but hot cities concentrate writes and broad searches create a shared capacity bottleneck.
+- **Regional geo indexes:** route updates by city/cell and search neighboring partitions near boundaries. Live work scales geographically; crossing drivers, duplicate boundary results and stale membership need explicit version/freshness handling.
+
+**Choice and rationale.** Regional indexes fit dispatch queries that are naturally local and GPS state that can be refreshed by heartbeats. We accept temporary coverage reduction after cache loss and rebuild from fresh positions; accepted order/driver ownership remains durable.
+
+**How it works.** Keep coordinates, observation time and sequence together. The geospatial index provides candidates; the position record provides the freshness check. An expired driver record must also be removed from the geo index because a geo member has no independent key TTL.
 
 Redis loss temporarily reduces dispatch coverage. Rebuild from fresh driver heartbeats and retained recent events; accepted assignments remain in PostgreSQL.
 
@@ -241,61 +320,109 @@ The driver stream carries a monotonic session epoch and sequence alongside coord
 
 A radius query returns possible drivers, then the dispatch service reads their records and rejects stale or unavailable entries. Near a partition boundary, query neighboring cells and deduplicate driver IDs. Straight-line distance is a shortlist signal; road-network travel time determines the final cost.
 
-```text
-GPS update → epoch/sequence check → regional geo index
-Nearby IDs → freshness/availability check → road ETA shortlist
+```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  U["GPS update"] --> V["Check session<br>epoch and<br>sequence"]
+  V --> I[("Regional geo<br>index")]
+  Q["Nearby-driver<br>query"] --> I
+  I --> C["Candidate<br>driver IDs"]
+  C --> F["Check position<br>freshness and<br>availability"]
+  F --> E["Road ETA<br>shortlist"]
+  class U,Q,C,E request
+  class I data
+  class V,F control
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
-Moving across cells removes the old membership with a version guard so a late removal cannot erase the new one. Cleanup removes expired members from the geo set; key TTL on a separate record does not do that automatically. Rebuild after Redis loss from fresh heartbeats/recent retained events and throttle dispatch while coverage recovers.
+**Tradeoffs and recovery.** Moving across cells removes the old membership with a version guard so a late removal cannot erase the new one. Cleanup removes expired members from the geo set; key TTL on a separate record does not do that automatically. Rebuild after Redis loss from fresh heartbeats/recent retained events and throttle dispatch while coverage recovers.
 
 ### How do we give an ETA that reflects uncertainty?
 
-Cooking, driver arrival and travel can overlap. Adding independent component averages can hide long waits, and adding component p90 values does not generally produce the route's p90.
+**Problem.** Cooking, driver arrival and travel can overlap. Adding independent component averages can hide long waits, and adding component p90 values does not generally produce the route's p90.
 
-- **Distance and historical averages:** useful baseline, weak on restaurant queues and changing demand.
-- **Gradient-boosted models with quantile outputs:** strong tabular baseline with measurable interval coverage.
-- **Shared probabilistic model:** can share information across delivery types, with greater serving and training complexity.
+**Options and tradeoffs.**
 
-Start with component-aware gradient-boosted predictions and an end-to-end arrival model. Measure absolute error, late-arrival rate and interval coverage by city, restaurant and order stage. Promote the shared model when it improves those outcomes within the latency budget.
+- **Distance and historical averages:** estimate travel from route length and typical stage times. This is cheap and interpretable, but restaurant queues and changing demand make its error uneven.
+- **Gradient-boosted quantile models:** learn tabular route, restaurant and stage features and predict arrival intervals. They provide a measurable baseline at bounded serving cost; calibration drifts by city and stage and component quantiles cannot simply be added.
+- **Shared probabilistic model:** jointly model related delivery outcomes across stages or tasks. It can share sparse signals and capture dependencies, but training, serving and calibration become more complex and require stronger evidence.
+
+**Choice and rationale.** Start with component-aware gradient-boosted predictions and an end-to-end arrival model. This is a bounded-serving-cost baseline for tabular restaurant, route and order-stage features. We accept periodic recalibration and imperfect tails; a shared probabilistic model must improve cohort-level coverage and lateness within the serving budget.
+
+Measure absolute error, late-arrival rate and interval coverage by city, restaurant and order stage. Promote the shared model when it improves those outcomes within the latency budget.
 
 [DoorDash's probabilistic ETA work](https://careersatdoordash.com/blog/improving-etas-with-multi-task-models-deep-learning-and-probabilistic-forecasts/) separates the arrival distribution from the business decision about what time to display. Apply that separation here: dispatch needs expected route cost and lateness risk, while the user needs a realistic arrival window.
 
 Store feature and model versions with each prediction. Training joins features available at prediction time to completed-delivery outcomes.
 
-**Account for overlap before predicting arrival**
+**How it works — Account for overlap before predicting arrival.**
 
 For a readying restaurant and an approaching driver, pickup begins at the later of their completion times. A useful baseline is `max(food_ready_time, driver_arrival_time)`, followed by handoff and delivery travel. Simply summing preparation and driver travel overstates the wait when they overlap.
 
-```text
-Food preparation -----------|
-Driver approach ------|     | pickup/handoff → delivery travel
-                      later ready stage determines pickup start
+```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  S["Order in<br>progress"] --> P["Food<br>preparation"]
+  S --> A["Driver<br>approach"]
+  P --> J["Wait until<br>both are ready<br>later<br>completion<br>determines<br>pickup start"]
+  A --> J
+  J --> H["Pickup and<br>handoff"]
+  H --> T["Delivery<br>travel"]
+  class S,P,A,H,T request
+  class J control
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 Train the end-to-end output against completed delivery outcomes using features available at each order stage. Record whether the restaurant accepted, preparation started or pickup completed; one model can then condition on the remaining work rather than repeatedly predicting already completed time.
 
-Component distributions are correlated during demand spikes. Adding component P90s gives no general end-to-end P90 guarantee. Use joint/end-to-end quantile outputs or a validated simulation of stage dependence, then calibrate interval coverage by city/restaurant/stage. Dispatch consumes expected cost and lateness risk; the displayed window uses the product's separately chosen percentile policy.
+**Tradeoffs and recovery.** Component distributions are correlated during demand spikes. Adding component P90s gives no general end-to-end P90 guarantee. Use joint/end-to-end quantile outputs or a validated simulation of stage dependence, then calibrate interval coverage by city/restaurant/stage. Dispatch consumes expected cost and lateness risk; the displayed window uses the product's separately chosen percentile policy.
 
 ### How do combined routes remain practical?
 
-Exhaustive route enumeration grows rapidly with the number of stops.
+**Problem.** Exhaustive route enumeration grows rapidly with the number of stops.
 
-- **First feasible insertion:** cheap, but may create poor routes.
-- **Exact optimization over all orders:** finds an optimum within its model, with unpredictable runtime as the search grows.
-- **Bounded insertion and local improvement — recommended:** shortlist compatible orders, insert their stops and improve the route until the deadline.
+**Options and tradeoffs.**
+
+- **First feasible insertion:** place new pickup/drop-off stops at the first valid positions. Computation is small, but a feasible route can still add unnecessary travel or food waiting.
+- **Exact global optimization:** search every allowed route combination. It finds the optimum under the supplied model, but runtime grows rapidly and predictions may change before that optimum is usable.
+- **Bounded insertion with local improvement:** enumerate a shortlist, retain the best feasible route and improve it until the compute deadline. Runtime is controlled and commitments are preserved; the selected route may be locally rather than globally optimal.
+
+**Choice and rationale.** Bounded insertion fits continuously changing routes where a timely feasible plan is more useful than a late global optimum. We accept suboptimality under the deadline and replan only remaining actions as better traffic and readiness information arrives.
 
 Score added travel, food waiting time and missed delivery windows. Keep the best feasible route throughout the search. If traffic changes or a pickup is delayed, replan the remaining stops while preserving completed actions and accepted work.
 
-**Insert stops while preserving precedence**
+**How it works — Insert stops while preserving precedence.**
 
 A new order adds a pickup and a drop-off. Enumerate a bounded set of insertion positions in the driver's remaining route, requiring pickup before its drop-off and retaining already accepted commitments. Recalculate affected leg times and time-window slack.
 
 Reject candidates exceeding capacity, food waiting or lateness limits. Keep the lowest-cost feasible route as the search evaluates local swaps or different insertions.
 
-```text
-Existing: pickup A → drop A
-Candidate: pickup A → pickup B → drop B → drop A
-Checks: capacity, pickup readiness, precedence, both delivery windows
+```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+flowchart TB
+  subgraph Existing["Existing route"]
+    E1["Pickup A"] --> E2["Drop A"]
+  end
+  subgraph Candidate["Candidate<br>route with<br>order B<br>inserted"]
+    C1["Pickup A"] --> C2["Pickup B"]
+    C2 --> C3["Drop B"]
+    C3 --> C4["Drop A"]
+  end
+  Candidate --> V["Validate<br>capacity,<br>pickup<br>readiness,<br>precedence and<br>both delivery<br>windows"]
+  class E1,E2,C1,C2,C3,C4 request
+  class V control
+  style Existing fill:#e8f0fe,stroke:#9aa0a6,color:#202124
+  style Candidate fill:#e6f4ea,stroke:#9aa0a6,color:#202124
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
-Version the route proposal. Driver acceptance checks that the current route/assignment version still matches; otherwise recalculate. Replanning after a delay considers only remaining stops and preserves completed actions. A bounded search may not find the mathematical optimum, but its deadline and feasible-so-far result make its operational behavior predictable.
+**Tradeoffs and recovery.** Version the route proposal. Driver acceptance checks that the current route/assignment version still matches; otherwise recalculate. Replanning after a delay considers only remaining stops and preserves completed actions. A bounded search may not find the mathematical optimum, but its deadline and feasible-so-far result make its operational behavior predictable.

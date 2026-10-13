@@ -5,7 +5,7 @@ category: system-design
 date: 2026-07-08
 tags: [Metrics, Monitoring, Prometheus, Datadog, TSDB]
 thumbnail: /images/posts/system-design-metrics-monitoring.svg
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-12
 description: "Design of a metrics platform that stores operational time series, serves dashboards and delivers alerts."
 notion_source: https://app.notion.com/p/396d865005a881bfbdbaefc1afc270e6
 ---
@@ -127,31 +127,67 @@ Collectors scrape local targets and push batches to the ingestion gateway. A dur
 
 ```mermaid
 flowchart TB
-    C["Collectors"] --> G["Ingestion gateway"]
-    G --> LOG[("Replicated ingest log")]
-    LOG --> I["TSDB materializers"]
+    C["Collectors"] --> G["Ingestion<br>gateway"]
+    G --> LOG[("Replicated<br>ingest log")]
+    LOG --> I["TSDB<br>materializers"]
     I --> B[("Metric blocks")]
     B --> Q["Query service"]
-    Q --> D["Dashboards and API"]
-    Q --> R["Rule evaluators"]
+    Q --> D["Dashboards and<br>API"]
+    Q --> R["Rule<br>evaluators"]
     R --> A["Alertmanager"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class C,G,I,B,Q,D,R,A request
+  class LOG background
 ```
 
 This separation follows the ingest-storage option in [Mimir's architecture](https://grafana.com/docs/mimir/latest/get-started/about-grafana-mimir-architecture/). The operating budgets above remain design targets.
 
 ## Storage
 
-- **Kafka:** replicated ingest partitions keyed by tenant and series identity. Acknowledge only after the configured durable replication condition; retain enough history to replay a failed materializer.
-- **Prometheus-style TSDB blocks:** maintain recent chunks locally, then publish immutable chunks and label indexes to object storage. [Prometheus storage](https://prometheus.io/docs/prometheus/latest/storage/) documents WAL-backed heads, time blocks and background compaction.
+- **[Kafka](/designs/tech-kafka/):** replicated ingest partitions keyed by tenant and series identity. Acknowledge only after the configured durable replication condition; retain enough history to replay a failed materializer.
+- **[Prometheus](/designs/tech-prometheus-grafana/)-style TSDB blocks:** maintain recent chunks locally, then publish immutable chunks and label indexes to object storage. [Prometheus storage](https://prometheus.io/docs/prometheus/latest/storage/) documents WAL-backed heads, time blocks and background compaction.
 - **Object storage:** durable historical blocks, manifests and compaction outputs. Delete source blocks only after the replacement manifest is committed and readers can switch safely.
-- **PostgreSQL:** tenant configuration, versioned rules, notification routing and quotas.
-- **Memcached/Redis:** derived query/index caches. Cache keys include tenant, query, step, time range and relevant data/rule versions.
+- **[PostgreSQL](/designs/tech-postgresql/):** tenant configuration, versioned rules, notification routing and quotas.
+- **[Memcached](/designs/tech-memcached/)/[Redis](/designs/tech-redis/):** derived query/index caches. Cache keys include tenant, query, step, time range and relevant data/rule versions.
 
-PostgreSQL is suitable for control-plane transactions; a specialized TSDB is selected for the high-volume series/index workload. Redis holds derived state rather than the sole retained metric history.
+PostgreSQL is suitable for control-plane transactions; a specialized TSDB is selected for the high-volume series/index workload. [Redis](/designs/tech-redis/) holds derived state rather than the sole retained metric history.
 
-## From request to response
+## Functional scenarios
 
-### Ingesting samples
+### Accepting samples and evaluating an alert
+
+An ingestion acknowledgment covers the retained sample batch, not the completion of every dashboard or alert.
+
+```mermaid
+sequenceDiagram
+  box rgb(232,240,254) Request path
+    participant U as Collector
+    participant A as Ingest gateway
+  end
+  box rgb(230,244,234) Durable state
+    participant D as Durable ingest log
+  end
+  box rgb(232,240,254) TSDB materializer / Alert evaluator
+    participant W as TSDB materializer
+    participant C as Alert evaluator
+  end
+  rect rgb(232,240,254)
+    U->>A: Submit authenticated sample batch
+    A->>A: Validate labels, timestamps and tenant budget
+    A->>D: Append stable batch/sample identities
+    D-->>A: Durable acknowledgment
+  end
+  rect rgb(230,244,234)
+    A-->>U: Accepted batch
+    D->>W: Materialize chunks and label postings
+    C->>W: Evaluate rule at scheduled timestamp
+    C->>C: Persist state, dispatch deduplicated notification
+  end
+```
+
+Materializers expose samples to the query engine; an evaluator then records a pending/firing transition before notification delivery.
 
 1. A collector scrapes counters, gauges and histograms, batches samples and keeps a bounded local retry buffer.
 2. The gateway authenticates the tenant, validates labels/timestamps and applies throughput and active-series limits.
@@ -175,15 +211,48 @@ A label selector does not reveal which hash shards contain matches by itself. Se
 
 Evaluate each rule group on a configured interval, for example 15 seconds. A true expression enters pending, stays active for the `for` duration and then becomes firing. Missing/stale data has explicit rule semantics. [Prometheus alerting rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/) define these transitions.
 
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    participant E as Rule evaluator
+    participant Q as Query engine
+    participant S as Alert state store
+    participant N as Notification router
+    participant U as On-call user
+    rect rgb(232, 240, 254)
+        E->>Q: Evaluate rule at scheduled time
+        Q-->>E: Successful true result
+        E->>S: Record pending and active_since
+    end
+    rect rgb(254, 247, 224)
+        E->>Q: Evaluate later tick
+        Q-->>E: Condition still true
+        E->>S: Commit firing after hold duration
+    end
+    rect rgb(230, 244, 234)
+        E->>N: Send versioned firing state
+        N->>N: Group and apply routing policy
+        N-->>U: Deliver notification
+    end
+```
+
+The first true evaluation starts the hold interval; later successful evaluations establish continuity before firing. Query errors follow the rule's error policy rather than clearing it as a healthy false result. Notification grouping and delivery add their own delay after the state transition.
+
 Send firing and resolved state to [Alertmanager](https://prometheus.io/docs/alerting/latest/alertmanager/) for grouping, inhibition, silences and routing. Restore pending state carefully after restart, and expose evaluation failures separately from healthy “no alert” results.
 
 ## Deep dives
 
 ### Which storage model fits this workload?
 
-At 1M samples/s, a separate database row and index entry for every sample creates substantial write amplification. Queries usually read many consecutive samples from the same series, so the physical layout should make that access cheap.
+**Problem.** At 1M samples/s, a separate database row and index entry for every sample creates substantial write amplification. Queries usually read many consecutive samples from the same series, so the physical layout should make that access cheap.
 
-Partitioned PostgreSQL provides familiar transactions and SQL but requires careful sharding and index budgeting at this scale. An LSM key-value store improves append throughput, although we would still need to implement label indexes and time-series query semantics. **Use a Prometheus-style TSDB for samples**, with PostgreSQL retaining control-plane configuration.
+**Options and tradeoffs.**
+
+- **Partitioned PostgreSQL:** batch samples into time partitions with series/time indexes. SQL and familiar recovery are available, but row/index overhead and sharding work grow at the stated 1M samples/s.
+- **LSM key-value storage:** append series/time keys into sorted runs and compact them in the background. Write throughput improves, but label postings, compression and PromQL semantics still need a dedicated implementation, and compaction competes with reads.
+- **Prometheus-style TSDB:** append compressed series chunks with label postings and time-partitioned blocks. The physical layout matches repeated range reads; compaction, series admission and distributed query/recovery remain explicit operating responsibilities.
+
+**Choice and rationale.** Use a Prometheus-style TSDB for samples and PostgreSQL for transactional configuration. Series chunks and label postings match the stated sample rate and consecutive range reads. The accepted cost is specialized query/recovery operations and temporary compaction space, rather than a relational row/index entry per sample.
 
 **How the write path works**
 
@@ -193,21 +262,26 @@ Regular timestamps compress well with delta-of-delta encoding: a steady 15-secon
 
 ```mermaid
 flowchart TB
-    L["Replicated ingest log"] --> H["Recent head<br>series index and chunks"]
-    H --> S["Seal time block"]
-    S --> O[("Object storage<br>chunks and label index")]
-    O --> C["Compact compatible blocks"]
-    C --> M["Publish replacement manifest"]
-    M --> G["Retire old blocks<br>after reader safety window"]
+    L["Replicated<br>ingest log"] --> H["Recent head<br>series index<br>and chunks"]
+    H --> S["Seal time<br>block"]
+    S --> O[("Object storage<br>chunks and<br>label index")]
+    O --> C["Compact<br>compatible<br>blocks"]
+    C --> M["Publish<br>replacement<br>manifest"]
+    M --> G["Retire old<br>blocks<br>after reader<br>safety window"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class S,G request
+  class L,H,O,C,M background
 ```
 
 Recent queries read the head; older queries prune immutable blocks by time and then use their label indexes. Compaction combines adjacent blocks, rewrites chunks and indexes, and publishes the replacement before reclaiming its inputs. Readers pin a manifest generation so a concurrent compaction cannot remove files they still need.
 
-A crash before manifest publication leaves an unreferenced output that can be reclaimed. A crash afterward leaves a valid replacement plus obsolete inputs. Replay resumes from a checkpoint only when the corresponding materialized data is recoverable; advancing the checkpoint first could skip accepted samples. Provision temporary disk space and background-worker limits for compaction and replay, and measure ingest lag while broad queries are running.
+**Tradeoffs and recovery.** A crash before manifest publication leaves an unreferenced output that can be reclaimed. A crash afterward leaves a valid replacement plus obsolete inputs. Replay resumes from a checkpoint only when the corresponding materialized data is recoverable; advancing the checkpoint first could skip accepted samples. Provision temporary disk space and background-worker limits for compaction and replay, and measure ingest lag while broad queries are running.
 
 ### How do we contain label cardinality?
 
-A metric named `http_requests_total` is not one series. Each distinct combination of tenant, metric name and labels creates its own series, index entries and recent-data state. A raw URL or user ID can turn a bounded service metric into millions of identities.
+**Problem.** A metric named `http_requests_total` is not one series. Each distinct combination of tenant, metric name and labels creates its own series, index entries and recent-data state. A raw URL or user ID can turn a bounded service metric into millions of identities.
 
 ```text
 5 methods × 10 statuses × 200 route templates = 10,000 series
@@ -215,7 +289,13 @@ Adding 100,000 user IDs can expand the theoretical space to 1 billion.
 Actual series depend on which combinations are observed.
 ```
 
-Allowing arbitrary labels provides flexibility but makes memory use unpredictable. Dropping a label after ingestion changes identity and can merge unrelated measurements. **Enforce explicit per-tenant active-series and new-series-rate budgets**, while encouraging bounded instrumentation.
+**Options and tradeoffs.**
+
+- **Arbitrary labels:** admit every observed label combination. Instrumentation is flexible, but user IDs and raw URLs can create unbounded memory/index state.
+- **Drop labels after ingestion:** reduce dimensions downstream. Series counts may fall, but unrelated measurements can merge and already-created index state has already incurred the cost.
+- **Explicit admission budgets:** canonicalize identity and grant each tenant bounded active-series and new-series-rate capacity before materialization. Memory and churn are controlled; legitimate new metrics may be rejected and distributed quota grants need accounting and expiry.
+
+**Choice and rationale.** Enforce explicit per-tenant active-series and new-series-rate budgets before materialization. This isolates a bad instrumentation rollout while preserving admitted series. Excess new identities receive actionable rejection reasons; distributed grants and expiry add quota state, and historical retention is budgeted separately.
 
 The gateway canonicalizes labels, validates size/count limits and routes the series to its owner. The owner checks whether the identity already exists. Existing admitted series continue through the ingestion path; a new identity consumes a series admission slot. Each shard receives a bounded share of the tenant's quota, and the sum of those grants stays within the global budget. This avoids a global transaction for every sample while preventing simultaneous shard admissions from bypassing the limit.
 
@@ -223,13 +303,19 @@ Normalize `/users/123` to a route label such as `/users/{id}`. Keep the request 
 
 For a rollout that suddenly adds a high-cardinality label, reject excess new identities with an explicit reason and emit rejection counters from the platform's own protected telemetry path. Return batch errors with enough detail for a collector to distinguish retryable overload from a permanent label violation. Blindly retrying the latter would increase the load.
 
-Active-series budgets protect memory; new-series-rate budgets protect index churn. Expire admission state only after the agreed inactivity interval and account for historical index/storage retention separately. Monitor both the total and its largest contributors so an engineer can identify the specific metric or label responsible.
+**Tradeoffs and recovery.** Active-series budgets protect memory; new-series-rate budgets protect index churn. Expire admission state only after the agreed inactivity interval and account for historical index/storage retention separately. Monitor both the total and its largest contributors so an engineer can identify the specific metric or label responsible.
 
 ### Should alerts be stream-driven or periodically evaluated?
 
-Consider an alert that fires when a service's error rate exceeds 5% for two minutes. Its result depends on a five-minute window, and it must preserve the same service-level grouping at every evaluation. Evaluating every rule for every arriving sample would repeat work and would still need timers for missing data.
+**Problem.** Consider an alert that fires when a service's error rate exceeds 5% for two minutes. Its result depends on a five-minute window, and it must preserve the same service-level grouping at every evaluation. Evaluating every rule for every arriving sample would repeat work and would still need timers for missing data.
 
-A specialized stream processor can maintain incremental sums and timers, but full PromQL also includes joins, range functions and recording-rule dependencies. **Use periodic evaluation through the existing query engine**. Keep streaming evaluation for separately defined, restricted rules that genuinely need lower latency.
+**Options and tradeoffs.**
+
+- **Periodic query evaluation:** run each rule at a scheduled timestamp using the query engine's established range/join semantics. Full PromQL and missing-data timers share one model; detection includes one interval plus ingestion/query and configured hold time.
+- **Evaluate all rules for every sample:** repeatedly execute rules when data arrives. Simple rules can react quickly, but the stated ingest rate multiplies work and absent data still needs timers.
+- **Indexed streaming evaluation:** maintain incremental state only for a restricted supported rule language and series-to-rule dependencies. Specialized rules can be low latency; state/checkpoint recovery, late data and unsupported operators need a separate contract.
+
+**Choice and rationale.** Evaluate full PromQL periodically through the existing query engine and reserve capacity for rule groups. This preserves established range, join and missing-data semantics. We accept one tick of scheduling delay plus ingestion/query and configured hold time; lower-latency streaming is a separately defined restricted rule contract.
 
 The proposed rule is:
 
@@ -251,36 +337,55 @@ groups:
 
 The evaluator runs the expression at a scheduled timestamp, using the same timestamp for numerator and denominator. Each returned service label set identifies a separate alert instance. On the first true result it records `pending` and `active_since`; continuing true results retain that timestamp. After two minutes it becomes `firing`. A false result clears the pending interval. These are the [Prometheus alert-state semantics](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/).
 
-```text
-12:00:00  true   pending starts
-12:00:15  true   pending
-...             every successful evaluation remains true
-12:02:00  true   firing
-12:02:15  false  resolved
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryTextColor":"#202124","primaryBorderColor":"#9aa0a6","lineColor":"#5f6368","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteTextColor":"#202124","noteBorderColor":"#9aa0a6","signalColor":"#5f6368","signalTextColor":"#202124","labelBoxBkgColor":"#fef7e0","labelBoxBorderColor":"#9aa0a6"}}}%%
+flowchart TB
+  P["12:00:00:<br>pending starts"] -->|"Successful true"| W["12:00:15<br>onward:<br>pending"]
+  W -->|"True evaluation at 12:02:00<br>two-minute hold complete"| F["12:02:00:<br>firing"]
+  F -->|"12:02:15: false"| R["Resolved"]
+  W -->|"False before 2m"| X["Clear pending<br>interval"]
+  class P,W,F,R control
+  class X request
+classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
+classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
+classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
+classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
 If the first visible breach arrives just after a tick, the next evaluation adds up to one interval of scheduling delay. Ingestion visibility lag, query execution, the two-minute hold and notification grouping add separate delays. Track each component rather than advertising a 15-second end-to-end alert guarantee.
 
 Assign rule groups to evaluators with versioned ownership. Persist the rule version, label identity, state and last successful evaluation; on takeover, restore pending state only when continuity can be established. A query error raises an evaluation-health signal and follows an explicit no-data/error policy. It must not silently count as a healthy false result.
 
-Send alert state to [Alertmanager](https://prometheus.io/docs/alerting/latest/alertmanager/) for grouping, silences, inhibition and routing. Its notification timing is separate from expression evaluation. Reserve query capacity for alert rules and monitor overdue groups, evaluation errors and notification failures.
+**Tradeoffs and recovery.** Send alert state to [Alertmanager](https://prometheus.io/docs/alerting/latest/alertmanager/) for grouping, silences, inhibition and routing. Its notification timing is separate from expression evaluation. Reserve query capacity for alert rules and monitor overdue groups, evaluation errors and notification failures.
 
 ### How do broad queries stay bounded and correct?
 
-A seven-day query over 10K series sampled every 15 seconds can read about 403M points. Adding workers reduces individual scan time, but every worker also consumes memory and produces results that need a correct merge.
+**Problem.** A seven-day query over 10K series sampled every 15 seconds can read about 403M points. Adding workers reduces individual scan time, but every worker also consumes memory and produces results that need a correct merge.
 
-One worker gives straightforward semantics with a limited resource ceiling. Unbounded fan-out amplifies load and exposes the request to the slowest shard. **Use a query planner with work budgets, bounded parallelism and operator-aware splitting**, then use recording rules for frequently repeated expensive expressions.
+**Options and tradeoffs.**
+
+- **Single worker:** execute one complete expression without distributed merges. Semantics are straightforward, but one worker's memory and scan capacity cap long/high-cardinality queries.
+- **Unbounded fan-out:** send work to every eligible shard at once. Individual scans can finish sooner, but concurrency, stragglers and merge memory amplify load for all tenants.
+- **Budgeted operator-aware splitting:** plan required lookback, split independent time/series work and cap scanned data/concurrency. Parallelism remains controlled and merges preserve operator quantities; some joins need global inputs and oversized queries must be rejected or explicitly partial.
+
+**Choice and rationale.** Use work budgets, bounded parallelism and operator-aware splitting, then recording rules for repeated expensive expressions. This shares scan capacity without changing lookback or merge semantics and protects alert evaluation. Oversized queries are rejected or clearly partial under policy; unlimited fan-out is not the fallback.
 
 For `sum(rate(http_requests_total[5m]))`, a time split at 13:00 must still read the previous five minutes for the first evaluation after that boundary. Splitting only the raw 13:00-onward samples would change the rate.
 
 ```mermaid
 flowchart TB
-    Q["Query and tenant budget"] --> P["Plan output timestamps<br>and required lookback"]
-    P --> A["Worker A<br>12:00 to 13:00 outputs"]
-    P --> B["Worker B<br>13:00 to 14:00 outputs"]
-    A --> M["Merge by series and timestamp<br>then evaluate global grouping"]
+    Q["Query and<br>tenant budget"] --> P["Plan output<br>timestamps<br>and required<br>lookback"]
+    P --> A["Worker A<br>12:00 to 13:00<br>outputs"]
+    P --> B["Worker B<br>13:00 to 14:00<br>outputs"]
+    A --> M["Merge by<br>series and<br>timestamp<br>then evaluate<br>global<br>grouping"]
     B --> M
-    M --> R["Result and completeness status"]
+    M --> R["Result and<br>completeness<br>status"]
+  classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
+  class P,M,R request
+  class A,B background
+  class Q control
 ```
 
 Worker B reads from 12:55 for its 13:00 output. Both workers align to the same requested step; the coordinator assigns each output timestamp to one split. Hash-partitioned series may require several storage shards even for a selective label query. Each shard prunes locally using postings; a directory is needed before the coordinator can safely skip a shard.
@@ -294,4 +399,4 @@ The merge preserves the quantity required by each operator:
 
 [Prometheus function semantics](https://prometheus.io/docs/prometheus/latest/querying/functions/) provide the baseline; distributed execution must preserve them. Joins and other operators that need complete global inputs receive a plan that collects those inputs within a budget.
 
-Charge work against scanned-series, scanned-sample, bytes and concurrency limits. Cancel child tasks when the deadline expires. A dashboard can accept clearly marked partial results; a critical alert rule should use the configured error policy instead of treating an incomplete sum as authoritative. Cache immutable historical intervals and benchmark the planner against a single-engine reference using counter resets, duplicate replicas and split-boundary cases.
+**Tradeoffs and recovery.** Charge work against scanned-series, scanned-sample, bytes and concurrency limits. Cancel child tasks when the deadline expires. A dashboard can accept clearly marked partial results; a critical alert rule should use the configured error policy instead of treating an incomplete sum as authoritative. Cache immutable historical intervals and benchmark the planner against a single-engine reference using counter resets, duplicate replicas and split-boundary cases.
