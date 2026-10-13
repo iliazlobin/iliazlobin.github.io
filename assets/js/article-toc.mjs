@@ -1,3 +1,5 @@
+import { readHeaderHeight } from './site-header.mjs';
+
 /** Pick the latest section above the reading line, including a short final section. */
 export function selectActiveHeading(positions, readingLine = 32, atBottom = false) {
   if (!positions.length) return null;
@@ -45,7 +47,7 @@ export function setupArticleToc(article, view = window) {
     frame = null;
     const height = document.documentElement.scrollHeight;
     const atBottom = view.scrollY + view.innerHeight >= height - 2;
-    const next = selectActiveHeading(entries.map(({ heading, id }) => ({ id, top: heading.getBoundingClientRect().top })), 32, atBottom);
+    const next = selectActiveHeading(entries.map(({ heading, id }) => ({ id, top: heading.getBoundingClientRect().top })), readHeaderHeight(document, view) + 32, atBottom);
     if (next !== activeId) {
       activeId = next;
       for (const { link, id } of entries) {

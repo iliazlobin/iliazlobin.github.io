@@ -218,7 +218,8 @@
       if (desktop.matches) {
         alignCard(card);
       } else {
-        window.scrollTo({ top: window.scrollY + card.getBoundingClientRect().top - controls.offsetHeight - 16,
+        var headerHeight = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--site-header-height')) || 0;
+        window.scrollTo({ top: window.scrollY + card.getBoundingClientRect().top - headerHeight - controls.offsetHeight - 16,
           behavior: reduceMotion ? "auto" : "smooth" });
       }
       markActive(card);

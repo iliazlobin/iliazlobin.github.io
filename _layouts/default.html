@@ -28,7 +28,9 @@
     {%- include footer.html -%}
     <script src="{{ '/assets/js/site.js' | relative_url }}?v={{ site.time | date: '%s' }}" defer></script>
     <script type="module">
+      import { setupStickyHeader } from "{{ '/assets/js/site-header.mjs' | relative_url }}?v={{ site.time | date: '%s' }}";
       import { setupMediaZoom } from "{{ '/assets/js/media-zoom.mjs' | relative_url }}?v={{ site.time | date: '%s' }}";
+      setupStickyHeader(document);
       setupMediaZoom(document);
     </script>
   </body>

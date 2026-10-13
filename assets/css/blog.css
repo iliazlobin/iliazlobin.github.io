@@ -7,7 +7,7 @@
 
 /* Controls: tag autocomplete filter (sticky) */
 .blog-controls {
-  position: sticky; top: 0; z-index: 30; background: var(--bg);
+  position: sticky; top: var(--site-header-height); z-index: 30; background: var(--bg);
   padding: .8rem 1.1rem; margin-bottom: .2rem; border-bottom: 1px solid var(--line);
   display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; justify-content: space-between;
 }
