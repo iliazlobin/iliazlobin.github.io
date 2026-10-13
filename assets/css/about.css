@@ -4,7 +4,7 @@
   align-items: start;
   gap: 2rem;
   max-width: 850px;
-  margin: 1.2rem 0 1.75rem;
+  margin: 1.2rem auto 1.75rem;
 }
 
 .about-lead {
@@ -40,6 +40,7 @@
 
 .about-section {
   max-width: 850px;
+  margin-inline: auto;
   margin-top: 1.4rem;
   padding-top: 1.2rem;
   border-top: 1px solid var(--line);
