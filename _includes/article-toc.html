@@ -61,7 +61,7 @@
 {%- for toc_open_level in toc_stack -%}</li></ol>{%- endfor -%}
 {%- endcapture -%}
 {%- if toc_count > 0 -%}
-<aside class="article-toc" data-article-toc>
+<aside class="article-toc" data-article-toc aria-label="On this page">
   <details class="article-toc-panel" open>
     <summary>On this page</summary>
     <nav aria-label="On this page">{{ toc_items }}</nav>

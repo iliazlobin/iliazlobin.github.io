@@ -35,6 +35,11 @@ class Page(HTMLParser):
         self.headings = []
         self.articles = []
         self.table_rows = []
+        self.document_shells = 0
+        self.article_navigations = 0
+        self.library_links = []
+        self.current_articles = []
+        self.article_skip_links = []
         self._navigation_text = None
         self._heading_text = None
         self._row = None
@@ -42,6 +47,16 @@ class Page(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if "data-document-shell" in attrs:
+            self.document_shells += 1
+        if tag == "nav" and attrs.get("aria-label") == "Article navigation":
+            self.article_navigations += 1
+        if tag == "a" and "data-article-link" in attrs:
+            self.library_links.append(attrs.get("href"))
+            if attrs.get("aria-current") == "page":
+                self.current_articles.append(attrs.get("href"))
+        if tag == "a" and "document-skip" in attrs.get("class", "").split():
+            self.article_skip_links.append(attrs.get("href"))
         for attribute in ("href", "src", "poster"):
             if attrs.get(attribute):
                 self.resources.append(attrs[attribute])
@@ -88,13 +103,29 @@ def route_file(root, route):
 
 def check_document_layout(root, errors):
     document_count = 0
-    for source in (root / "designs").glob("*/index.html"):
+    sources = list((root / "designs").glob("*/index.html"))
+    expected_articles = set()
+    for source in sources:
+        candidate = Page()
+        candidate.feed(source.read_text(encoding="utf-8"))
+        if any("post" in classes for classes in candidate.articles):
+            expected_articles.add("/" + source.parent.relative_to(root).as_posix() + "/")
+    for source in sources:
         page = Page()
         page.feed(source.read_text(encoding="utf-8"))
         posts = [classes for classes in page.articles if "post" in classes]
         if not posts:
             continue
         document_count += 1
+        route = "/" + source.parent.relative_to(root).as_posix() + "/"
+        if page.document_shells != 1 or page.article_navigations != 1:
+            errors.append(f"{source}: missing or duplicate documentation shell/navigation")
+        if len(page.library_links) != len(expected_articles) or set(page.library_links) != expected_articles:
+            errors.append(f"{source}: article navigation must preserve every distinct article URL")
+        if page.current_articles != [route]:
+            errors.append(f"{source}: expected exactly one current article, got {page.current_articles!r}")
+        if page.article_skip_links != ["#document-article"]:
+            errors.append(f"{source}: missing skip-to-article link")
         if any("post--document" not in classes for classes in posts):
             errors.append(f"{source}: missing compact document scope")
         styles = [urlsplit(resource).path for resource in page.resources if ".css" in resource]
@@ -112,7 +143,7 @@ def check_document_layout(root, errors):
         source = route_file(root, route)
         if source.is_file():
             html = source.read_text(encoding="utf-8")
-            if "post--document" in html or "/assets/css/documents.css" in html or "data-article-toc" in html:
+            if "post--document" in html or "/assets/css/documents.css" in html or "data-article-toc" in html or "data-document-shell" in html or "data-document-nav" in html:
                 errors.append(f"{route}: document styles leaked outside articles")
 
     for source in (root / "blog").glob("**/index.html"):
