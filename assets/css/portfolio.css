@@ -13,7 +13,7 @@
 }
 
 /* ---- Left timeline rail ---- */
-.portfolio-rail { position: sticky; top: 1.5rem; align-self: start; }
+.portfolio-rail { position: sticky; top: calc(var(--site-header-height) + 1.5rem); align-self: start; }
 .rail-group + .rail-group { margin-top: 1.5rem; }
 .rail-title {
   font-size: .74rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
@@ -151,7 +151,7 @@
    category pages share the blog's setupBlogFilter() UI (same class contract).
    ========================================================================== */
 .blog-controls {
-  position: sticky; top: 0; z-index: 30; background: var(--bg);
+  position: sticky; top: var(--site-header-height); z-index: 30; background: var(--bg);
   padding: .8rem 0 .8rem; margin-bottom: 1.2rem; border-bottom: 1px solid var(--line);
   display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; justify-content: space-between;
 }

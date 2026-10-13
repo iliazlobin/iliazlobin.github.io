@@ -44,7 +44,7 @@
   }
   .post--document .document-body > .post-content { grid-column: 1; grid-row: 1; }
   .post--document .article-toc {
-    grid-column: 2; grid-row: 1; position: sticky; top: 1.25rem;
+    grid-column: 2; grid-row: 1; position: sticky; top: calc(var(--site-header-height) + 1.25rem);
     align-self: start; margin: 0;
   }
   .post--document .article-toc-panel { border: 0; border-left: 1px solid #dadce0; border-radius: 0; background: none; }
@@ -53,7 +53,7 @@
   /* The server-rendered outline is open for no-JS readers. The enhancement
      keeps desktop persistent and collapses this disclosure on narrow screens. */
   .post--document .article-toc nav {
-    max-height: calc(100vh - 5rem); max-height: calc(100dvh - 5rem);
+    max-height: calc(100vh - var(--site-header-height) - 5rem); max-height: calc(100dvh - var(--site-header-height) - 5rem);
     padding-top: .15rem;
   }
 }

@@ -11,7 +11,7 @@ test("scrollspy follows the reading line, including short final sections", () =>
   assert.equal(selectActiveHeading([]), null);
 });
 
-function fixture({ desktop = true, invalidLink = false } = {}) {
+function fixture({ desktop = true, invalidLink = false, headerHeight = 0 } = {}) {
   const events = new Map();
   const frames = new Map();
   const mediaEvents = new Map();
@@ -42,6 +42,7 @@ function fixture({ desktop = true, invalidLink = false } = {}) {
   const media = { matches: desktop, addEventListener: (name, callback) => mediaEvents.set(name, callback), removeEventListener: name => mediaEvents.delete(name) };
   const view = {
     scrollY: 0, innerHeight: 500, matchMedia: () => media,
+    getComputedStyle: () => ({ getPropertyValue: () => `${headerHeight}px` }),
     requestAnimationFrame(callback) { const id = ++frameCounter; frames.set(id, callback); return id; },
     cancelAnimationFrame(id) { frames.delete(id); },
     addEventListener: (name, callback) => events.set(name, callback),
@@ -66,6 +67,14 @@ test("preserves custom heading IDs and sets only one active location", () => {
   assert.equal(dom.links[1].attrs["aria-current"], "location");
   assert.equal(dom.links[0].attrs["aria-current"], undefined);
   assert.equal(dom.links.filter(link => link.attrs["aria-current"]).length, 1);
+});
+
+test("scrollspy uses the visible reading line below the persistent header", () => {
+  const dom = fixture({ headerHeight: 64 });
+  dom.headings[1].box.top = 80;
+  setupArticleToc(dom.article, dom.view);
+  assert.equal(dom.links[1].attrs["aria-current"], "location");
+  assert.equal(dom.links[0].attrs["aria-current"], undefined);
 });
 
 test("navigation keeps native fragments/history and focuses the target without heading clicks or clipboard writes", () => {
@@ -158,7 +167,8 @@ test("collection-scoped markup provides nested plain anchors with a responsive s
   assert.match(css, /@media \(min-width: 1240px\)/);
   assert.doesNotMatch(css, /\.wrapper/);
   assert.match(css, /grid-template-columns: minmax\(0, 1fr\) 240px/);
-  assert.match(css, /position: sticky; top: 1\.25rem/);
+  assert.match(css, /position: sticky; top: calc\(var\(--site-header-height\) \+ 1\.25rem\)/);
+  assert.match(css, /max-height: calc\(100dvh - var\(--site-header-height\) - 5rem\)/);
   assert.match(css, /overflow-y: auto/);
   assert.match(css, /focus-visible/);
   assert.doesNotMatch(css, /overflow(?:-x)?\s*:\s*hidden/);

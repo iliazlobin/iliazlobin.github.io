@@ -15,7 +15,7 @@ test("the website hides pending source and shows a readable render failure", asy
     .replace(/^\s*import .*;$/gm, "");
   const css = readFileSync(new URL("../assets/css/blog.css", import.meta.url), "utf8");
   assert.match(css, /\.post-content \.mermaid--pending\s*\{\s*visibility:\s*hidden/);
-  const mounted = [];
+  const mounted = [], readyEvents = [];
   const blocks = ["flowchart TB\nA --> B", "invalid diagram", "flowchart TB\nC --> D"].map(textContent => ({
     textContent, querySelector: () => null, matches: () => false,
     parentNode: {replaceChild: div => mounted.push(div)},
@@ -33,9 +33,14 @@ test("the website hides pending source and shows a readable render failure", asy
   const firstReady = new Promise(resolve => { finishFirst = resolve; });
   let attempts = 0;
   const render = runInNewContext(`(async () => { ${script} })()`, {
+    Event,
     document: {createElement,
       querySelectorAll: selector => selector.includes("language-mermaid") ? blocks : mounted,
-      querySelector: () => mounted[0]},
+      querySelector: () => mounted[0],
+      dispatchEvent(event) {
+        assert.ok(mounted.every(div => div.attributes['aria-busy'] === 'false'));
+        readyEvents.push(event.type);
+      }},
     normalizeDiagramStyles: source => source, createDiagramConfig: () => ({}),
     console: {error() {}},
     mermaid: {initialize() {}, async run({nodes: [div]}) {
@@ -51,6 +56,7 @@ test("the website hides pending source and shows a readable render failure", asy
   }
   finishFirst();
   await render;
+  assert.deepEqual(readyEvents, ['site:diagrams-ready']);
   assert.ok(mounted[0].svg);
   assert.ok(mounted[2].svg, "a failed diagram must not prevent later renders");
   assert.equal(mounted[1].textContent, "Diagram unavailable. Please reload this page.");
