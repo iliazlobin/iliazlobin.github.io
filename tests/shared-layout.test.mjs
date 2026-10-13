@@ -26,6 +26,18 @@ test("listing and document styles cannot override shared shell widths or gutters
   }
 });
 
+test("About reading blocks are centered without changing the shared shell or text alignment", () => {
+  const css = read("assets/css/about.css");
+  const intro = css.match(/\.about-intro\s*\{([^}]*)\}/)[1];
+  const section = css.match(/\.about-section\s*\{([^}]*)\}/)[1];
+  assert.match(intro, /max-width:\s*850px/);
+  assert.match(intro, /margin:\s*1\.2rem auto 1\.75rem/);
+  assert.match(section, /max-width:\s*850px/);
+  assert.match(section, /margin-inline:\s*auto/);
+  assert.doesNotMatch(css, /\.wrapper|text-align:\s*center/);
+  assert.match(css, /@media \(max-width: 600px\)[\s\S]*grid-template-columns:\s*1fr/);
+});
+
 test("page listings avoid article card padding while article prose stays readable", () => {
   assert.match(read("_layouts/page.html"), /<article class="post post--page">/);
   const css = read("assets/css/blog.css");
