@@ -7,7 +7,7 @@ tags: [Distributed-Systems, Geospatial, Real-Time, Event-Driven, Interview-Prep]
 thumbnail: /images/posts/2026-06-29-system-design-local-delivery.svg
 redirect_from:
   - /2026/06/29/system-design-local-delivery.html
-last_modified_at: 2026-10-07
+last_modified_at: 2026-10-12
 description: "Design of a local-delivery service for restaurant discovery, checkout, courier assignment and live order tracking."
 notion_source: https://app.notion.com/p/390d865005a8815eacb7f67fac34884a
 ---
@@ -163,13 +163,13 @@ flowchart TB
   API --> S["Search"]
   API --> O["Order service"]
   O --> DB[("PostgreSQL")]
-  O --> P["Payment provider"]
+  O --> P["Payment<br>provider"]
   DB --> E["Order events"]
   E --> MATCH["Dispatch"]
   MATCH --> DB
-  D --> L["Location ingest"]
-  L --> GPS["Location stream"]
-  GPS --> GEO[("Redis geo index")]
+  D --> L["Location<br>ingest"]
+  L --> GPS["Location<br>stream"]
+  GPS --> GEO[("Redis geo<br>index")]
   MATCH --> GEO
   GPS --> ETA["ETA / tracking"]
   ETA --> C
@@ -191,9 +191,9 @@ flowchart TB
 
 Redis GEO members have no individual TTL. Store freshness per courier and remove expired members explicitly.
 
-## From request to response
+## Functional scenarios
 
-### One end-to-end request
+### Placing an order and starting fulfilment
 
 Checkout commits an order and payment intent before external workflow calls.
 
@@ -226,8 +226,6 @@ sequenceDiagram
 
 Dispatch uses fresh geographic candidates, but assignment is confirmed by the transaction that claims both the order and courier capacity.
 
-### Checkout and restaurant confirmation
-
 The API validates the cart, price and service area, then stores the order, idempotency record and payment intent in a transaction. The payment worker authorizes the exact operation with a stable provider key. A successful authorization moves the order to restaurant confirmation.
 
 The restaurant accepts or rejects against the expected order version. Rejection triggers an authorization void; acceptance makes the order eligible for dispatch. Capture occurs at the defined fulfilment milestone, with reconciliation for ambiguous provider responses.
@@ -235,6 +233,33 @@ The restaurant accepts or rejects against the expected order version. Rejection 
 ### Assigning a courier
 
 Dispatch retrieves nearby, available couriers with recent positions and estimates road travel time. It creates time-limited offers and sends notifications.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    participant D as Dispatch
+    participant C as Courier
+    participant O as Order store
+    participant U as Customer
+    rect rgb(232, 240, 254)
+        D->>D: Shortlist fresh nearby couriers
+        D-->>C: Expiring order offer
+        C->>D: Accept offer
+    end
+    rect rgb(254, 247, 224)
+        D->>O: Claim order and courier capacity
+        alt Offer and capacity are still valid
+            O-->>D: Assignment committed
+            D-->>C: Confirmed assignment
+            D-->>U: Courier assigned
+        else Another claim won or offer expired
+            O-->>D: Current outcome
+            D-->>C: Offer no longer available
+        end
+    end
+```
+
+A geographic match proposes a courier; the transaction confirms the assignment. Competing accepts cannot each spend the same courier capacity or claim the same order. Notifications follow the committed outcome, and an expired offer starts another bounded dispatch round.
 
 An acceptance transaction checks the offer, order state and courier capacity together. It assigns the order once and publishes the result through the outbox. Expired or losing offers return their current outcome.
 
@@ -252,11 +277,13 @@ Full courier scans and repeated customer polling add unnecessary work. Geographi
 
 **Problem.** The closest courier may have a slow road route, and multiple orders can compete for the same courier.
 
+**Options and tradeoffs.**
+
 - **Nearest-distance assignment:** choose the closest geographic candidate. Lookup is fast, but road travel, workload and food readiness can make that courier a poor choice.
 - **Scored candidates with limited offers:** shortlist fresh couriers, estimate route/workload cost and send a bounded number of expiring offers. Decisions stay timely and explainable; prediction errors and offer expiry require retries, and the database must resolve simultaneous acceptances.
 - **Market-wide optimizer:** jointly assign many orders and couriers. Scarce capacity can be used more efficiently, but batch waiting and solver/runtime complexity need a deadline and feasible fallback.
 
-**Recommendation.** Retrieve a bounded geographic candidate set, score travel time and workload, and send a small number of offers. Commit assignment through a transaction covering both order ownership and courier capacity. Redis availability narrows candidates; it is advisory. Bounded scored offers fit the proposed dispatch path without delaying every order for a market-wide solve. We accept locally suboptimal assignments and offer retries; dense markets can add bounded optimization after measuring that cost.
+**Choice and rationale.** Retrieve a bounded geographic candidate set, score travel time and workload, and send a small number of offers. Commit assignment through a transaction covering both order ownership and courier capacity. Redis availability narrows candidates; it is advisory. Bounded scored offers fit the proposed dispatch path without delaying every order for a market-wide solve. We accept locally suboptimal assignments and offer retries; dense markets can add bounded optimization after measuring that cost.
 
 Dense markets can add batched optimization, as described in [DoorDash's dispatch architecture](https://careersatdoordash.com/blog/using-ml-and-optimization-to-solve-doordashs-dispatch-problem/). Use a time-bounded solver and a feasible fallback. Measure assignment time, acceptance rate, lateness and courier utilization; a 30-second offer window makes a universal three-second completed assignment unrealistic.
 
@@ -266,28 +293,30 @@ Create an offer with order ID, courier ID, expiry and assignment generation. On 
 
 ```mermaid
 flowchart TB
-  O["Order ready for dispatch"] --> G["Fresh nearby couriers"]
-  G --> S["Route and workload scoring"]
+  O["Order ready<br>for dispatch"] --> G["Fresh nearby<br>couriers"]
+  G --> S["Route and<br>workload<br>scoring"]
   S --> F["Bounded offers"]
-  F --> A["Acceptance transaction"]
-  A --> C["Order and capacity committed"]
+  F --> A["Acceptance<br>transaction"]
+  A --> C["Order and<br>capacity<br>committed"]
   classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
   class O,G,S,F,A,C request
 ```
 
-If an offer times out, advance the assignment generation before issuing replacements. A delayed acceptance for the old generation cannot take the order back. The optimization budget ends with a feasible fallback so a stalled solver does not halt dispatch.
+**Tradeoffs and recovery.** If an offer times out, advance the assignment generation before issuing replacements. A delayed acceptance for the old generation cannot take the order back. The optimization budget ends with a feasible fallback so a stalled solver does not halt dispatch.
 
 ### Current locations under streaming load
 
 **Problem.** Old or reordered GPS events can move a courier backwards or leave a disconnected courier eligible.
 
+**Options and tradeoffs.**
+
 - **Direct database writes:** persist every GPS event in the order store. History is durable, but location traffic competes with checkout and stale/reordered writes still require sequence checks.
 - **Redis-only positions:** update live cache state directly. Dispatch reads are fast, but cache loss removes the current view and replay/audit depend on later heartbeats.
 - **Replayable stream to geographic projection:** retain courier-keyed events and apply only newer session/sequence records to caches. Consumers recover independently; backlog and cross-region membership require freshness checks so durable old events are not treated as current positions.
 
-**Recommendation.** Consume a courier-keyed stream and conditionally apply events newer than the stored sequence. Record server receipt time and bound acceptable device clock skew. Separate consumers update caches and tracking; replayed events are safe. A replayable projection fits high-rate GPS updates and independent tracking consumers. We accept projection lag and prioritize current snapshots during backlog; courier eligibility is checked again when assignment commits.
+**Choice and rationale.** Consume a courier-keyed stream and conditionally apply events newer than the stored sequence. Record server receipt time and bound acceptable device clock skew. Separate consumers update caches and tracking; replayed events are safe. A replayable projection fits high-rate GPS updates and independent tracking consumers. We accept projection lag and prioritize current snapshots during backlog; courier eligibility is checked again when assignment commits.
 
 Reject stale couriers during candidate validation and at acceptance. During backlog, prioritize current snapshots and avoid dispatch from unverified old positions. Track ingestion-to-visibility delay and position age, rather than consumer offsets alone.
 
@@ -295,17 +324,19 @@ Reject stale couriers during candidate validation and at acceptance. During back
 
 Update the position record and geographic membership through a coordinated cache operation. If the courier crosses a region boundary, remove the old membership or retain a versioned temporary overlap that readers deduplicate. Redis GEO has no per-member TTL, so a freshness index and cleanup worker explicitly remove stale entries.
 
-Before scoring and again before accepting an offer, compare position age and current courier status. A courier replayed from yesterday's stream is historical evidence, not a dispatch candidate. Under backlog, publish current snapshots through a bounded fast path and keep older updates for analytics. Tracking responses include their last verified timestamp so the map can display uncertainty rather than inventing movement.
+**Tradeoffs and recovery.** Before scoring and again before accepting an offer, compare position age and current courier status. A courier replayed from yesterday's stream is historical evidence, not a dispatch candidate. Under backlog, publish current snapshots through a bounded fast path and keep older updates for analytics. Tracking responses include their last verified timestamp so the map can display uncertainty rather than inventing movement.
 
 ### Predicting ETA across overlapping stages
 
 **Problem.** Food preparation and courier travel to the restaurant happen concurrently.
 
+**Options and tradeoffs.**
+
 - **Single total-duration model:** learn order-to-delivery time directly. The serving interface is small, but the model obscures which stage changed and may adapt poorly when the order progresses.
 - **Separate stage estimates:** model preparation, courier arrival, handoff and travel, combining concurrent stages with an explicit timeline. Stage updates are interpretable and reusable; dependency error means adding stage quantiles does not yield a calibrated total interval.
 - **Multi-task probabilistic model:** learn related stage and end-to-end distributions together. Shared signals may improve sparse cases and uncertainty, but training, calibration and serving are more complex.
 
-**Recommendation.** Combine stage estimates on a timeline that accounts for overlapping work. Stage-level updates support dispatch decisions and user progress updates. We accept stage-level prediction error and measure an end-to-end arrival interval separately; a shared probabilistic model must demonstrate improved coverage before replacing this baseline.
+**Choice and rationale.** Combine stage estimates on a timeline that accounts for overlapping work. Stage-level updates support dispatch decisions and user progress updates. We accept stage-level prediction error and measure an end-to-end arrival interval separately; a shared probabilistic model must demonstrate improved coverage before replacing this baseline.
 
 ```text
 remaining time =
@@ -323,17 +354,19 @@ Use a consistent displayed quantile and calibrated interval across browse, check
 
 After pickup, those first two stages are complete; recompute from the current route and final handling only. An order-state version travels with the prediction so a delayed pre-pickup estimate cannot replace a post-pickup estimate.
 
-Use observed stage durations as labels with explicit missing-data handling. Calibrate intervals by market, time, route length and order state; a 90% interval should contain roughly 90% of held-out realized outcomes for the assessed cohort. Display updates with controlled hysteresis to avoid noisy minute-by-minute jumps while still reflecting a real restaurant delay.
+**Tradeoffs and recovery.** Use observed stage durations as labels with explicit missing-data handling. Calibrate intervals by market, time, route length and order state; a 90% interval should contain roughly 90% of held-out realized outcomes for the assessed cohort. Display updates with controlled hysteresis to avoid noisy minute-by-minute jumps while still reflecting a real restaurant delay.
 
 ### Coordinating order and payment failures
 
 **Problem.** Database commits and external payment calls can succeed independently.
 
+**Options and tradeoffs.**
+
 - **Synchronous calls with compensation:** call each dependency inline and undo confirmed partial progress after failure. The normal path is direct, but timeout ambiguity and client disconnects require durable recovery anyway.
 - **Event choreography:** services react to each other's committed events. Components remain loosely coupled, but the overall order state and compensation path become harder to inspect across missing or delayed events.
 - **Durable orchestrator with outbox:** persist step identity, state and next intent, then call external services outside the database transaction. Recovery can resume or compensate each known operation; the workflow authority and stuck-step monitoring add operating cost.
 
-**Recommendation.** Use persisted order transitions, an outbox and a durable workflow with explicit authorization, capture, void and refund operations. A database transaction finishes before the external call. A durable workflow fits orders that combine payment, restaurant acceptance and courier reservation. We accept a recoverable pending state after uncertain external calls and the orchestrator's complexity to preserve one explainable transition history.
+**Choice and rationale.** Use persisted order transitions, an outbox and a durable workflow with explicit authorization, capture, void and refund operations. A database transaction finishes before the external call. A durable workflow fits orders that combine payment, restaurant acceptance and courier reservation. We accept a recoverable pending state after uncertain external calls and the orchestrator's complexity to preserve one explainable transition history.
 
 Retries use the same [provider idempotency key](https://docs.stripe.com/api/idempotent_requests); reconciliation uses the recorded operation/provider ID. Amount and time alone cannot identify a payment reliably. An unknown provider outcome remains pending until resolved, while overdue workflows alert operators. Preserve the order and transition history through compensation.
 
@@ -341,4 +374,4 @@ Retries use the same [provider idempotency key](https://docs.stripe.com/api/idem
 
 Recovery queries provider status or applies a verified provider event. Confirmed success advances the order once; definitive failure performs the policy's void/refund compensation. An unknown result stays pending while operators can see its age and evidence.
 
-Courier assignment and restaurant acceptance have their own versioned transitions. A cancellation races against those transitions through the order authority, producing one committed outcome. Compensation does not roll history back: it appends what was voided, refunded or released, with stable operation identities. This makes a later reconciliation explainable even when several services failed at different points.
+**Tradeoffs and recovery.** Courier assignment and restaurant acceptance have their own versioned transitions. A cancellation races against those transitions through the order authority, producing one committed outcome. Compensation does not roll history back: it appends what was voided, refunded or released, with stable operation identities. This makes a later reconciliation explainable even when several services failed at different points.

@@ -203,7 +203,9 @@ test("Zoom keeps API contracts abstract and puts protocol/recovery mechanisms in
   assert.match(api, /Idempotency-Key: request_id.*Identifies one recording-start request/);
   assert.match(api, /\[signaling\]\(#how-do-meetings-survive-restrictive-networks\)/);
   assert.match(api, /\[retry\/reconnect handling\]\(#how-do-retries-and-reconnects-preserve-the-current-session\)/);
-  assert.doesNotMatch(api, /\b(?:offer|answer|ice_candidate|session_epoch|assignment_epoch)\b/);
+  assert.doesNotMatch(api, /\b(?:offer|answer|ice_candidate)\b/);
+  // Versions are part of the join contract; negotiation/version-check algorithms remain later.
+  assert.match(api, /session_epoch: integer, assignment_epoch: integer/);
   const deepDiveLine = article.slice(0, article.indexOf("## Deep dives\n")).split("\n").length;
   const observations = checkConceptPrerequisites(article, zoomLedger).observations;
   for (const id of ["signaling", "webrtc", "offer", "answer", "candidate", "ice", "assignment-version", "connection-version", "idempotency", "chat-sequence"]) {

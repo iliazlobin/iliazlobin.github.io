@@ -7,7 +7,7 @@ redirect_from:
 date: 2026-07-08
 tags: [Machine-Learning, Fraud-Detection, Classification, Real-Time, Anomaly-Detection]
 thumbnail: /images/posts/system-design-ml-fraud-detection.svg
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-12
 description: "Design of a real-time fraud scorer that evaluates a payment request and returns an approval, decline or review decision."
 notion_source: https://app.notion.com/p/397d865005a881c696e7ecbc90f2b062
 ---
@@ -20,7 +20,7 @@ Design of a real-time fraud scorer that evaluates a payment request and returns 
 
 At checkout, the service has a short time to distinguish a legitimate purchase from stolen-card use, account takeover or coordinated fraud. A missed fraudulent payment creates a financial loss; declining a legitimate payment interrupts the customer's purchase.
 
-The scorer combines the transaction with recent activity, merchant policy and known relationships between users, devices and payment tokens. It estimates risk, then applies an explicit decision policy. [Stripe Radar](https://docs.stripe.com/radar/how-radar-works) separates model risk from the rules that determine the payment outcome.
+The scorer combines the transaction with recent activity, merchant policy and known relationships between users, devices and payment tokens. It estimates risk; a separate merchant policy maps that estimate to approve, decline or review.
 
 ## Requirements
 
@@ -145,14 +145,14 @@ Stream processing prepares velocity features; batch processing creates training 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart TB
-    P["Payment service"] --> API["Risk API"]
-    API --> FAST["Rules and fast scorer"]
+    P["Payment<br>service"] --> API["Risk API"]
+    API --> FAST["Rules and fast<br>scorer"]
     FAST -->|"Needs more signals"| FULL["Full scorer"]
-    FAST -->|"Confident route"| POLICY["Merchant policy"]
+    FAST -->|"Confident route"| POLICY["Merchant<br>policy"]
     FULL --> POLICY
-    F[("Online features")] --> FULL
-    POLICY --> D[("Durable decision")]
-    D --> OUT["Allow, review or decline"]
+    F[("Online<br>features")] --> FULL
+    POLICY --> D[("Durable<br>decision")]
+    D --> OUT["Allow, review<br>or decline"]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
 classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
@@ -173,9 +173,9 @@ class POLICY control;
 
 Graph embeddings are precomputed with a model such as [GraphSAGE](https://arxiv.org/abs/1706.02216). Their age and availability are features; a daily embedding represents historical relationships, while streaming counters cover recent activity.
 
-## From request to response
+## Functional scenarios
 
-### Checkout risk flow
+### Scoring a checkout and recording its decision
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -203,8 +203,6 @@ sequenceDiagram
 
 The payment service receives one durable decision for its idempotency key. The risk service uses features available at checkout, then stores the model and policy evidence so a delayed dispute can revise training labels without rewriting the original decision.
 
-### Scoring a purchase
-
 1. The Risk API authenticates the payment service, validates tokenized inputs and checks the idempotency record.
 
 2. It loads the merchant's policy and applies explicit rules. A cheap scorer uses transaction fields and a small set of available aggregates.
@@ -221,6 +219,28 @@ A full graph traversal during checkout would add unpredictable latency. The mode
 
 A reviewed dispute or investigation result arrives with its availability time and provenance. The pipeline revises the transaction's label, keeps the original decision snapshot and includes the new evidence in later training candidates.
 
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    participant O as Outcome source
+    participant L as Label pipeline
+    participant D as Historical store
+    participant T as Training pipeline
+    rect rgb(230, 244, 234)
+        O->>L: Reviewed outcome and availability time
+        L->>D: Append provenance and label version
+        D-->>L: Evidence recorded
+        Note over L,D: Original decision stays unchanged
+    end
+    rect rgb(232, 240, 254)
+        T->>D: Read evidence available by cutoff
+        D-->>T: Mature labels and checkout features
+        T->>T: Build chronological training examples
+    end
+```
+
+A dispute arriving weeks later changes the evidence for future training, not the model version or policy that produced the original checkout decision. The training cutoff governs which outcomes are available. Repeated delivery of the same reviewed outcome resolves to its recorded evidence identity.
+
 ### Handling a timeout
 
 A feature or inference timeout selects the merchant's versioned fallback policy: for example, rule-only scoring, bounded manual review or retryable failure. The response records that mode. Review-queue limits prevent a model outage from creating an unlimited backlog.
@@ -229,7 +249,9 @@ A feature or inference timeout selects the merchant's versioned fallback policy:
 
 ### Which model belongs in the checkout path?
 
-Fraud inputs mix amounts, categorical identifiers, missing values and nonlinear behavior. Serving must also produce a reproducible decision quickly.
+**Problem.** Fraud inputs mix amounts, categorical identifiers, missing values and nonlinear behavior. Serving must also produce a reproducible decision quickly.
+
+**Options and tradeoffs.**
 
 - **Rules and logistic regression:** Score explicit transaction fields and simple aggregates. Inference and explanations are inexpensive, but nonlinear interactions and coordinated relationships need richer evidence.
 
@@ -237,7 +259,7 @@ Fraud inputs mix amounts, categorical identifiers, missing values and nonlinear 
 
 - **Graph or transformer inference per transaction:** Process relational neighborhoods or event sequences directly at checkout. Richer evidence can help difficult cases, but traversal and inference add variable latency and larger recovery complexity.
 
-**Use a fast baseline plus LightGBM, with graph representations as prepared inputs.** [LightGBM](https://papers.nips.cc/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html) handles tabular interactions; the graph encoder is trained and published separately. Compare graph-feature lift against the tabular baseline before keeping that dependency. Checkout needs a reproducible low-latency decision on mixed tabular inputs. We accept feature-preparation work and a tested fast fallback, adding graph representations only when their measured quality gain justifies that dependency.
+**Choice and rationale.** Use a fast baseline plus LightGBM, with graph representations as prepared inputs. [LightGBM](https://papers.nips.cc/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html) handles tabular interactions; the graph encoder is trained and published separately. Compare graph-feature lift against the tabular baseline before keeping that dependency. Checkout needs a reproducible low-latency decision on mixed tabular inputs. We accept feature-preparation work and a tested fast fallback, adding graph representations only when their measured quality gain justifies that dependency.
 
 Fast-path thresholds require their own calibration and quality gates. Evaluate them on representative mature labels; confidence from a small model is not automatically equivalent to confidence from the full scorer.
 
@@ -248,13 +270,13 @@ Fetch the versioned account/device velocity snapshot, transaction attributes and
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart TB
-    T["Transaction and idempotency key"] --> F["Point-in-time online features"]
+    T["Transaction<br>and<br>idempotency<br>key"] --> F["Point-in-time<br>online<br>features"]
     F --> S["Fast scorer"]
-    S -->|clear under validated policy| D["Decision policy"]
-    S -->|needs more evidence| M["Full tabular scorer<br>prepared graph inputs"]
+    S -->|clear under validated policy| D["Decision<br>policy"]
+    S -->|needs more evidence| M["Full tabular<br>scorer<br>prepared graph<br>inputs"]
     M --> D
-    D --> P["Commit decision and evidence version"]
-    P --> R["Return approve, decline or review"]
+    D --> P["Commit<br>decision and<br>evidence<br>version"]
+    P --> R["Return<br>approve,<br>decline or<br>review"]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
 classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
@@ -266,11 +288,13 @@ class D control;
 
 Log raw/calibrated scores, exit mode, feature/model versions and selected policy. Repeating the same transaction key returns that recorded decision; a changed amount under the same key is a conflict. The decision service assesses risk, while the payment authority separately owns money movement.
 
-Measure cascade recall as a whole. A graph model that performs well on reviewed cases cannot repair fraud wrongly approved by an earlier fast exit. Deadline failure selects the merchant's explicit fallback action and records the reason.
+**Tradeoffs and recovery.** Measure cascade recall as a whole. A graph model that performs well on reviewed cases cannot repair fraud wrongly approved by an earlier fast exit. Deadline failure selects the merchant's explicit fallback action and records the reason.
 
 ### How do we learn when fraud is rare?
 
-A model that approves almost everything can have high accuracy while missing most fraud.
+**Problem.** A model that approves almost everything can have high accuracy while missing most fraud.
+
+**Options and tradeoffs.**
 
 - **Natural-prevalence training:** Use transaction examples in their observed proportions. Distribution is representative, but many batches contain little fraud evidence and training work is dominated by easy negatives.
 
@@ -278,9 +302,9 @@ A model that approves almost everything can have high accuracy while missing mos
 
 - **Tuned weighting with representative calibration — recommended:** Emphasize reviewed positives or difficult examples using one controlled loss policy. Rare-event learning improves; weight tuning can overfit or damage legitimate-user precision, so calibration and release evaluation use untouched population data.
 
-The service needs fraud recall at an explicit decline precision, not high overall accuracy. We accept careful sampling/weight tracking and independent calibration rather than stacking adjustments whose combined effect is hard to interpret.
+**Choice and rationale.** Evaluate one sampling or weighting policy, then calibrate on representative data. The service needs fraud recall at an explicit decline precision, not high overall accuracy. We accept careful sampling/weight tracking and independent calibration rather than stacking adjustments whose combined effect is hard to interpret.
 
-**Record sampling rates, tune one weighting policy and calibrate on untouched representative data.** Avoid stacking large positive weights with heavily oversampled positives by default. Evaluate PR-AUC and recall at the required decline precision; report uncertainty for small cohorts.
+**How it works.** Record sampling rates, tune one weighting policy and calibrate on untouched representative data. Avoid stacking large positive weights with heavily oversampled positives by default. Evaluate PR-AUC and recall at the required decline precision; report uncertainty for small cohorts.
 
 For a simplified approve/decline policy, calibrated risk `p` and costs give:
 
@@ -305,11 +329,13 @@ Raw scorer → held-out calibration → amount/merchant-aware action policy
 
 ```
 
-Calibrate after training/sampling on natural-prevalence data. Record sampling weights rather than treating the balanced training set as production prevalence. Pick thresholds on validation data and report interval estimates for rare fraud slices. A high score alone does not establish review precision; the validation report needs enough independently reviewed cases above the chosen threshold.
+**Tradeoffs and recovery.** Calibrate after training/sampling on natural-prevalence data. Record sampling weights rather than treating the balanced training set as production prevalence. Pick thresholds on validation data and report interval estimates for rare fraud slices. A high score alone does not establish review precision; the validation report needs enough independently reviewed cases above the chosen threshold.
 
 ### How do delayed and selective labels affect training?
 
-Confirmed outcomes may arrive weeks after checkout. Reviews and rules arrive sooner but reflect the current decision policy.
+**Problem.** Confirmed outcomes may arrive weeks after checkout. Reviews and rules arrive sooner but reflect the current decision policy.
+
+**Options and tradeoffs.**
 
 - **Recent proxy labels:** Learn quickly from rules or initial reviews. Adaptation is prompt, but the labels inherit the current policy's mistakes and may be revised after a dispute.
 
@@ -317,14 +343,14 @@ Confirmed outcomes may arrive weeks after checkout. Reviews and rules arrive soo
 
 - **Separate mature and provisional datasets — recommended:** Use mature evidence for the stable scorer and clearly weighted provisional records for candidate adaptation. This preserves provenance; multiple label states and observation windows require careful data and evaluation management.
 
-**Train the stable scorer on mature evidence and use weighted provisional data for candidate adaptation.** Start with a 90-day observation window, then measure maturity by payment channel and dispute type. An undisputed transaction is not automatically a verified negative. Fraud outcomes mature well after checkout. We accept slower stable-model conclusions and keep provisional evidence visibly distinct, so a short rollout cannot be mistaken for a confirmed fraud-quality result.
+**Choice and rationale.** Train the stable scorer on mature evidence and use weighted provisional data for candidate adaptation. Start with a 90-day observation window, then measure maturity by payment channel and dispute type. An undisputed transaction is not automatically a verified negative. Fraud outcomes mature well after checkout. We accept slower stable-model conclusions and keep provisional evidence visibly distinct, so a short rollout cannot be mistaken for a confirmed fraud-quality result.
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart LR
-    A["Checkout decision"] --> B["Review or dispute"]
-    B --> C["Outcome available"]
-    C --> D["Revised training label"]
+    A["Checkout<br>decision"] --> B["Review or<br>dispute"]
+    B --> C["Outcome<br>available"]
+    C --> D["Revised<br>training label"]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
 classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
@@ -349,11 +375,13 @@ Day 90   maturity check for the selected dataset
 
 Treat this schedule as the proposed observation policy, not a universal payment-channel deadline. Measure actual delay distributions. A transaction with no dispute can remain weakly labeled rather than being silently upgraded to a reviewed legitimate example.
 
-Declined attempts lack the same counterfactual chargeback outcome as approvals. Independent reviews can improve coverage, but do not reveal exactly what would have happened if every decline had been approved. Report evaluated population and selection method with quality estimates. Split by time and group repeated linked activity so a coordinated attack is not leaked across train and test.
+**Tradeoffs and recovery.** Declined attempts lack the same counterfactual chargeback outcome as approvals. Independent reviews can improve coverage, but do not reveal exactly what would have happened if every decline had been approved. Report evaluated population and selection method with quality estimates. Split by time and group repeated linked activity so a coordinated attack is not leaked across train and test.
 
 ### How do relationships help with cold starts?
 
-A new user has little history but may share a device or payment token with known activity.
+**Problem.** A new user has little history but may share a device or payment token with known activity.
+
+**Options and tradeoffs.**
 
 - **User history:** Use established account behavior and prior reviewed outcomes. Evidence is direct once it exists, but new users, cards and merchants lack sufficient history.
 
@@ -361,7 +389,7 @@ A new user has little history but may share a device or payment token with known
 
 - **Coverage-aware relationships with cohort priors — recommended:** Combine bounded relationship features with age/missingness and a calibrated cohort baseline. This supports sparse entities; priors can conceal small-group bias and need independent cold-start evaluation.
 
-**Use relationship features with age, coverage and missing-value masks, then blend in observed history.** Device reuse is a signal interpreted with other evidence. Evaluate new-user, new-card and new-merchant cohorts independently; shared IP addresses alone do not establish fraud. Cold-start decisions begin with weaker evidence; age and measured coverage control the influence of relationship and cohort estimates.
+**Choice and rationale.** Use relationship features with age, coverage and missing-value masks, then blend in observed history. Device reuse is a signal interpreted with other evidence. Evaluate new-user, new-card and new-merchant cohorts independently; shared IP addresses alone do not establish fraud. Cold-start decisions begin with weaker evidence; age and measured coverage control the influence of relationship and cohort estimates.
 
 Merchant priors use relevant business characteristics and are replaced gradually by measured history. Sensitive attributes and invasive fingerprinting require explicit privacy and fairness controls.
 
@@ -372,11 +400,11 @@ Offline jobs construct permitted account/device/payment-token relationships and 
 For a new card linked to an established device, the model can observe device age, number of recent distinct cards and whether reviewed abusive neighbors exist. A shared household device can produce a similar relationship, so the model needs the surrounding context and a missing/age mask.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryTextColor":"#202124","primaryBorderColor":"#9aa0a6","lineColor":"#5f6368","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteTextColor":"#202124","noteBorderColor":"#9aa0a6","signalColor":"#5f6368","signalTextColor":"#202124","labelBoxBkgColor":"#fef7e0","labelBoxBorderColor":"#9aa0a6"}}}%%
 flowchart TB
-  G[("Historical graph snapshot")] --> R["Prepared relationship feature"]
-  A["Recent action stream"] --> V["Fresh velocity feature"]
-  R --> S["Combined transaction scorer"]
+  G[("Historical<br>graph snapshot")] --> R["Prepared<br>relationship<br>feature"]
+  A["Recent action<br>stream"] --> V["Fresh velocity<br>feature"]
+  R --> S["Combined<br>transaction<br>scorer"]
   V --> S
   class G,A,R,V data
   class S request
@@ -386,11 +414,13 @@ classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
 classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
-Cap fan-out during graph training and retain its timestamp so leakage from future relationships is prevented. New identities absent from the graph use cohort priors and current attributes. Evaluate gain and false declines by genuinely new account/card cohorts before making graph availability a required checkout dependency.
+**Tradeoffs and recovery.** Cap fan-out during graph training and retain its timestamp so leakage from future relationships is prevented. New identities absent from the graph use cohort priors and current attributes. Evaluate gain and false declines by genuinely new account/card cohorts before making graph availability a required checkout dependency.
 
 ### How do we adapt and recover safely?
 
-Attack patterns evolve, but noisy feedback can also move the decision boundary in the wrong direction.
+**Problem.** Attack patterns evolve, but noisy feedback can also move the decision boundary in the wrong direction.
+
+**Options and tradeoffs.**
 
 - **Checkpointed daily retraining:** Build repeatable candidates from a stable dataset. Diagnosis and rollback are clear, but new attack labels can wait for the next release.
 
@@ -398,7 +428,7 @@ Attack patterns evolve, but noisy feedback can also move the decision boundary i
 
 - **Direct live parameter updates:** Change the deployed boundary as feedback arrives. Delay is small, but individual changes are harder to reproduce and delayed or poisoned feedback can produce harmful enforcement.
 
-**Promote versioned candidates through offline evaluation, shadow traffic and a bounded rollout.** Mature labels establish model quality; shadow traffic checks latency, feature parity and disagreements. A short shadow window cannot establish fraud outcomes that mature weeks later. The release delay is justified by the customer and financial cost of checkout errors; frequent provisional candidates accelerate response while mature outcomes remain the quality anchor.
+**Choice and rationale.** Promote versioned candidates through offline evaluation, shadow traffic and a bounded rollout. Mature labels establish model quality; shadow traffic checks latency, feature parity and disagreements. A short shadow window cannot establish fraud outcomes that mature weeks later. The release delay is justified by the customer and financial cost of checkout errors; frequent provisional candidates accelerate response while mature outcomes remain the quality anchor.
 
 Monitor loss rates, legitimate declines, review volume, calibration, stale features and fallback use by merchant/channel. Rollback restores a compatible model, feature encoding and threshold policy together. Velocity ingestion continues independently, and every historic decision remains reproducible.
 
@@ -408,4 +438,4 @@ Monitor feature missingness and score/action distributions immediately, but eval
 
 Shadow a candidate using the same request-time snapshots and compare decision disagreements. Review a sampled disagreement set before canarying high-impact actions. Warm its feature encoding, calibrator and threshold policy as one compatible release.
 
-A circuit breaker can route scoring to the approved fast/fallback policy if the full model times out; every fallback decision is persisted. Rollback changes future scoring, while historical decisions and human corrections remain immutable. Track pending labels and reviewed-cohort coverage so a recent candidate is not reported as fraud-validated after only a short operational canary.
+**Tradeoffs and recovery.** A circuit breaker can route scoring to the approved fast/fallback policy if the full model times out; every fallback decision is persisted. Rollback changes future scoring, while historical decisions and human corrections remain immutable. Track pending labels and reviewed-cohort coverage so a recent candidate is not reported as fraud-validated after only a short operational canary.

@@ -156,6 +156,7 @@ test("collection-scoped markup provides nested plain anchors with a responsive s
   assert.match(include, /href="#\{\{ toc_id \| url_encode \| replace: '\+', '%20' \| escape \}\}"/);
   assert.doesNotMatch(include, /slugify|<script|<h[234]/);
   assert.match(css, /@media \(min-width: 1240px\)/);
+  assert.doesNotMatch(css, /\.wrapper/);
   assert.match(css, /grid-template-columns: minmax\(0, 1fr\) 240px/);
   assert.match(css, /position: sticky; top: 1\.25rem/);
   assert.match(css, /overflow-y: auto/);

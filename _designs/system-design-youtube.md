@@ -7,7 +7,7 @@ tags: [Streaming, Leaderboard, Real-Time, Video, Approximate-Algorithms, Distrib
 thumbnail: /images/posts/2026-06-30-system-design-youtube.svg
 redirect_from:
   - /2026/06/30/system-design-youtube.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-12
 description: "Build a YouTube-style video leaderboard for recent, hourly, daily and monthly view counts, with regional and category filters."
 notion_source: https://app.notion.com/p/390d865005a8816a9ba5ec00047880f6
 ---
@@ -134,20 +134,20 @@ The count endpoint reads durable bucket totals; an approximate leaderboard score
 Regional pipelines validate and deduplicate events, maintain window state and publish ranked snapshots. Global computation combines compatible summaries or count partitions from all regions. The query service reads a complete generation and checks current video visibility.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-  U["User"] --> API["Event and query API"]
-  API --> E["Durable event log"]
-  E --> V["Acceptance and dedup"]
-  V --> W["Window processors"]
+  U["User"] --> API["Event and<br>query API"]
+  API --> E["Durable event<br>log"]
+  E --> V["Acceptance and<br>dedup"]
+  V --> W["Window<br>processors"]
   W --> C[("Bucket counts")]
-  W --> R["Regional rankings"]
+  W --> R["Regional<br>rankings"]
   R --> G["Global ranking"]
-  R --> S[("Ranked snapshots")]
+  R --> S[("Ranked<br>snapshots")]
   G --> S
-  API --> Q["Leaderboard query"]
+  API --> Q["Leaderboard<br>query"]
   Q --> S
-  Q --> M["Video visibility"]
+  Q --> M["Video<br>visibility"]
   E --> O[("Replay archive")]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
@@ -163,7 +163,7 @@ class V,M control;
 
 - **[Flink](/designs/tech-flink/) with RocksDB:** partitioned bucket counts, deduplication state and candidate summaries. Checkpoints include input positions and operator state; disk-backed state still needs RAM and checkpoint I/O budgeting.
 
-- **Bigtable or a similarly partitioned count store:** absolute versioned totals keyed by scope, video and bucket. Timestamp ordering supports per-video range reads.
+- **[Cassandra](/designs/tech-apache-cassandra/) count store:** absolute totals and revisions, partitioned by `(scope, video_id, time_bucket)` with ordered bucket timestamps for interval reads. Bounded partitions and batched summary writes fit the event volume; conditional revision updates or a fenced single-writer sink prevent older replay from replacing newer totals.
 
 - **Object storage:** accepted-event archive, checkpoints and immutable leaderboard generations.
 
@@ -173,7 +173,7 @@ class V,M control;
 
 [Procella](https://www.vldb.org/pvldb/vol12/p2022-chattopadhyay.pdf) provides background on YouTube analytics. The storage choices here are a proposed architecture, not a claim about YouTube's current deployment.
 
-## From request to response
+## Functional scenarios
 
 ### Accepted-view ranking flow
 
@@ -225,6 +225,36 @@ The query service loads a published generation for the requested scope and inter
 
 A cache miss reads the durable snapshot and repopulates Redis. If a region is delayed, serve an explicitly stale complete generation or a marked partial result according to the endpoint policy.
 
+### Reading rankings while a region is delayed
+
+A user requests a leaderboard. The API reads one completed interval generation and its coverage record; a lagging region can cause the endpoint to retain a previous complete generation or disclose a partial result according to its contract.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+  participant U as User
+  participant Q as Leaderboard API
+  participant C as Ranking cache
+  participant S as Snapshot store
+  participant V as Video authority
+  rect rgb(232, 240, 254)
+    U->>Q: Scope, window and K
+    Q->>C: Resolve complete generation
+    alt Cache miss
+      Q->>S: Read durable generation and coverage
+      S-->>Q: Ranked IDs, cutoff and region status
+      Q->>C: Cache immutable generation
+    else Cache hit
+      C-->>Q: Ranked IDs and freshness metadata
+    end
+    Q->>V: Check current visibility
+    V-->>Q: Eligible video details
+    Q-->>U: Visible ranks with age and coverage
+  end
+```
+
+Current privacy checks still apply to an older ranking. Removed videos can make the returned list shorter; bounded overfetch may fill it with other eligible candidates. Missing required visibility state follows the access policy, while missing aggregation coverage remains an explicit freshness/completeness issue rather than an invented zero count.
+
 ### Recovering a processor
 
 Restore input offsets, dedup state, counts and candidate summaries from one checkpoint. Replayed sink writes replace the same aggregate revision or generation. Publish a new pointer only after recovery produces a coherent result.
@@ -235,7 +265,9 @@ Checkpoint consistency does not make arbitrary external writes exactly-once; eac
 
 ### How do we prevent a viral video from creating a hot partition?
 
-**Problem:** hashing only by video ID puts all events for that video on one aggregation task.
+**Problem.** Hashing only by video ID puts all events for that video on one aggregation task.
+
+**Options and tradeoffs.**
 
 - **One per-video counter:** Send every view for an item to one aggregate owner. Counts are simple, but a viral item serializes a large fraction of traffic on one task.
 
@@ -243,21 +275,23 @@ Checkpoint consistency does not make arbitrary external writes exactly-once; eac
 
 - **Larger batches only:** Combine several updates before touching the same key. Command overhead falls, but the hot item still has one owner and remains a throughput ceiling.
 
-**Recommendation:** batch locally and use stable event-ID salting for sufficiently hot videos. Merge absolute partial totals by video, scope, bucket and salt; update a partial only when its revision advances. The workload contains highly skewed video popularity. We accept lane merge and completeness checks so hot traffic spreads without changing the logical accepted-view identity or inflating totals on replay.
+**Choice and rationale.** Batch locally and use stable event-ID salting for sufficiently hot videos. Merge absolute partial totals by video, scope, bucket and salt; update a partial only when its revision advances. The workload contains highly skewed video popularity. We accept lane merge and completeness checks so hot traffic spreads without changing the logical accepted-view identity or inflating totals on replay.
 
 Redis hash tags must not force every salt onto the same slot. Cross-slot reads use cluster-aware individual commands or a precomputed merged value, rather than an unsupported cross-slot MGET.
 
 Measure per-partition lag, key skew and batch efficiency. Salt count changes are versioned so old and new partials can be reconciled without double counting.
 
-**Hot-key batching.** Salt each accepted event deterministically from its stable event ID into a versioned number of lanes. A lane keeps an exact count for each video/bucket and periodically emits its absolute total plus revision. The final merger remembers the latest total for every lane and computes the video total from those values.
+**How it works: Hot-key batching.** Salt each accepted event deterministically from its stable event ID into a versioned number of lanes. A lane keeps an exact count for each video/bucket and periodically emits its absolute total plus revision. The final merger remembers the latest total for every lane and computes the video total from those values.
 
 If lane three advances from 100 to 125, the merger contributes an additional 25; replaying revision 8 with value 125 contributes nothing again. Store the latest lane values with the merged generation so recovery does not add each polled total as if it were a new delta.
 
-A hot video's millions of raw events become bounded lane-summary updates. Increasing the number of lanes creates a new routing generation; reconcile both generations under an explicit cutover cutoff. Otherwise old and new lanes may double-count the same accepted events.
+**Tradeoffs and recovery.** A hot video's millions of raw events become bounded lane-summary updates. Increasing the number of lanes creates a new routing generation; reconcile both generations under an explicit cutover cutoff. Otherwise old and new lanes may double-count the same accepted events.
 
 ### How do rolling windows expire old views?
 
-**Problem:** recent rankings must remove views once they leave the reporting interval.
+**Problem.** Recent rankings must remove views once they leave the reporting interval.
+
+**Options and tradeoffs.**
 
 - **Rescan raw events:** Read the interval and recount at each publication. Semantics are easy to verify, but repeated scans at view volume are expensive.
 
@@ -265,21 +299,23 @@ A hot video's millions of raw events become bounded lane-summary updates. Increa
 
 - **Increment and decrement one sketch:** Add incoming contributions and subtract expired ones. A compact live structure is possible, but the algorithm must support deletions and coordinated expiry streams without invalidating its error guarantees.
 
-**Recommendation:** use aligned slices with a declared one-minute resolution. A snapshot sums disjoint slices for its interval; a live current slice is added once, not on top of an overlapping completed window. The endpoint publishes repeated standard windows with a stated one-minute resolution. We accept that boundary precision to reuse bucket work, keeping exact archive reconciliation available where the product requires stronger counts.
+**Choice and rationale.** Use aligned slices with a declared one-minute resolution. A snapshot sums disjoint slices for its interval; a live current slice is added once, not on top of an overlapping completed window. The endpoint publishes repeated standard windows with a stated one-minute resolution. We accept that boundary precision to reuse bucket work, keeping exact archive reconciliation available where the product requires stronger counts.
 
 [Apache Flink's windowing](https://nightlies.apache.org/flink/flink-docs-stable/docs/sql/reference/queries/window-tvf/) and [window Top-N](https://nightlies.apache.org/flink/flink-docs-stable/docs/sql/reference/queries/window-topn/) support this processing model. Verify the execution plan instead of assuming every operator automatically shares slice state.
 
 Late accepted events update their original bucket under a new revision. Watermarks and allowed lateness govern fast publication; the archive supplies later correction generations.
 
-**An aligned-window example.** At 12:00, the hour ranking sums minute buckets from 11:00 through 11:59. At 12:01, it removes 11:00 and adds 12:00. The live 12:00 bucket is included exactly once; adding it to a completed hour that already contains it would inflate counts.
+**How it works: An aligned-window example.** At 12:00, the hour ranking sums minute buckets from 11:00 through 11:59. At 12:01, it removes 11:00 and adds 12:00. The live 12:00 bucket is included exactly once; adding it to a completed hour that already contains it would inflate counts.
 
 For an arbitrary 12:00:30 endpoint, minute buckets approximate the two boundaries. Declare minute alignment or retain finer boundary data when exact arbitrary intervals are required. The current snapshot carries start/end, watermark and bucket revision generation.
 
-A late event with event time 11:58 updates that bucket, not the current 12:00 bucket. The next corrected snapshot includes the new revision if the interval still covers 11:58. Data older than the online correction horizon is reconciled from the archive through a separate versioned publication.
+**Tradeoffs and recovery.** A late event with event time 11:58 updates that bucket, not the current 12:00 bucket. The next corrected snapshot includes the new revision if the interval still covers 11:58. Data older than the online correction horizon is reconciled from the archive through a separate versioned publication.
 
 ### How much approximation is acceptable?
 
-**Problem:** maintaining all video identities and every active window in memory is expensive.
+**Problem.** Maintaining all video identities and every active window in memory is expensive.
+
+**Options and tradeoffs.**
 
 - **Exact partitioned counts:** Persist every item's accepted bucket total. Count queries and reconciliation have strong semantics; storage and full-rank scans grow with active item/window cardinality.
 
@@ -287,19 +323,21 @@ A late event with event time 11:58 updates that bucket, not the current 12:00 bu
 
 - **Count-Min frequency estimates:** Maintain compatible hashed counters per bucket. Memory is predictable, but collisions overestimate and a separate identity source is required.
 
-**Recommendation:** retain durable exact bucket totals for count queries and use bounded candidate summaries for fresh ranking when required. Rank a candidate union using compatible count summaries; disclose error bounds and measure recall against exact samples. Candidate omissions and close ranks remain the fast path's accepted limitation; exact reads or a disclosed approximate result handle that uncertainty.
+**Choice and rationale.** Retain durable exact bucket totals for count queries and use bounded candidate summaries for fresh ranking when required. Rank a candidate union using compatible count summaries; disclose error bounds and measure recall against exact samples. Candidate omissions and close ranks remain the fast path's accepted limitation; exact reads or a disclosed approximate result handle that uncertainty.
 
 Space-Saving's replacement error remains attached to an entry after further increments. An item's absence from a local candidate set is not proof that it cannot be globally important. Standard Space-Saving also does not support simply decrementing expired events.
 
-**Candidate confidence.** Keep exact durable bucket totals, but let a bounded candidate summary nominate videos for a fast ranking. A candidate's estimate/error interval guides whether it is safely above the cutoff or needs an exact read.
+**How it works: Candidate confidence.** Keep exact durable bucket totals, but let a bounded candidate summary nominate videos for a fast ranking. A candidate's estimate/error interval guides whether it is safely above the cutoff or needs an exact read.
 
 For example, if the estimated Kth video has 10,100 ± 500 views and another has 10,000 ± 500, their intervals overlap. The fresh approximate order is uncertain; query exact totals for that wider candidate group before presenting an exact ranking. An item absent from the candidate summary still needs a coverage bound.
 
-Retain candidate summaries per aligned slice and combine them with a supported merge algorithm. Expiring a slice drops that summary; decrementing a standard Space-Saving summary is not equivalent. Evaluate candidate recall against complete exact samples, including concentrated regional popularity and nearly tied videos, rather than checking only average count error.
+**Tradeoffs and recovery.** Retain candidate summaries per aligned slice and combine them with a supported merge algorithm. Expiring a slice drops that summary; decrementing a standard Space-Saving summary is not equivalent. Evaluate candidate recall against complete exact samples, including concentrated regional popularity and nearly tied videos, rather than checking only average count error.
 
 ### Can we merge regional top-K lists safely?
 
-**Problem:** a globally popular video may fall below the local cutoff in every region.
+**Problem.** A globally popular video may fall below the local cutoff in every region.
+
+**Options and tradeoffs.**
 
 - **Union local top-K only:** Collect each region's strongest IDs and rank their union. Communication is small, but a globally strong video can fall below every regional cutoff and never enter the union.
 
@@ -307,15 +345,15 @@ Retain candidate summaries per aligned slice and combine them with a supported m
 
 - **Globally owned exact per-video totals:** Merge each video's regional partials at one global owner, then combine disjoint-owner rankings. Global ranking can be exact for the complete interval; cross-region summary traffic and completeness coordination are higher.
 
-**Recommendation:** send regional partial counts or compatible heavy-hitter summaries with omitted-count bounds. Retrieve all regional contributions for candidate videos before ranking. Use exact global count aggregation when product requirements demand an exact global list. The response contract decides whether approximation is acceptable. We accept richer regional summary work for bounded estimates, switching to exact global aggregation when a product requires an exact list rather than an incomplete local-top-K union.
+**Choice and rationale.** Send regional partial counts or compatible heavy-hitter summaries with omitted-count bounds. Retrieve all regional contributions for candidate videos before ranking. Use exact global count aggregation when product requirements demand an exact global list. The response contract decides whether approximation is acceptable. We accept richer regional summary work for bounded estimates, switching to exact global aggregation when a product requires an exact list rather than an incomplete local-top-K union.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-  A["Region A summaries"] --> U["Candidate union"]
-  B["Region B summaries"] --> U
-  U --> C["Sum compatible counts"]
-  C --> R["Rank and publish"]
+  A["Region A<br>summaries"] --> U["Candidate<br>union"]
+  B["Region B<br>summaries"] --> U
+  U --> C["Sum compatible<br>counts"]
+  C --> R["Rank and<br>publish"]
   A --> C
   B --> C
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
@@ -325,18 +363,18 @@ class A,B,U,C,R data;
 
 ```
 
-**Why regional winners are insufficient.** Region A has local winner X=12 and video H=11. Region B has winner Y=12 and H=11. A union of the two local top-one lists contains X and Y, while H's total of 22 makes it the global winner.
+**How it works: Why regional winners are insufficient.** Region A has local winner X=12 and video H=11. Region B has winner Y=12 and H=11. A union of the two local top-one lists contains X and Y, while H's total of 22 makes it the global winner.
 
 For exact ranking, aggregate every video's regional contributions at a globally assigned video owner, then compute local rankings across those complete totals. The final top-K merge is valid when each video has one complete owner and all owners use the same interval/cutoff. Partial regional lists do not satisfy that condition.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-  A["Region A per-video buckets"] --> O["Global video owners"]
-  B["Region B per-video buckets"] --> O
-  O --> L["Rank complete video totals"]
-  L --> G["Merge owner top-K"]
-  G --> P["Publish complete generation"]
+  A["Region A<br>per-video<br>buckets"] --> O["Global video<br>owners"]
+  B["Region B<br>per-video<br>buckets"] --> O
+  O --> L["Rank complete<br>video totals"]
+  L --> G["Merge owner<br>top-K"]
+  G --> P["Publish<br>complete<br>generation"]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
 classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
@@ -347,4 +385,4 @@ class P control;
 
 For an approximate fresh path, use candidate summaries with omitted-count bounds and fetch all regional contributions for each candidate. Missing regions make the result incomplete, regardless of how quickly the available candidates can be sorted.
 
-Regional generation IDs and window boundaries prevent repeated polls from adding the same total twice. Missing regions remain visible in response metadata. For the broader algorithm discussion, see [Related page](https://app.notion.com/p/390d865005a8816398abcfff99db3e46).
+**Tradeoffs and recovery.** Regional generation IDs and window boundaries prevent repeated polls from adding the same total twice. Missing regions remain visible in response metadata. For the broader algorithm discussion, see [Related page](https://app.notion.com/p/390d865005a8816398abcfff99db3e46).

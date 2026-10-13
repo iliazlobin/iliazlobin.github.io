@@ -7,7 +7,7 @@ tags: [Distributed-Systems, Real-Time, Event-Driven, Write-Heavy]
 thumbnail: /images/posts/2026-06-30-system-design-whatsapp.svg
 redirect_from:
   - /2026/06/30/system-design-whatsapp.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-12
 description: "Design of an encrypted messaging service for direct chats, group messages, media sharing and delivery receipts."
 notion_source: https://app.notion.com/p/390d865005a8817684b7e469434db6eb
 ---
@@ -20,7 +20,7 @@ Design of an encrypted messaging service for direct chats, group messages, media
 
 Users expect a message to arrive promptly when the recipient is online and to remain available when they reconnect later. Mobile connections can disappear during a send, so the service must distinguish durable acceptance from delivery and support safe retries.
 
-Message content is encrypted on the devices. The server routes ciphertext and retains pending deliveries; clients manage encryption keys, decryption and local message history.
+Message content is encrypted on the devices. The server routes the encrypted payload, called **ciphertext**, and retains pending deliveries; clients manage encryption keys, decryption and local message history.
 
 ## Requirements
 
@@ -67,6 +67,8 @@ Design targets:
 Gateway capacity depends on memory, CPU, TLS and reconnect load; benchmark connections per node instead of treating a fixed count as guaranteed.
 
 ## Core entities
+
+Messages retain ciphertext and a chat sequence; delivery records track each recipient's progress. A **prekey** is public key material prepared for a sender to establish encryption while the recipient is offline. The public bundle contains those keys; private key state remains on devices.
 
 ```protobuf
 message Message {
@@ -145,18 +147,18 @@ Message IDs are scoped to the authenticated sender. Changed ciphertext under an 
 Connection gateways own live sockets. Message services validate membership and durably accept ciphertext, then delivery workers route it to active sessions or retain it for reconnect. Media transfers use a separate storage path.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-  U["User / mobile app"] --> G["Connection gateway"]
-  G --> M["Message service"]
-  M --> C[("Chat membership")]
-  M --> D[("Durable messages")]
-  D --> F["Delivery workers"]
+  U["User / mobile<br>app"] --> G["Connection<br>gateway"]
+  G --> M["Message<br>service"]
+  M --> C[("Chat<br>membership")]
+  M --> D[("Durable<br>messages")]
+  D --> F["Delivery<br>workers"]
   F --> G
-  F --> I[("Recipient inboxes")]
-  F --> P["Push notification"]
-  G --> R[("Session / presence")]
-  U --> O[("Encrypted media")]
+  F --> I[("Recipient<br>inboxes")]
+  F --> P["Push<br>notification"]
+  G --> R[("Session /<br>presence")]
+  U --> O[("Encrypted<br>media")]
   U --> K["Public prekeys"]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
@@ -180,9 +182,9 @@ class K control;
 
 Delivery receipts are durable metadata until their own retention deadline. Message bodies can be reclaimed after required acknowledgements and retention checks.
 
-## From request to response
+## Functional scenarios
 
-### Message acceptance and delivery flow
+### Sending and reconnecting
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -209,13 +211,38 @@ sequenceDiagram
 
 Accepted means the service can recover the ciphertext and delivery intent. Delivered means the recipient stored it and acknowledged it; lost acknowledgements can cause another delivery attempt, which the recipient deduplicates using the same message ID.
 
-### Sending and reconnecting
-
 The sender encrypts locally and submits a stable message ID. The message service checks chat membership, records the ciphertext and recipient set durably, and returns accepted. Delivery workers write pending recipient references and notify the recipient's gateway.
 
 The recipient stores the message locally, deduplicates by ID and acknowledges delivery. Reconnect requests resume the pending inbox with a cursor; a lost acknowledgement produces another delivery attempt and another acknowledgement.
 
 Direct socket delivery alone would leave a failure window after acceptance. Persisting delivery intent first adds a write but provides a reliable recovery path.
+
+### Replaying messages after reconnect
+
+A recipient loses its connection after storing a message but before its acknowledgement reaches the server. On reconnect it resumes from its saved inbox position, accepts duplicate delivery safely, and acknowledges only after local persistence.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+  participant U as Recipient
+  participant G as Gateway
+  participant D as Durable inbox
+  participant L as Local messages
+  rect rgb(232, 240, 254)
+    U->>G: Reconnect with saved cursor
+    G->>D: Read pending page
+    D-->>G: Message IDs and ciphertext
+    G-->>U: Deliver pending page
+  end
+  rect rgb(230, 244, 234)
+    U->>L: Persist message or find existing ID
+    L-->>U: Durable local result
+    U->>G: Delivered acknowledgement
+    G->>D: Advance acknowledged state
+  end
+```
+
+The conversation displays one copy even when network attempts repeat. Pending replay is paginated and rate-limited so a large offline backlog does not starve live messages. Expired retention has an explicit unavailable/expired outcome; neither a socket write nor pipeline acceptance is presented as recipient delivery or reading.
 
 ### Group messages
 
@@ -235,6 +262,8 @@ Receipts progress monotonically and survive routing retries. Presence uses renew
 
 **Problem.** Either socket endpoint can disappear after the server accepts a message.
 
+**Options and tradeoffs.**
+
 - **Socket delivery before persistence:** Forward directly to an online recipient. Latency is low, but a disconnect after sender success can lose the message with no durable replay source.
 
 - **Persist only for offline recipients:** Store a delivery record only when presence reports the recipient offline. This saves durable writes on the online path, but an online device can disconnect before acknowledgement and leave no recoverable message.
@@ -243,7 +272,7 @@ Receipts progress monotonically and survive routing retries. Presence uses renew
 
 - **Durable acceptance with immediate forwarding — recommended:** Commit delivery intent first, then push online and replay pending inboxes on reconnect. Reliability and low online latency coexist; duplicated attempts, inbox retention and acknowledgements require state.
 
-**Recommendation.** Persist every accepted message and delivery intent, then attempt low-latency forwarding. Replay unfinished fan-out and pending inbox entries after failures. Mobile devices disconnect routinely. We accept the durability write and duplicate-delivery handling so sender acceptance has a recovery guarantee independently of the current socket.
+**Choice and rationale.** Persist every accepted message and delivery intent, then attempt low-latency forwarding. Replay unfinished fan-out and pending inbox entries after failures. Mobile devices disconnect routinely. We accept the durability write and duplicate-delivery handling so sender acceptance has a recovery guarantee independently of the current socket.
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -265,15 +294,17 @@ sequenceDiagram
 
 Client deduplication makes repeated network delivery appear once in the local conversation. Define the retention expiry outcome explicitly and track acceptance-to-delivery latency, pending age and reconnect backlog.
 
-**Durable recipient inbox.** The sender assigns a stable message ID before sending. Acceptance appends ciphertext and a recipient-delivery plan durably; the server responds only after that boundary. A fan-out worker writes a unique recipient/message reference and advances its checkpoint after the reference is durable.
+**How it works: Durable recipient inbox.** The sender assigns a stable message ID before sending. Acceptance appends ciphertext and a recipient-delivery plan durably; the server responds only after that boundary. A fan-out worker writes a unique recipient/message reference and advances its checkpoint after the reference is durable.
 
 On reconnect, the recipient requests inbox entries after its persisted cursor. The client stores the message locally before acknowledging delivery. If the acknowledgement is lost, the same reference is redelivered and the local unique message ID prevents another visible copy.
 
-Delivered and read are separate states. A read receipt is an explicit client event, not an inference from the gateway having written bytes to a socket. If retention expires before delivery, record an expired outcome and show the documented behavior. Large replay backlogs are paginated and rate-limited so reconnecting offline clients do not overwhelm live delivery.
+**Tradeoffs and recovery.** Delivered and read are separate states. A read receipt is an explicit client event, not an inference from the gateway having written bytes to a socket. If retention expires before delivery, record an expired outcome and show the documented behavior. Large replay backlogs are paginated and rate-limited so reconnecting offline clients do not overwhelm live delivery.
 
 ### Efficient group fan-out
 
 **Problem.** A group message needs delivery to many members, including disconnected clients.
+
+**Options and tradeoffs.**
 
 - **Separate ciphertext per recipient:** Encrypt and upload an individual payload for every member. Recipient keys are isolated, but sender CPU and uplink scale with group size.
 
@@ -283,20 +314,20 @@ Delivered and read are separate states. A read receipt is an explicit client eve
 
 - **Sender-key ciphertext with durable member references — recommended:** Store one group ciphertext under its membership epoch and fan out recoverable references. Payload work is shared; member key distribution, epoch changes and recipient-plan checkpoints still grow with membership.
 
-**Recommendation.** Use sender-key encryption and asynchronous per-member delivery for bounded chat groups. Store one ciphertext body with recipient references; checkpoint fan-out progress so a worker can resume after a crash. The cryptographic setup cost still grows with membership. Bounded chat groups need offline recovery without uploading the same body repeatedly. We accept membership-driven key setup and fan-out progress state, preserving the recipient set selected at send time.
+**Choice and rationale.** Use sender-key encryption and asynchronous per-member delivery for bounded chat groups. Store one ciphertext body with recipient references; checkpoint fan-out progress so a worker can resume after a crash. The cryptographic setup cost still grows with membership. Bounded chat groups need offline recovery without uploading the same body repeatedly. We accept membership-driven key setup and fan-out progress state, preserving the recipient set selected at send time.
 
 A removed member retains old keys but receives no keys for the new epoch. Validate membership changes and pending sends consistently, and monitor fan-out queue age and per-group throughput. Large broadcast channels can use pull-based delivery with online notifications.
 
-**Fan-out across membership changes.** Record the group membership epoch with the accepted message. The delivery plan uses that validated epoch, giving the worker a stable recipient set instead of rereading a mutable group halfway through fan-out. Recipient references are idempotent under group/message/member keys.
+**How it works: Fan-out across membership changes.** Record the group membership epoch with the accepted message. The delivery plan uses that validated epoch, giving the worker a stable recipient set instead of rereading a mutable group halfway through fan-out. Recipient references are idempotent under group/message/member keys.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-  M["Ciphertext and membership epoch"] --> L["Durable group log"]
+  M["Ciphertext and<br>membership<br>epoch"] --> L["Durable group<br>log"]
   L --> P["Recipient plan"]
-  P --> B["Checkpointed member batches"]
-  B --> I["Recipient inbox references"]
-  I --> G["Online delivery or reconnect replay"]
+  P --> B["Checkpointed<br>member batches"]
+  B --> I["Recipient<br>inbox<br>references"]
+  I --> G["Online<br>delivery or<br>reconnect<br>replay"]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
 classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
@@ -307,11 +338,13 @@ class M,L,P,B,I data;
 
 A removal advances membership and the cryptographic sender-key epoch according to protocol. New messages use the new epoch; old ciphertext and previously learned keys retain their original access implications. Pending acceptance must compare the validated membership version before committing. This prevents a worker from deciding authorization from a stale cache after removal.
 
-For a very large broadcast channel, shared-log pull avoids millions of per-member writes, but it needs a different read-access and retention policy from bounded private groups.
+**Tradeoffs and recovery.** For a very large broadcast channel, shared-log pull avoids millions of per-member writes, but it needs a different read-access and retention policy from bounded private groups.
 
 ### Keeping media transfer separate
 
 **Problem.** Large files can consume bandwidth and queue capacity intended for message delivery.
+
+**Options and tradeoffs.**
 
 - **Inline media in message transport:** Send the entire encrypted file through the chat gateway. One channel is convenient, but large transfers compete with small messages and reconnect replay.
 
@@ -319,19 +352,21 @@ For a very large broadcast channel, shared-log pull avoids millions of per-membe
 
 - **Authorized direct transfer of encrypted objects — recommended:** Upload ciphertext in resumable chunks and send its verified reference/key in the encrypted message. Chat remains small; object completion, integrity and independent retention must be coordinated.
 
-**Recommendation.** Use direct signed uploads and downloads of encrypted objects, with a media service authorizing access and checking completion. Transfer and retry chunks independently for large files. Large media should use a bandwidth-oriented path while chat retains prompt small-message delivery. We accept a two-step completion protocol and encrypted-object cleanup policy, preserving endpoint-only content access.
+**Choice and rationale.** Use direct signed uploads and downloads of encrypted objects, with a media service authorizing access and checking completion. Transfer and retry chunks independently for large files. Large media should use a bandwidth-oriented path while chat retains prompt small-message delivery. We accept a two-step completion protocol and encrypted-object cleanup policy, preserving endpoint-only content access.
 
 Identical ciphertext can be reused for authorized forwarding. Independently encrypted copies usually have different hashes, so plaintext-level deduplication is unavailable to the server. Scope reuse checks to permitted objects to avoid exposing whether another user uploaded particular content. Garbage collection accounts for delivery retention, references and an orphan grace period.
 
-**Encrypted object lifecycle.** The client encrypts media with a randomly generated content key, uploads ciphertext through a scoped URL, and sends the ciphertext object reference and encrypted key material inside the message. The media service verifies completed upload size and ciphertext integrity before the reference is accepted.
+**How it works: Encrypted object lifecycle.** The client encrypts media with a randomly generated content key, uploads ciphertext through a scoped URL, and sends the ciphertext object reference and encrypted key material inside the message. The media service verifies completed upload size and ciphertext integrity before the reference is accepted.
 
 A download goes directly through the authorized object/CDN path; the client verifies and decrypts it locally. Chunk retries affect only media transfer, leaving small message delivery independent. The server can validate ciphertext hashes and sizes without gaining plaintext visibility.
 
-Forwarding may reuse an existing authorized ciphertext object, but access checks remain reference-specific. Avoid a global content-existence API, which would reveal other users' uploads. Garbage collection checks durable message references, retention and active uploads before marking an object collectible, then waits a grace period before deletion. A short-lived URL limits renewed access but does not erase a copy already downloaded.
+**Tradeoffs and recovery.** Forwarding may reuse an existing authorized ciphertext object, but access checks remain reference-specific. Avoid a global content-existence API, which would reveal other users' uploads. Garbage collection checks durable message references, retention and active uploads before marking an object collectible, then waits a grace period before deletion. A short-lived URL limits renewed access but does not erase a copy already downloaded.
 
 ### Key agreement and compromise recovery
 
 **Problem.** A sender needs to establish a secure session while the recipient is offline, and key compromise should have a bounded effect.
+
+**Options and tradeoffs.**
 
 - **Transport encryption only:** Protect each client/server connection. Networking is simpler, but the server can read message content and endpoint-to-endpoint privacy is absent.
 
@@ -339,14 +374,14 @@ Forwarding may reuse an existing authorized ciphertext object, but access checks
 
 - **Audited asynchronous agreement with a ratcheting protocol — recommended:** Use maintained prekey agreement and per-message key evolution, with authenticated device identities. Offline setup and bounded compromise recovery are supported; prekey inventories, device changes and key-state persistence add complexity.
 
-**Recommendation.** Use a maintained, audited implementation of the selected end-to-end protocol. [X3DH](https://signal.org/docs/specifications/x3dh/) describes asynchronous prekey-based agreement; the [Double Ratchet specification](https://signal.org/docs/specifications/doubleratchet/) describes per-message key derivation and fresh key agreement. Recipients can be offline and devices can be compromised, so both asynchronous setup and evolving keys matter. We accept audited protocol integration and device-key lifecycle work; no custom cryptographic construction is introduced by this design.
+**Choice and rationale.** Use a maintained, audited implementation of the selected end-to-end protocol. [X3DH](https://signal.org/docs/specifications/x3dh/) describes asynchronous prekey-based agreement; the [Double Ratchet specification](https://signal.org/docs/specifications/doubleratchet/) describes per-message key derivation and fresh key agreement. Recipients can be offline and devices can be compromised, so both asynchronous setup and evolving keys matter. We accept audited protocol integration and device-key lifecycle work; no custom cryptographic construction is introduced by this design.
 
 Deleting old message keys protects earlier messages. A compromised symmetric chain can expose later keys until fresh uncompromised key agreement occurs. A new ratchet key is generated on ratchet transitions, rather than for every message.
 
 Authenticate identity keys, consume one-time prekeys atomically and bound skipped-key storage for out-of-order delivery. Identity changes require a clear verification flow; encrypted content still leaves traffic and membership metadata for the service to protect.
 
-**Client-owned key state.** The server stores public identity/prekey material and delivers encrypted messages; private identity, ratchet and message keys stay on the client. A new sender fetches and verifies the recipient's prekey bundle, establishes the session through the audited library, then persists session state before advancing it.
+**How it works: Client-owned key state.** The server stores public identity/prekey material and delivers encrypted messages; private identity, ratchet and message keys stay on the client. A new sender fetches and verifies the recipient's prekey bundle, establishes the session through the audited library, then persists session state before advancing it.
 
 The ratchet carries ordering information needed for messages arriving out of order. Keep skipped message keys under strict count and age limits; an attacker must not force unbounded key storage by claiming an enormous gap. Persist the updated ratchet state and accepted message locally in one crash-safe operation.
 
-Identity-key changes trigger the chosen user verification policy before trust is carried forward. Recovery protects encrypted key backups separately from server message storage. Assess compromise recovery at the protocol's actual key-update boundary: a new server connection or a symmetric-chain step alone does not establish a fresh uncompromised agreement.
+**Tradeoffs and recovery.** Identity-key changes trigger the chosen user verification policy before trust is carried forward. Recovery protects encrypted key backups separately from server message storage. Assess compromise recovery at the protocol's actual key-update boundary: a new server connection or a symmetric-chain step alone does not establish a fresh uncompromised agreement.

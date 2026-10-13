@@ -1,5 +1,7 @@
 """Exercise the exact Python examples shown in the LD article."""
+import ast
 import dataclasses
+import inspect
 import json
 from pathlib import Path
 import re
@@ -10,9 +12,13 @@ from unittest.mock import patch
 
 
 ARTICLE = Path(__file__).resolve().parents[1] / "_designs/low-level-design-feature-flag-evaluator.md"
-BLOCKS = re.findall(r"```python\n(.*?)\n```", ARTICLE.read_text(), re.DOTALL)
+TEXT = ARTICLE.read_text()
+IMPLEMENTATION = TEXT.split("## Key implementation\n", 1)[1].split("### A worked example\n", 1)[0]
+EXAMPLE = TEXT.split("### A worked example\n", 1)[1].split("## Edge cases and tests\n", 1)[0]
+BLOCKS = re.findall(r"```python\n(.*?)\n```", IMPLEMENTATION, re.DOTALL)
+EXAMPLE_BLOCKS = re.findall(r"```python\n(.*?)\n```", EXAMPLE, re.DOTALL)
 API = {}
-exec("\n\n".join(BLOCKS[:3]), API)
+exec("\n\n".join(BLOCKS), API)
 Context, Condition, Rule, Flag, Snapshot, Evaluation, Session, Store = (
     API[name] for name in (
         "Context", "Condition", "Rule", "Flag", "Snapshot", "Evaluation",
@@ -33,7 +39,76 @@ class FeatureFlagTests(unittest.TestCase):
                        Context(subject, attributes or {}))
 
     def test_entire_worked_example_runs(self):
-        exec("\n\n".join(BLOCKS), {})
+        exec("\n\n".join(BLOCKS + EXAMPLE_BLOCKS), {})
+
+    def test_models_match_implementation_fields(self):
+        section = TEXT.split("## Core entities\n", 1)[1].split("## Classes and interfaces\n", 1)[0]
+        models = dict(re.findall(r"message (\w+)\s*\{(.*?)\}", section, re.DOTALL))
+        names = ("Context", "Condition", "Rule", "Flag", "Snapshot", "Evaluation")
+        self.assertEqual(set(models), set(names))
+        for name in names:
+            fields = re.findall(r"^\s*(?:optional\s+|repeated\s+)?(?:map<[^>]+>|\w+)\s+(\w+)\s*;", models[name], re.MULTILINE)
+            self.assertEqual(fields, [field.name for field in dataclasses.fields(API[name])])
+
+    def test_model_presentation_and_invariant_comments(self):
+        section = TEXT.split("## Core entities\n", 1)[1].split("## Classes and interfaces\n", 1)[0]
+        schemas = re.findall(r"```protobuf\n(.*?)\n```", section, re.DOTALL)
+        self.assertEqual(len(schemas), 2)
+        for schema in schemas:
+            self.assertNotRegex(schema, r"=\s*\d+\s*;")
+            self.assertIn("//", schema)
+            self.assertTrue(all(len(line) <= 80 for line in schema.splitlines()))
+        for invariant in ("first match wins", "all must match", "0..10,000", "map key = Flag.key", "captured snapshot"):
+            self.assertIn(invariant, section)
+
+    def test_typed_class_contracts_match_method_parameters(self):
+        section = TEXT.split("## Classes and interfaces\n", 1)[1].split("## Functional scenarios\n", 1)[0]
+        contract = re.search(r"```python\n(.*?)\n```", section, re.DOTALL).group(1)
+        self.assertTrue(all(len(line) <= 80 for line in contract.splitlines()))
+        for definition in ast.parse(contract).body:
+            self.assertIsInstance(definition, ast.ClassDef)
+            implementation = API[definition.name]
+            for method in (node for node in definition.body if isinstance(node, ast.FunctionDef)):
+                parameters = list(inspect.signature(getattr(implementation, method.name)).parameters)
+                self.assertEqual([argument.arg for argument in method.args.args], parameters)
+                self.assertEqual(len(method.args.defaults), len([
+                    parameter for parameter in inspect.signature(getattr(implementation, method.name)).parameters.values()
+                    if parameter.default is not inspect.Parameter.empty
+                ]))
+        self.assertIn("_snapshot: Snapshot", contract)
+        self.assertIn("snapshot: Snapshot", contract)
+        self.assertIn("context: Context", contract)
+
+    def test_breadth_first_sections_and_functional_diagrams(self):
+        headings = re.findall(r"^## (.+)$", TEXT, re.MULTILINE)
+        self.assertEqual(headings, [
+            "Problem", "Requirements", "High-level design", "Core entities",
+            "Classes and interfaces", "Functional scenarios", "Deep dives",
+            "Key implementation", "Edge cases and tests", "Extensions and trade-offs",
+        ])
+        overview = TEXT.split("## High-level design\n", 1)[1].split("## Core entities\n", 1)[0]
+        self.assertIn("flowchart TB", overview)
+        self.assertIn("Application process", overview)
+        scenarios = TEXT.split("## Functional scenarios\n", 1)[1].split("## Deep dives\n", 1)[0]
+        cases = re.findall(r"^### ([^\n]+)\n(.*?)(?=^### |\Z)", scenarios, re.MULTILINE | re.DOTALL)
+        self.assertEqual([title for title, _ in cases], [
+            "Evaluating a flag", "Expanding a rollout", "Publishing configuration during a request",
+        ])
+        for _, case in cases:
+            self.assertIn("sequenceDiagram", case)
+            self.assertIn("accTitle:", case)
+        self.assertNotIn("```python", scenarios)
+
+    def test_deep_dives_explain_choices_and_tradeoffs(self):
+        section = TEXT.split("## Deep dives\n", 1)[1].split("## Key implementation\n", 1)[0]
+        dives = re.findall(r"^### ([^\n]+)\n(.*?)(?=^### |\Z)", section, re.MULTILINE | re.DOTALL)
+        self.assertEqual(len(dives), 3)
+        for _, dive in dives:
+            for label in ("Problem", "Options and tradeoffs", "Choice and rationale",
+                          "How it works", "Tradeoffs and recovery"):
+                self.assertIn("**" + label + ".**", dive)
+            self.assertIn("Cost and failure mode", dive)
+        self.assertNotIn("launchdarkly.com", TEXT)
 
     def test_missing_flag_uses_default_and_reason(self):
         result = self.session(self.flag()).evaluate("absent", True)
@@ -82,12 +157,18 @@ class FeatureFlagTests(unittest.TestCase):
             for subject in ("customer-42", "customer-17", "customer-91"):
                 self.assertEqual(self.session(self.flag(rollout_bps=threshold), subject)
                                  .evaluate("checkout_v2").value, expected)
+        for threshold, rule_value in [(0, True), (10000, False)]:
+            rule = Rule("explicit", (Condition("employee", "true"),), rule_value)
+            result = self.session(self.flag(rollout_bps=threshold, rules=(rule,)),
+                                  attributes={"employee": "true"}).evaluate("checkout_v2")
+            self.assertEqual(result.value, rule_value)
+            self.assertEqual(result.reason, "RULE_MATCH")
 
     def test_calculated_table_and_process_stability(self):
         expected = {"customer-42": 250, "customer-17": 4560, "customer-91": 7524}
         flag = self.flag()
         self.assertEqual({s: API["stable_bucket"](flag, s) for s in expected}, expected)
-        program = "\n\n".join(BLOCKS[:3]) + (
+        program = "\n\n".join(BLOCKS) + (
             '\nprint(json.dumps({s: stable_bucket(Flag("checkout_v2", True, (), 1000, '
             '"checkout-v1"), s) for s in ["customer-42", "customer-17", "customer-91"]}))'
         )

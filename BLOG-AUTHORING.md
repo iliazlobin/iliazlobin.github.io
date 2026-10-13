@@ -228,8 +228,8 @@ Computed SVG fills are recorded, rather than treating unused palette CSS as proo
 that a diagram is styled.
 
 `--thumbnails` replaces only system- and low-level-design assets. It selects the
-flowchart under **High-level design** for SD/ML, or **From … to …** for LD, rather
-than an introductory sequence. Missing flowcharts, invalid Mermaid or
+flowchart under **High-level design**, with **From … to …** as a fallback for older
+LD articles, rather than an introductory sequence. Missing flowcharts, invalid Mermaid or
 unsafe/shared destinations fail the operation.
 No article source, metadata or Notion content is changed. Review and stage the
 generated SVGs with the article changes.

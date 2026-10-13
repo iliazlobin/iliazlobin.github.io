@@ -67,6 +67,8 @@
     },
     {
       "id": "connection-version", "aliases": ["session_epoch"], "prerequisites": ["signaling"],
+      "introductionSurfaces": ["model", "api"],
+      "introduction": {"purpose": "rejects delayed commands", "meaning": "connection version", "prerequisites": ["server"]},
       "definition": {"purpose": "rejecting older versions.*delayed commands|new commands must match the current versions.*delayed messages.*current session", "mechanism": "connection version.*session_epoch.*reconnecting advances"}
     },
     {

@@ -5,7 +5,7 @@ category: system-design
 date: 2026-07-22
 tags: [LLM, Streaming, GPU, Conversation]
 thumbnail: /images/posts/system-design-chatgpt.svg
-last_modified_at: 2026-10-07
+last_modified_at: 2026-10-12
 description: "Design of a ChatGPT-like chat service that generates streaming responses and maintains conversation history."
 notion_source: https://app.notion.com/p/3a5d865005a8815d9369ec6226fc527f
 ---
@@ -98,7 +98,7 @@ message UserQuota {
 }
 ```
 
-### API
+## API
 
 Submission creates a generation; a separate authenticated GET streams its events. The web client uses `fetch` streaming so it can supply authentication and a replay cursor.
 
@@ -147,17 +147,17 @@ The conversation service saves messages and reserves quota before dispatching wo
 flowchart TB
     U["User"] --> W["Web client"]
     W <-->|HTTPS / SSE| G["API gateway"]
-    subgraph Control["Conversation services"]
-        C["Conversation<br>and quota service"]
-        P[("PostgreSQL<br>History and usage")]
-        R[("Redis<br>Limits and replay")]
+    subgraph Control["Conversation<br>services"]
+        C["Conversation<br>and quota<br>service"]
+        P[("PostgreSQL<br>History and<br>usage")]
+        R[("Redis Limits<br>and replay")]
         C <-->|Durable records| P
     end
-    subgraph Serving["Inference services"]
-        I["Inference router"]
+    subgraph Serving["Inference<br>services"]
+        I["Inference<br>router"]
         S["GPU scheduler"]
         E["GPU workers"]
-        K[("GPU cache<br>Attention blocks")]
+        K[("GPU cache<br>Attention<br>blocks")]
         I <-->|Model requests| S
         S <-->|Batch execution| E
         E -->|Cache blocks| K
@@ -176,7 +176,7 @@ flowchart TB
   style Serving fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
 ```
 
-### Storage
+## Storage
 
 - **[PostgreSQL](/designs/tech-postgresql/):** choose transactions and uniqueness constraints for message ordering, idempotency and quota reservations. Store related records on the same user shard as the dataset grows. Index messages by `(conversation_id, sequence)` and conversations by `(user_id, updated_at, conversation_id)`; a [GIN text-search index](https://www.postgresql.org/docs/current/textsearch-indexes.html) supports title search.
 - **[Redis](/designs/tech-redis/):** use atomic token-bucket counters for request-rate limits and bounded event streams for reconnect replay. These records expire; PostgreSQL retains final responses and usage. A Redis outage pauses new admission and stream delivery until recovery.
@@ -186,7 +186,7 @@ flowchart TB
 
 ## Functional scenarios
 
-### One end-to-end request
+### Sending a prompt and receiving a response
 
 The conversation API commits one generation identity and reserves quota before admitting GPU work.
 
@@ -225,7 +225,7 @@ sequenceDiagram
 
 The gateway reads ordered replay events from the cache and delivers them over SSE. The conversation API commits the final message and quota settlement before publishing the terminal event. A reconnect resumes through the same bounded replay path.
 
-### Sending a prompt
+**Request steps.**
 
 A user submits a message through `POST /conversations/{id}/messages`. The conversation service verifies ownership and loads the system prompt and messages in sequence order.
 
@@ -235,17 +235,17 @@ A user submits a message through `POST /conversations/{id}/messages`. The conver
 
 Token allowance counts the assembled input once per generation, including cached input, plus generated output. An atomic reservation accounts for concurrent requests before they begin consuming GPU time. Queueing and memory admission are covered in the deep dives.
 
-### Generating a response
+**Generating the response.**
 
 The worker runs two stages. **Prefill** processes the input tokens and creates the key/value attention cache. **Decode** uses that cache to generate successive output tokens.
 
 ```mermaid
 flowchart TB
-    A["System prompt<br>Ordered messages"] --> B["Tokenize"]
-    B --> C["Prefill<br>Process uncached input"]
-    C --> D["Decode next token"]
-    D --> E["Emit text delta"]
-    E --> F{"Stop condition?"}
+    A["System prompt<br>Ordered<br>messages"] --> B["Tokenize"]
+    B --> C["Prefill<br>Process<br>uncached input"]
+    C --> D["Decode next<br>token"]
+    D --> E["Emit text<br>delta"]
+    E --> F{"Stop<br>condition?"}
     F -->|"Continue"| D
     F -->|"End token / limit / cancel"| G["Save response<br>Settle quota"]
   classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
@@ -268,6 +268,32 @@ Changing the model or system prompt produces a different cache key. If the assem
 
 ### Stopping and reconnecting
 
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    accTitle: Reconnecting to the same response generation
+    participant C as Web client
+    participant G as Gateway
+    participant R as Replay cache
+    participant A as Conversation API
+    rect rgb(232, 240, 254)
+        C->>G: Same generation and last applied event ID
+        G->>R: Read events after cursor
+        alt Cursor retained within bounded window
+            R-->>G: Ordered retained events
+            G-->>C: Replay, then attach to live output
+        else Cursor expired
+            R-->>G: Replay gap
+            G-->>C: 410 replay_expired
+            C->>A: Read durable generation status
+            A-->>C: Status and saved output when available
+        end
+    end
+```
+
+Reconnect attaches to the original generation; it does not submit another prompt or reserve quota again. The client ignores events already applied. A replay gap falls back to durable status and saved output, while a worker failure remains a failed generation rather than an exact continuation on another model run.
+
+
 The Stop action sends `POST /generations/{id}/cancel`. The worker checks cancellation between iterations, releases active cache blocks and saves the partial response with a cancelled status.
 
 A dropped SSE connection has a 30s reconnect grace period. The web client reconnects to the same generation with its last applied event ID; the gateway replays retained events and then attaches to live output. The replay buffer is bounded, so an older cursor returns `410 replay_expired`; the client retrieves the saved response when generation finishes. Stream recovery is detailed below.
@@ -282,13 +308,15 @@ Deletion sets `deleted_at`, hides the conversation immediately and cancels its a
 
 ### GPU scheduling
 
-Requests need different amounts of work: a long prompt requires substantial prefill, while an active response needs frequent decode steps. Reserving a full context buffer for every request wastes memory, and a fixed batch retains capacity until its longest response finishes.
+**Problem.** Requests need different amounts of work: a long prompt requires substantial prefill, while an active response needs frequent decode steps. Reserving a full context buffer for every request wastes memory, and a fixed batch retains capacity until its longest response finishes.
+
+**Options and tradeoffs.**
 
 - **Fixed batches:** execute a group until its longest response finishes. The scheduler is simple, but completed short requests leave unused batch capacity and long prompts delay active streams.
 - **Continuous batching:** admit and retire requests between decode iterations, with chunked prefill sharing time with active decoding. This improves utilization and first-token/decode fairness; the scheduler must manage varying attention-memory footprints and prefill budgets.
 - **Separate prefill/decode pools:** send prompt processing and token generation to independently sized workers. Each pool can be tuned for its workload, but attention-state transfer adds bandwidth, handoff latency and another admission boundary.
 
-**Recommendation:** start with continuous batching, chunked prefill and paged attention-cache allocation. [Orca](https://www.usenix.org/conference/osdi22/presentation/yu) and [TensorRT-LLM in-flight batching](https://nvidia.github.io/TensorRT-LLM/batch_manager.html) describe iteration-level scheduling; [PagedAttention](https://arxiv.org/abs/2309.06180) describes noncontiguous cache blocks. Continuous batching with chunked prefill fits a mixed interactive workload without introducing cross-pool attention transfers. We accept more scheduler and cache-block bookkeeping than fixed batches; disaggregation becomes worthwhile only when measured prefill/decode imbalance exceeds its transfer and coordination costs.
+**Choice and rationale.** Start with continuous batching, chunked prefill and paged attention-cache allocation. [Orca](https://www.usenix.org/conference/osdi22/presentation/yu) and [TensorRT-LLM in-flight batching](https://nvidia.github.io/TensorRT-LLM/batch_manager.html) describe iteration-level scheduling; [PagedAttention](https://arxiv.org/abs/2309.06180) describes noncontiguous cache blocks. Continuous batching with chunked prefill fits a mixed interactive workload without introducing cross-pool attention transfers. We accept more scheduler and cache-block bookkeeping than fixed batches; disaggregation becomes worthwhile only when measured prefill/decode imbalance exceeds its transfer and coordination costs.
 
 Size attention memory from the selected model configuration:
 
@@ -304,7 +332,7 @@ At each iteration, schedule active decodes, fill the remaining token budget with
 
 [TensorRT-LLM](https://nvidia.github.io/TensorRT-LLM/architecture/overview.html) and [DeepSpeed Inference](https://arxiv.org/abs/2207.00032) are serving-engine alternatives. [FlashAttention](https://arxiv.org/abs/2205.14135) optimizes attention execution; [FlexGen](https://arxiv.org/abs/2303.06865) explores offloading for throughput-oriented workloads. Whole-state offloading requires measured transfer costs before use on this latency-sensitive path.
 
-**Walk through one scheduler iteration**
+**How it works — Walk through one scheduler iteration.**
 
 Suppose the worker has two active decodes and receives a 12K-token prompt. Running the entire prefill first could leave both active users waiting. Instead, the scheduler includes each active sequence's next decode token and fills the remaining per-iteration token budget with a bounded prefill chunk. The next iteration repeats this process; a completed sequence releases its cache blocks immediately.
 
@@ -318,17 +346,19 @@ Iteration    Decode work       Prefill work              Memory action
 
 The runtime maps each sequence's logical attention pages to physical GPU blocks. Every layer's key/value tensor is addressed through that mapping, so a long request can grow without reserving one large contiguous allocation up front. Allocator efficiency helps concurrency; it does not reduce the model's per-token attention-state requirement.
 
-Choose the token budget by profiling first-token latency, inter-token gaps and throughput across the real prompt-length distribution. Keep a separate ceiling on active sequences and cache occupancy. If the next iteration would exceed memory, queue admission or preempt a selected sequence; resumption rebuilds lost state from saved tokens. A prefill/decode split is worthwhile only when measured transfer and coordination costs are below its capacity benefit.
+**Tradeoffs and recovery.** Choose the token budget by profiling first-token latency, inter-token gaps and throughput across the real prompt-length distribution. Keep a separate ceiling on active sequences and cache occupancy. If the next iteration would exceed memory, queue admission or preempt a selected sequence; resumption rebuilds lost state from saved tokens. A prefill/decode split is worthwhile only when measured transfer and coordination costs are below its capacity benefit.
 
 ### Streaming and recovery
 
-A generation can continue while its connection drops, and reconnecting must refer to the same attempt. Slow sockets and gateway failures therefore need a lifecycle separate from GPU execution.
+**Problem.** A generation can continue while its connection drops, and reconnecting must refer to the same attempt. Slow sockets and gateway failures therefore need a lifecycle separate from GPU execution.
+
+**Options and tradeoffs.**
 
 - **Cancel on disconnect:** stop GPU work as soon as the connection closes. Abandoned requests release capacity promptly, but a brief mobile network interruption ends an otherwise healthy response.
 - **Bounded replay with grace:** retain ordered token events for a short reconnect window and keep generation alive during that grace period. Users recover transient disconnects under the same attempt; abandoned work and Redis memory still consume capacity until the bound expires.
 - **Persist every delta durably:** store each event for longer recovery. A gateway failure loses less stream history, but per-token writes add throughput, storage and recovery complexity even for streams that finish normally.
 
-**Recommendation:** use bounded replay and a 30s disconnect grace period. Assign increasing event IDs within each generation and retain up to 1,000 events per generation in Redis, with a byte limit and a 30s TTL after termination. The worker appends each delta once with a stable sequence ID; retried writes deduplicate that ID. The client ignores events it has already applied. A 30-second grace period fits short interactive reconnections while bounding expensive abandoned GPU work. We accept that recovery after the replay window is limited to the durable generation/message state; every token is not a permanent conversation record.
+**Choice and rationale.** Use bounded replay and a 30s disconnect grace period. Assign increasing event IDs within each generation and retain up to 1,000 events per generation in Redis, with a byte limit and a 30s TTL after termination. The worker appends each delta once with a stable sequence ID; retried writes deduplicate that ID. The client ignores events it has already applied. A 30-second grace period fits short interactive reconnections while bounding expensive abandoned GPU work. We accept that recovery after the replay window is limited to the durable generation/message state; every token is not a permanent conversation record.
 
 ```yaml
 id: "generation-123:42"
@@ -342,7 +372,7 @@ The gateway disables proxy buffering and sends a heartbeat every 15s. A shared c
 
 Checkpoint partial text and usage in PostgreSQL periodically. A gateway restart can replay from Redis; a GPU worker crash marks the generation failed and retains its last checkpoint. Retrying creates a new generation explicitly. Each worker assignment has an expiring lease and increasing execution epoch; stale epochs cannot publish results or settle usage. Stop the old worker before reclaiming GPU capacity. If final usage is unavailable, hold its reserved allowance for reconciliation. Test these paths alongside ordinary reconnects.
 
-**Reconnect and failure are different recovery paths**
+**How it works — Reconnect and failure are different recovery paths.**
 
 Assume event 42 reached Redis but the socket dropped before the client rendered it. The client reconnects with its last applied cursor, 41. The gateway validates generation ownership and replays events after 41, including 42, before switching to live delivery. Appending an event uses its stable sequence ID, so a worker retry cannot create a second logical delta.
 
@@ -366,17 +396,19 @@ sequenceDiagram
 
 If the cursor is older than the retained buffer, return a replay-gap response with the durable partial checkpoint. The UI can display that checkpoint and show that continuous recovery is unavailable. It must not concatenate a newly generated continuation as though it were the original exact output.
 
-A gateway crash preserves GPU execution because delivery and generation have separate ownership. A GPU crash loses attention state and fails that generation; restoring text does not restore the exact sampling state. A stale worker epoch is rejected by both publication and settlement paths. Test the crash after delta persistence, before checkpoint commit and after completion so each boundary has an explicit outcome.
+**Tradeoffs and recovery.** A gateway crash preserves GPU execution because delivery and generation have separate ownership. A GPU crash loses attention state and fails that generation; restoring text does not restore the exact sampling state. A stale worker epoch is rejected by both publication and settlement paths. Test the crash after delta persistence, before checkpoint commit and after completion so each boundary has an explicit outcome.
 
 ### Prefix caching
 
-Every follow-up repeats much of the previous context. Recomputing that prefix increases first-token latency; retaining all historical attention data would eventually exhaust GPU memory.
+**Problem.** Every follow-up repeats much of the previous context. Recomputing that prefix increases first-token latency; retaining all historical attention data would eventually exhaust GPU memory.
+
+**Options and tradeoffs.**
 
 - **Recompute every turn:** rebuild attention state from the full context. Recovery and isolation are simple, but repeated conversation prefixes consume prefill work and increase first-token latency.
 - **Immutable prefix blocks:** reuse compatible recent token-prefix blocks and evict them under memory pressure. Follow-ups save prefill work; identity must include preceding tokens, model/tokenizer revision and user isolation, and eviction can still force recomputation.
 - **Persist whole attention caches:** transfer and retain complete model state outside the worker. Some repeated work is avoided, but large state movement competes with serving bandwidth and old caches couple to the exact model configuration.
 
-**Recommendation:** keep an ephemeral, per-user prefix cache. A block's identity includes the preceding-prefix hash, token IDs, model revision, tokenizer configuration and a server-controlled user isolation salt. The preceding hash matters because attention data depends on earlier tokens. Ephemeral per-user blocks fit repeated conversation turns without making GPU state a durable dependency. We accept cache misses and recomputation after eviction or worker loss; the conversation history remains the recovery source.
+**Choice and rationale.** Keep an ephemeral, per-user prefix cache. A block's identity includes the preceding-prefix hash, token IDs, model revision, tokenizer configuration and a server-controlled user isolation salt. The preceding hash matters because attention data depends on earlier tokens. Ephemeral per-user blocks fit repeated conversation turns without making GPU state a durable dependency. We accept cache misses and recomputation after eviction or worker loss; the conversation history remains the recovery source.
 
 ```python
 import hashlib
@@ -393,22 +425,22 @@ Reuse complete matching blocks, then allocate writable blocks for new tokens. Re
 
 [vLLM's prefix-cache design](https://docs.vllm.ai/en/latest/design/prefix_caching/) explains block identity, reference counts and cache salting. Use a collision-resistant hash and test model upgrades, prefix edits and ownership boundaries. Measure saved prefill tokens separately from overall throughput: decode work and GPU memory remain part of each response.
 
-**Why the preceding prefix belongs in the key**
+**How it works — Why the preceding prefix belongs in the key.**
 
 For tokens `A B C D`, attention state for the block `C D` depends on `A B`. A cache keyed only by `C D` would wrongly reuse that state after `X Y`. Chaining the previous-block hash makes the cached block identify the complete preceding context.
 
 A follow-up request tokenizes the full conversation using the bundle's tokenizer. The scheduler walks complete block keys from the start until the first miss. It acquires references to matching blocks, computes the remaining suffix, and allocates writable storage for new tokens. A partially filled shared block needs copy-on-write before extension.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart TB
-  subgraph Saved["Saved context: reused by an unchanged follow-up"]
+  subgraph Saved["Saved context:<br>reused by an<br>unchanged<br>follow-up"]
     A["Block A B"] --> B["Block C D"]
     B --> C["Block E F"]
   end
-  C -->|"Follow-up"| D["Block G H<br>compute new suffix"]
-  A -->|"Edited turn: reuse ends here"| X["Block C X<br>first changed block"]
-  X --> Y["Block E F<br>recompute attention state"]
+  C -->|"Follow-up"| D["Block G H<br>compute new<br>suffix"]
+  A -->|"Edited turn:<br>reuse ends here"| X["Block C X<br>first changed<br>block"]
+  X --> Y["Block E F<br>recompute<br>attention<br>state"]
   class A,B,C data
   class D,X,Y request
   style Saved fill:#e6f4ea,stroke:#9aa0a6,color:#202124
@@ -418,17 +450,19 @@ classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
 classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
-Evict zero-reference entries using a recency policy; active generations retain their pages. Model, tokenizer and isolation-salt changes intentionally create misses. Cache survival is an optimization: PostgreSQL history and versioned model artifacts supply the recovery path when a worker or its GPU memory disappears.
+**Tradeoffs and recovery.** Evict zero-reference entries using a recency policy; active generations retain their pages. Model, tokenizer and isolation-salt changes intentionally create misses. Cache survival is an optimization: PostgreSQL history and versioned model artifacts supply the recovery path when a worker or its GPU memory disappears.
 
 ### Fair admission
 
-A request count alone understates load: two long-context generations can consume more memory than many short requests. Unbounded priority queues also give low-priority users unpredictable waits.
+**Problem.** A request count alone understates load: two long-context generations can consume more memory than many short requests. Unbounded priority queues also give low-priority users unpredictable waits.
+
+**Options and tradeoffs.**
 
 - **Separate tier fleets:** reserve independent workers for free and paid users. Capacity isolation is clear, but idle workers in one tier cannot easily serve another tier's backlog.
 - **Strict priority queues:** always dispatch the highest tier first. Priority behavior is simple, but sustained paid demand can starve lower tiers and request counts conceal long-context cost.
 - **Weighted fair queues:** grant each tier work credits and rotate between users while checking memory and concurrency. Capacity is shared with a positive minimum service share; cost estimation and queue accounting add complexity, and fairness cannot create capacity during overload.
 
-**Recommendation:** use weighted fair admission per model pool, then continuous batching within each worker. Give each tier a positive share and bound both queued work and active generations. Start with proposed per-user caps of two free-tier and ten paid-tier generations; tune those policies from queue delay and GPU-memory measurements. Weighted fair admission fits shared model pools with different service tiers and variable context lengths. We accept estimation error and bounded queue rejection, then tune weights and caps from queue age and memory pressure rather than promising unlimited priority service.
+**Choice and rationale.** Use weighted fair admission per model pool, then continuous batching within each worker. Give each tier a positive share and bound both queued work and active generations. Start with proposed per-user caps of two free-tier and ten paid-tier generations; tune those policies from queue delay and GPU-memory measurements. Weighted fair admission fits shared model pools with different service tiers and variable context lengths. We accept estimation error and bounded queue rejection, then tune weights and caps from queue age and memory pressure rather than promising unlimited priority service.
 
 Implement admission with weighted deficit round-robin: each scheduling round adds work credits in proportion to the tier's weight. A request becomes eligible when its estimated prefill/decode cost fits those credits; dispatch subtracts that cost. Rotate between users within each tier. The GPU scheduler separately checks available cache blocks.
 
@@ -436,7 +470,7 @@ Request-rate or concurrency limits return `429` with `Retry-After`; a full model
 
 Keep warm spare capacity and scale from queue age, prefill/decode throughput and cache occupancy. Test burst load and long requests against the same latency targets; priority weights distribute capacity but do not establish a performance guarantee.
 
-**Fairness at admission and inside a worker**
+**How it works — Fairness at admission and inside a worker.**
 
 A tier weight allocates estimated work, not simply request count. A 20K-token prompt gets charged more prefill credits than a short prompt; its reserved output ceiling also bounds future decode exposure. Estimates are reconciled against actual work to detect systematic underestimation.
 
@@ -444,4 +478,4 @@ Use separate limits for queued bytes/tokens, active requests and per-user concur
 
 For example, weights 3:1 give a paid tier three work credits for each free-tier credit. Unused shares may be borrowed while demand is low, but new free requests regain their share on subsequent rounds. Deficit credits need a cap so an idle tenant cannot accumulate a huge future burst.
 
-The GPU scheduler then protects the streams already admitted by chunking prefill and limiting decode gaps. End-to-end latency is queue wait plus prefill plus decode plus delivery, so a fair queue alone cannot establish the first-token target. Autoscaling uses queue age and throughput; new workers are admitted to routing only after their model is loaded and their health probe confirms execution.
+**Tradeoffs and recovery.** The GPU scheduler then protects the streams already admitted by chunking prefill and limiting decode gaps. End-to-end latency is queue wait plus prefill plus decode plus delivery, so a fair queue alone cannot establish the first-token target. Autoscaling uses queue age and throughput; new workers are admitted to routing only after their model is loaded and their health probe confirms execution.

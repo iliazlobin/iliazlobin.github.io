@@ -7,7 +7,7 @@ tags: [Interview-Prep, Geospatial, Distributed-Systems, Real-Time]
 thumbnail: /images/posts/2026-06-30-system-design-tinder.svg
 redirect_from:
   - /2026/06/30/system-design-tinder.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-12
 description: "A Tinder-style service for discovering nearby profiles, recording likes and passes, creating mutual matches and messaging matched users."
 notion_source: https://app.notion.com/p/38fd865005a881369b51d507cfba29c6
 ---
@@ -162,22 +162,22 @@ Authentication supplies the actor's user ID. Profile and media-upload endpoints 
 Feed generation uses location-based candidate pools and cached ranking features. The swipe and chat services route each pair to one durable shard, which serializes decisions, match state and message acceptance. Committed events update feed exclusions, match lists and WebSocket delivery.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-  U[Web or mobile client] -->|Authenticated requests| G[API gateway]
+  U["Web or mobile<br>client"] -->|Authenticated requests| G[API gateway]
   G -->|Discovery| F[Feed service]
   G -->|Swipes and unmatches| S[Pair service]
   G -->|Messages and reconnects| C[Chat service]
-  F -->|Candidate pools and features| R[(Redis)]
-  F -->|Exact eligibility checks| P[(PostgreSQL shards)]
+  F -->|Pools and features| R[(Redis)]
+  F -->|Exact eligibility checks| P[("PostgreSQL<br>shards")]
   S -->|Pair transactions| P
   C -->|Message acceptance| P
   P -->|Committed outbox| K[Event stream]
   K -->|Refresh exclusions and lists| R
-  K -->|Deliver messages| W[WebSocket gateways]
+  K -->|Deliver messages| W["WebSocket<br>gateways"]
   W -->|Live updates| U
   K -->|Build message history| H[(Cassandra)]
-  B[Candidate builder] -->|Published pools| R
+  B["Candidate<br>builder"] -->|Published pools| R
   B -->|Spatial profile queries| L[(Location index)]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
@@ -200,9 +200,9 @@ class R,P,K,H,B,L data;
 
 Cross-pair queries group IDs by shard and issue bounded parallel batches. Shard migrations preserve the pair's routing version and drain old writers before transferring ownership.
 
-## From request to response
+## Functional scenarios
 
-### Swipe and match flow
+### Recording a swipe and detecting a match
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -227,18 +227,22 @@ sequenceDiagram
 
 Both users' commands route to the same canonical pair authority, so the later locked transaction observes the earlier committed like. The match is durable before notification; a missed live update is recovered from match state on reconnect.
 
+The pair service validates the target and decision, derives the canonical pair key and starts a transaction on that shard. It inserts an empty pair row if needed, locks the row, checks the command identity and writes the actor's decision. If both decisions are likes and the pair is eligible, it creates the match and its outbox event in the same transaction.
+
+After commit, the API returns the recorded result. Event consumers update each user's match list and exclusion cache, then send WebSocket or push notifications. Reconnecting clients fetch durable match state, so a missed notification does not lose a match.
+
 ### Browsing the feed
 
 The feed service loads the user's preferences and current location, selects candidate cells covering the requested radius and fetches a bounded pool of profile IDs. It filters by mutual preferences, current visibility, distance and pair decisions, then ranks the remaining profiles.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-  A[Preferences and location] --> B[Nearby candidate pools]
-  B --> C[Cached exclusion filter]
-  C --> D[Batch exact profile and pair checks]
-  D --> E[Rank eligible profiles]
-  E --> F[Return a versioned page]
+  A["Preferences<br>and location"] --> B["Nearby<br>candidate<br>pools"]
+  B --> C["Cached<br>exclusion<br>filter"]
+  C --> D["Batch exact<br>profile and<br>pair checks"]
+  D --> E["Rank eligible<br>profiles"]
+  E --> F["Return a<br>versioned page"]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
 classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
@@ -252,17 +256,42 @@ Pagination pins the candidate-pool version and remembers recently delivered IDs.
 
 Repeated feature reads and scattered pair checks make this path expensive. Candidate precomputation and batched membership checks reduce that work; the feed deep dive describes the coverage and freshness trade-offs.
 
-### Recording a swipe and detecting a match
-
-The pair service validates the target and decision, derives the canonical pair key and starts a transaction on that shard. It inserts an empty pair row if needed, locks the row, checks the command identity and writes the actor's decision. If both decisions are likes and the pair is eligible, it creates the match and its outbox event in the same transaction.
-
-After commit, the API returns the recorded result. Event consumers update each user's match list and exclusion cache, then send WebSocket or push notifications. Reconnecting clients fetch durable match state, so a missed notification does not lose a match.
-
 ### Sending a message
 
 The chat service validates membership and locks the pair row. For an active match, it assigns the next sequence, stores the message and its outbox event, then commits before returning success. A repeated `client_message_id` returns the existing result.
 
 The outbox consumer delivers the message to connected devices and projects it into history storage. Recipients deduplicate by `(match_id, sequence)` and request missing sequences after reconnecting. Delivery and read receipts are separate from the durable acceptance response.
+
+### A message competes with an unmatch
+
+Message acceptance and unmatching serialize on the same pair record. If the message commits first, it remains a valid retained message; if closure commits first, subsequent message acceptance is rejected.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+  participant S as Sender
+  participant C as Chat service
+  participant D as Pair database
+  participant P as Pair service
+  participant U as Other user
+  rect rgb(254, 247, 224)
+    S->>C: Message and stable client ID
+    C->>D: Lock active pair, persist message and outbox
+    D-->>C: Committed message sequence
+    C-->>S: Accepted
+    U->>P: Unmatch
+    P->>D: Lock and close pair
+    D->>D: Commit closed version and outbox
+  end
+  rect rgb(232, 240, 254)
+    S->>C: Another message
+    C->>D: Check pair under lock
+    D-->>C: Pair closed
+    C-->>S: Conversation closed
+  end
+```
+
+This diagram shows the message-first ordering; reversing the two transactions rejects the first new message instead. Closing the conversation prevents future acceptance rather than erasing a message already committed. Live notifications can lag, so a stale open chat screen still receives the authoritative closed response.
 
 ### Unmatching and reporting
 
@@ -276,13 +305,15 @@ Reports are retained in restricted review storage. Moderation decisions update p
 
 **Problem.** If A's swipe and B's swipe are stored in separate user partitions, two handlers can each read an older inverse decision and miss the mutual like. Sending both operations through one stateless coordinator does not make writes to different partitions atomic.
 
+**Options and tradeoffs.**
+
 - **Independent writes with reconciliation:** Write each user's decision and check the inverse afterward. User-partition throughput is high, but simultaneous reads can both miss the reciprocal like and require delayed repair.
 
-- **Cassandra pair partition with LWT:** Co-locate pair decisions and use a conditional version transition. Distributed storage is retained; consensus rounds and contention retries add latency and need a bounded policy.
+- **Cassandra conditional pair transition:** Co-locate pair decisions and use a lightweight transaction (**LWT**) to compare and change the version atomically. Distributed storage is retained; consensus rounds and contention retries add latency and need a bounded policy.
 
 - **PostgreSQL pair transaction — recommended:** Lock one canonical pair row and commit decisions, match identity, command outcome and outbox together. Mutual likes serialize directly; pair-shard routing and writer fencing become explicit operational requirements.
 
-**Recommendation: use the PostgreSQL pair transaction.** [Row locking](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS) serializes concurrent updates to the pair. A later transaction sees the earlier committed decision and creates the match when both are likes. The design needs one recoverable match transition and messages/unmatches already share pair authority. We accept pair-row contention and shard ownership in exchange for an account-independent transactional boundary that covers the entire state change.
+**Choice and rationale.** Use the PostgreSQL pair transaction. [Row locking](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS) serializes concurrent updates to the pair. A later transaction sees the earlier committed decision and creates the match when both are likes. The design needs one recoverable match transition and messages/unmatches already share pair authority. We accept pair-row contention and shard ownership in exchange for an account-independent transactional boundary that covers the entire state change.
 
 ```python
 # One transaction on the pair's shard.
@@ -304,7 +335,7 @@ The first transaction may return no match; the second creates it and notifies bo
 
 Unmatching closes the pair permanently under the current product policy. Re-matching would need a new consent generation and a new conversation identity, rather than replaying old likes. Track pair-lock wait, retry rate, outbox age and reconciliation mismatches.
 
-**The simultaneous-like transaction.** Canonicalize A/B as `(min_id, max_id)` and route both swipes to the same pair shard. Create the pair row through a unique-key insert if necessary, then lock it. A's transaction writes A=LIKE and commits. B's waiting transaction reads that state, writes B=LIKE, creates one match and commits its notification outbox.
+**How it works: The simultaneous-like transaction.** Canonicalize A/B as `(min_id, max_id)` and route both swipes to the same pair shard. Create the pair row through a unique-key insert if necessary, then lock it. A's transaction writes A=LIKE and commits. B's waiting transaction reads that state, writes B=LIKE, creates one match and commits its notification outbox.
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -324,11 +355,13 @@ sequenceDiagram
 
 ```
 
-Retrying either command reads its retained outcome. Match delivery may repeat, but the match identity remains one. Profile blocking/eligibility changes use versions checked under the selected pair policy; new consent after an unmatch requires an explicit new generation.
+**Tradeoffs and recovery.** Retrying either command reads its retained outcome. Match delivery may repeat, but the match identity remains one. Profile blocking/eligibility changes use versions checked under the selected pair policy; new consent after an unmatch requires an explicit new generation.
 
 ### How do we build a nearby feed efficiently?
 
 **Problem.** A full radius query with preference joins and ranking for every request becomes expensive in dense areas. Precomputed pools reduce that load, but can miss eligible users near boundaries or omit lower-ranked candidates.
+
+**Options and tradeoffs.**
 
 - **Direct PostGIS queries:** Run indexed radius and preference queries per request. Coverage and distance semantics are clear, but dense regions and repeated ranking joins raise serving cost.
 
@@ -336,21 +369,23 @@ Retrying either command reads its retained outcome. Match delivery may repeat, b
 
 - **Distributed spatial index:** Partition a frequently changing location index across owners. Capacity grows horizontally, but movement, neighborhood fan-out and ownership changes complicate recovery and query coverage.
 
-**Recommendation: use indexed regional spatial storage and precomputed Redis pools.** Select all cells intersecting the radius, oversample candidates from those pools, then verify actual distance and preferences. A fixed 3×3 geohash neighborhood does not cover an arbitrary 50km radius. Regional candidate reuse is valuable at discovery volume, while final pair/profile checks protect visibility. We accept pool-refresh lag and oversampling work, testing boundary and dense-region recall rather than assuming a fixed cell neighborhood covers every radius.
+**Choice and rationale.** Use indexed regional spatial storage and precomputed Redis pools. Select all cells intersecting the radius, oversample candidates from those pools, then verify actual distance and preferences. A fixed 3×3 geohash neighborhood does not cover an arbitrary 50km radius. Regional candidate reuse is valuable at discovery volume, while final pair/profile checks protect visibility. We accept pool-refresh lag and oversampling work, testing boundary and dense-region recall rather than assuming a fixed cell neighborhood covers every radius.
 
 Candidate builders publish versioned pools atomically. Rebuilds include active profiles and allocate exposure for new users; pagination reads one version. In sparse areas, offer an explicit distance change instead of silently changing age or preference filters. Dense areas use larger or rotating pools to avoid permanently hiding the same profiles.
 
 Location changes select the new cell coverage immediately. Profile removal and safety restrictions use current eligibility checks even when the pool is several minutes old. Measure radius coverage, eligible-pool size, refresh lag and exposure distribution.
 
-**Radius coverage and pool generation.** A request for users within 20 km first selects every cell intersecting that circle, including boundary cells. Pools provide candidate IDs; exact distance and current preferences remove the extra area covered by whole cells.
+**How it works: Radius coverage and pool generation.** A request for users within 20 km first selects every cell intersecting that circle, including boundary cells. Pools provide candidate IDs; exact distance and current preferences remove the extra area covered by whole cells.
 
 In a dense city, each cell pool is a sampled/rotating eligible set rather than an unexplained permanent popularity cutoff. Publish pool generation G with a source cutoff and exposure policy. A feed session pins G so refreshes do not repeatedly show the first high-ranked profiles while the user paginates.
 
-Batch profile and pair checks under a candidate budget, then fetch another bounded batch if many candidates were excluded. A sparse result invites an explicit distance change. Changing location immediately selects new cell coverage; stale cells do not override the user's current request or bypass safety restrictions.
+**Tradeoffs and recovery.** Batch profile and pair checks under a candidate budget, then fetch another bounded batch if many candidates were excluded. A sparse result invites an explicit distance change. Changing location immediately selects new cell coverage; stale cells do not override the user's current request or bypass safety restrictions.
 
 ### How do we exclude earlier swipes without loading the entire history?
 
 **Problem.** A heavy user's swipe history can contain many thousands of IDs. Fetching and transmitting the complete set for every feed page adds memory and network work.
+
+**Options and tradeoffs.**
 
 - **Exact candidate membership checks — recommended:** Batch only the candidate pair IDs on their authoritative shards. Correctness work is proportional to the current page; shard fan-out and database latency remain bounded serving costs.
 
@@ -358,7 +393,7 @@ Batch profile and pair checks under a candidate budget, then fetch another bound
 
 - **Bloom-filter acceleration:** Use a compact probabilistic history representation before exact checks. Memory is smaller; false positives can hide unseen profiles, while an incomplete or stale filter can miss a recorded decision.
 
-**Recommendation: batch exact checks, with a Bloom filter as an optional accelerator.** Use [Redis Bloom filters](https://redis.io/docs/latest/develop/data-types/probabilistic/bloom-filter/) to cheaply discard likely repeats, then check surviving candidates against current pair records. This keeps database work proportional to the candidate batch. Exclusions affect user-visible correctness and permissions, so exact checks remain final. We accept bounded shard reads and optionally use a measured Bloom-filter accelerator, tracking coverage loss and freshness rather than calling it an exact history.
+**Choice and rationale.** Batch exact checks, with a Bloom filter as an optional accelerator. Use [Redis Bloom filters](https://redis.io/docs/latest/develop/data-types/probabilistic/bloom-filter/) to cheaply discard likely repeats, then check surviving candidates against current pair records. This keeps database work proportional to the candidate batch. Exclusions affect user-visible correctness and permissions, so exact checks remain final. We accept bounded shard reads and optionally use a measured Bloom-filter accelerator, tracking coverage loss and freshness rather than calling it an exact history.
 
 A complete Bloom filter has no false negatives for inserted IDs. That property does not cover dropped updates, resets or stale cache replicas. Rebuild from a consistent checkpoint, replay newer outbox updates into the replacement and swap versions after catching up.
 
@@ -366,15 +401,17 @@ Retain compact pair decisions for as long as the product promises to exclude ear
 
 Monitor filter capacity, update lag, exact-check load and repeated-profile reports. If the accelerator is unavailable, bounded exact checks remain the fallback.
 
-**Candidate-scoped history checks.** Instead of transferring 100,000 previous swipe IDs, a page might retrieve 200 candidates and batch-check their pair records grouped by shard. The response work remains proportional to 200 candidates, with bounded shard concurrency.
+**How it works: Candidate-scoped history checks.** Instead of transferring 100,000 previous swipe IDs, a page might retrieve 200 candidates and batch-check their pair records grouped by shard. The response work remains proportional to 200 candidates, with bounded shard concurrency.
 
 A complete Bloom filter can skip likely repeats cheaply, but false positives can hide unseen profiles. If exposure completeness matters, verify positives exactly too; otherwise declare and measure the tolerated suppression. Surviving candidates still receive exact checks because an incomplete or lagging filter can miss recent swipes.
 
-Build a replacement filter from a consistent pair checkpoint, replay changes after that cutoff, then atomically switch generations. Keep previous decisions as compact authoritative rows even after detailed event history expires. Cache loss falls back to bounded exact checks rather than showing repeat profiles or loading the entire history.
+**Tradeoffs and recovery.** Build a replacement filter from a consistent pair checkpoint, replay changes after that cutoff, then atomically switch generations. Keep previous decisions as compact authoritative rows even after detailed event history expires. Cache loss falls back to bounded exact checks rather than showing repeat profiles or loading the entire history.
 
 ### How should profile ranking evolve?
 
 **Problem.** Distance alone gives a relevant area, but users still need a useful ordering within it. Ranking solely by popularity concentrates exposure and provides weak evidence of mutual compatibility.
+
+**Options and tradeoffs.**
 
 - **Activity and completeness baseline:** Order eligible profiles using transparent freshness and completion features. Operations and explanations are simple, but mutual interest is weakly represented.
 
@@ -382,14 +419,14 @@ Build a replacement filter from a consistent pair checkpoint, replay changes aft
 
 - **Learned retrieval and ranking:** Estimate compatibility from impression-linked interactions. Personalization can improve with mature labels, but exposure bias, model/index compatibility and safety controls add substantial release work.
 
-**Recommendation: start with the multi-signal ranker and evaluate learned ranking against it.** Score only eligible candidates, include exploration for new profiles and measure mutual matches and useful conversations alongside exposure coverage and safety reports. Start with a measurable multi-signal baseline while independent interaction evidence accumulates. We accept less expressive personalization initially, promoting learned ranking only when mutual matches and useful conversations improve without concentrating exposure or weakening safety.
+**Choice and rationale.** Start with the multi-signal ranker and evaluate learned ranking against it. Score only eligible candidates, include exploration for new profiles and measure mutual matches and useful conversations alongside exposure coverage and safety reports. Start with a measurable multi-signal baseline while independent interaction evidence accumulates. We accept less expressive personalization initially, promoting learned ranking only when mutual matches and useful conversations improve without concentrating exposure or weakening safety.
 
 Training uses actual displayed profiles and later outcomes so an unseen profile is not treated as a rejection. Keep feature and model versions in impression events. Cold-start users rely on declared preferences and location; new profiles receive measured exploration exposure.
 
 Evaluate by market and activity cohort with controlled experiments. Ranking changes preserve explicit user preferences and moderation restrictions. This is the proposed ranking approach; it does not describe Tinder's current production algorithm.
 
-**Eligibility, scoring and exploration.** Apply age, distance, reciprocity, safety and prior-decision filters before scoring. Normalize the remaining activity/interest features and score a bounded candidate set under a pinned policy version. Add controlled exploration slots for new or underexposed profiles.
+**How it works: Eligibility, scoring and exploration.** Apply age, distance, reciprocity, safety and prior-decision filters before scoring. Normalize the remaining activity/interest features and score a bounded candidate set under a pinned policy version. Add controlled exploration slots for new or underexposed profiles.
 
 Log the actual displayed profile, position, model/features and later outcomes. A user who never saw a profile supplied no rejection label for it. Evaluate mutual matches and subsequent useful conversations, not only one-sided likes, and include exposure/safety guardrails.
 
-A learned model can rerank the same eligible candidate set once it beats the baseline under controlled tests. Missing optional features use trained defaults; unavailable required eligibility checks reduce the result set. Model changes do not broaden user preferences or restore profiles excluded by moderation.
+**Tradeoffs and recovery.** A learned model can rerank the same eligible candidate set once it beats the baseline under controlled tests. Missing optional features use trained defaults; unavailable required eligibility checks reduce the result set. Model changes do not broaden user preferences or restore profiles excluded by moderation.

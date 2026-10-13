@@ -7,7 +7,7 @@ tags: [Interview-Prep, Distributed-Systems, Mobile, Geospatial, Re-Design]
 thumbnail: /images/posts/2026-07-02-system-design-strava.svg
 redirect_from:
   - /2026/07/02/system-design-strava.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-12
 description: "A GPS activity service for offline recording, activity sharing and segment leaderboards."
 notion_source: https://app.notion.com/p/390d865005a8816c91a4ffa323ca6bdc
 ---
@@ -18,7 +18,7 @@ A GPS activity service for offline recording, activity sharing and segment leade
 
 ## Problem
 
-An athlete records a run or ride, often without a reliable connection, then uploads it when connectivity returns. The service stores the activity, identifies completed segments and updates eligible leaderboards and followers' feeds.
+An athlete records a run or ride, often without a reliable connection, then uploads it when connectivity returns. The service stores the activity, identifies completed reference routes called **segments**, and updates eligible leaderboards and followers' feeds.
 
 Uploads must survive retries. Segment matching and leaderboard work can run asynchronously, while privacy rules govern every shared route, map and result.
 
@@ -149,18 +149,18 @@ Each read rechecks current visibility. Raw stream access is separate from the pu
 The phone retains its recording until upload acceptance is confirmed. Processing generates privacy-aware summaries, efforts and feed events; read services use materialized results.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-  U["Athlete / mobile app"] --> API["Activity API"]
-  U --> RAW[("Private raw traces")]
-  API --> DB[("Activity records and outbox")]
-  DB --> Q["Processing events"]
-  Q --> CLEAN["Validation / privacy processing"]
+  U["Athlete /<br>mobile app"] --> API["Activity API"]
+  U --> RAW[("Private raw<br>traces")]
+  API --> DB[("Activity<br>records and<br>outbox")]
+  DB --> Q["Processing<br>events"]
+  Q --> CLEAN["Validation /<br>privacy<br>processing"]
   RAW --> CLEAN
-  CLEAN --> MATCH["Segment matching"]
-  MATCH --> VIEWS[("Efforts / leaderboard views")]
-  CLEAN --> FEED["Feed / heatmap workers"]
-  FEED --> READ[("Visible activity views")]
+  CLEAN --> MATCH["Segment<br>matching"]
+  MATCH --> VIEWS[("Efforts /<br>leaderboard<br>views")]
+  CLEAN --> FEED["Feed / heatmap<br>workers"]
+  FEED --> READ[("Visible<br>activity views")]
   API --> VIEWS
   API --> READ
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
@@ -187,9 +187,9 @@ class CLEAN control;
 
 Historical Strava work on [segment leaderboards](https://medium.com/strava-engineering/rebuilding-the-segment-leaderboards-infrastructure-part-1-background-13d8850c2e77) provides context. This proposal uses transactionally maintained bests rather than inserting every effort into a public ranking.
 
-## From request to response
+## Functional scenarios
 
-### Activity upload flow
+### Recording and uploading
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -220,8 +220,6 @@ sequenceDiagram
 
 The app retains its recording until server acceptance. Processing starts from the committed event, and every stage identifies the activity generation; a mobile retry therefore resumes the same upload or reads its status instead of creating duplicate activities and efforts.
 
-### Recording and uploading
-
 The app records timestamped samples locally and creates an upload key. The API reserves `(athlete_id, upload_key)` with the request checksum and returns a resumable signed destination. Repeated requests return the same activity.
 
 Completion verifies object size/checksum, then commits the accepted status and outbox event together. Processing begins only after that commit. Interrupted uploads remain pending and retryable; retention cleanup applies only to abandoned uploads under a defined policy.
@@ -250,11 +248,43 @@ Route discovery uses geographic candidates and sport/distance constraints. Perso
 
 A privacy change or deletion versions the activity and schedules invalidation/rebuild of affected views and tiles. It must affect the public result, not just the activity detail cache.
 
+### Making a shared activity private
+
+An athlete changes an activity from public to private. The activity service commits a higher visibility version and schedules updates to every derived public view that references it.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+  participant U as Athlete
+  participant A as Activity API
+  participant D as Activity database
+  participant W as View workers
+  participant F as Feed reader
+  rect rgb(254, 247, 224)
+    U->>A: Set activity private
+    A->>D: Commit visibility version and outbox
+    A-->>U: Privacy change saved
+  end
+  rect rgb(230, 244, 234)
+    D-->>W: Versioned privacy event
+    W->>W: Recompute bests, group cards and public tiles
+  end
+  rect rgb(232, 240, 254)
+    F->>D: Verify candidate's current visibility
+    D-->>F: Restricted for this requester
+    F->>F: Omit activity and hidden group membership
+  end
+```
+
+Feed and leaderboard reads enforce current eligibility while their caches catch up. Public aggregate tiles need a separate withdrawal/rebuild deadline because checking one activity at read time cannot remove its contribution from a prebuilt tile. Track both current-content checks and aggregate-revocation lag; a failed worker retries the same activity version.
+
 ## Deep dives
 
 ### How do uploads survive offline retries?
 
-**Problem:** metadata, object storage and background jobs do not share one transaction.
+**Problem.** Metadata, object storage and background jobs do not share one transaction.
+
+**Options and tradeoffs.**
 
 - **Synchronous upload processing:** Validate and calculate everything before returning. Completion is easy to understand, but long mobile waits and interrupted responses repeat expensive work.
 
@@ -262,11 +292,11 @@ A privacy change or deletion versions the activity and schedules invalidation/re
 
 - **Durable staged acceptance — recommended:** Verify the uploaded object, then commit acceptance and its processing event together. Retries find a stable activity state; pending uploads and outbox recovery require explicit lifecycle management.
 
-**Recommendation:** use staged acceptance with exact database uniqueness. A Bloom filter may help avoid unnecessary checks but must not reject an upload by itself. Keep the pending/accepted/processed states explicit and let the app query them after an ambiguous response. Mobile connectivity makes interrupted upload responses normal. We accept a visible pending/processing state and recovery workflow so an accepted activity has both a verified trace and a durable path to processing.
+**Choice and rationale.** Use staged acceptance with exact database uniqueness. A Bloom filter may help avoid unnecessary checks but must not reject an upload by itself. Keep the pending/accepted/processed states explicit and let the app query them after an ambiguous response. Mobile connectivity makes interrupted upload responses normal. We accept a visible pending/processing state and recovery workflow so an accepted activity has both a verified trace and a durable path to processing.
 
 Workers use stage/output versions and persistent deduplication. A corrupted file produces a clear recoverable failure; an unavailable processor leaves a durable queued activity. Monitor pending-upload age, accepted-to-processed latency and orphan objects.
 
-**Upload protocol.** The app allocates a stable activity ID before uploading and keeps it across retries. The server creates an upload record with expected size/checksum and issues a narrowly scoped object-upload URL. After upload, the app calls completion; the server verifies the object and transactionally changes the activity to accepted while adding the processing event.
+**How it works: Upload protocol.** The app allocates a stable activity ID before uploading and keeps it across retries. The server creates an upload record with expected size/checksum and issues a narrowly scoped object-upload URL. After upload, the app calls completion; the server verifies the object and transactionally changes the activity to accepted while adding the processing event.
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -287,11 +317,13 @@ sequenceDiagram
 
 ```
 
-If the final response is lost, the app queries the stable ID. An accepted activity is already queued, so the original trace can stay local until the app receives acceptance confirmation. Processing writes a deterministic generation of efforts and derived data before advancing its checkpoint. Abandoned uploads and unattached objects are cleaned only after a grace period that excludes active retries.
+**Tradeoffs and recovery.** If the final response is lost, the app queries the stable ID. An accepted activity is already queued, so the original trace can stay local until the app receives acceptance confirmation. Processing writes a deterministic generation of efforts and derived data before advancing its checkpoint. Abandoned uploads and unattached objects are cleaned only after a grace period that excludes active retries.
 
 ### How do we match a short segment within a long activity?
 
-**Problem:** GPS noise, repeated laps and parallel roads make spatial overlap insufficient.
+**Problem.** GPS noise, repeated laps and parallel roads make spatial overlap insufficient.
+
+**Options and tradeoffs.**
 
 - **Brute-force alignment:** Compare every catalog segment with the full recorded trace. Coverage is straightforward, but catalog size and trace length make matching expensive.
 
@@ -299,19 +331,21 @@ If the final response is lost, the app queries the stable ID. An accepted activi
 
 - **Spatial cells with ordered subtrace verification — recommended:** Cover the route and GPS-accuracy corridor with cells, then verify direction and ordered start/end crossings on a bounded subtrace. Alignment work falls; cell coverage and noisy sample quality still need validation.
 
-**Recommendation:** cover paths with cells and neighboring/corridor cells appropriate to reported GPS accuracy. Use spatial overlap to find candidates, then locate start/end crossings in order and align the bounded subtrace. Apply direction and path coverage before more expensive banded alignment. A long activity may contain several laps and nearby unrelated roads. We accept two-stage spatial and trajectory checks so matching work is bounded without turning geographic overlap into an effort claim.
+**Choice and rationale.** Cover paths with cells and neighboring/corridor cells appropriate to reported GPS accuracy. Use spatial overlap to find candidates, then locate start/end crossings in order and align the bounded subtrace. Apply direction and path coverage before more expensive banded alignment. A long activity may contain several laps and nearby unrelated roads. We accept two-stage spatial and trajectory checks so matching work is bounded without turning geographic overlap into an effort claim.
 
 Keep ambiguous matches out of competitive leaderboards and provide correction/appeal handling. Thresholds are calibrated by sport, sample quality and terrain; neither cell overlap nor a fixed distance threshold guarantees a correct traversal. Backfills for new segment versions run at lower priority.
 
-**From nearby paths to a verified effort.** Take a 30-km ride containing a 500-m segment. Spatial cells first find activities passing near the segment's corridor. The verifier then walks the activity samples in timestamp order to find a start crossing followed by an end crossing in the correct direction. It trims that subtrace and compares its path to the segment; most unrelated portions of the ride never enter the expensive comparison.
+**How it works: From nearby paths to a verified effort.** Take a 30-km ride containing a 500-m segment. Spatial cells first find activities passing near the segment's corridor. The verifier then walks the activity samples in timestamp order to find a start crossing followed by an end crossing in the correct direction. It trims that subtrace and compares its path to the segment; most unrelated portions of the ride never enter the expensive comparison.
 
 Repeated laps can produce several valid start/end pairs. Evaluate each pair separately rather than pairing the first start with the last end. Interpolate crossing time between neighboring samples only when their distance and time gap fit the accuracy policy. A two-minute recording gap across the entire segment yields uncertain evidence rather than a competitive time.
 
-Banded path alignment compares nearby positions in sequence, accommodating GPS noise while limiting work. A parallel road may pass through the same cells but fail direction or corridor coverage. Persist segment version, trace generation and match confidence with each effort so a correction can reproduce the decision.
+**Tradeoffs and recovery.** Banded path alignment compares nearby positions in sequence, accommodating GPS noise while limiting work. A parallel road may pass through the same cells but fail direction or corridor coverage. Persist segment version, trace generation and match confidence with each effort so a correction can reproduce the decision.
 
 ### How should filtered leaderboards store personal bests?
 
-**Problem:** ranking every historical effort repeatedly is costly and can show the same athlete several times.
+**Problem.** Ranking every historical effort repeatedly is costly and can show the same athlete several times.
+
+**Options and tradeoffs.**
 
 - **Aggregate historical efforts on read:** Select each athlete's best eligible effort for every request. The source model is simple, but popular segments repeatedly scan many historical records.
 
@@ -319,19 +353,21 @@ Banded path alignment compares nearby positions in sequence, accommodating GPS n
 
 - **Durable personal-best views with hot caching — recommended:** Maintain one eligible best per athlete and supported view transactionally, then cache top pages. Reads are bounded; workers must recompute a replacement after deletion or disqualification and control the number of filter combinations.
 
-**Recommendation:** use segment-owned transactional best materializations and cache frequently read top pages. Workers serialize updates by segment and carry fencing/version checks during ownership changes. Kafka ordering helps processing, but database constraints still protect concurrent retries. Leaderboards repeat the same popular reads while effort corrections must remain recoverable. We accept materialization and replacement work to preserve one ranked best per athlete, rather than paying historical aggregation on every page.
+**Choice and rationale.** Use segment-owned transactional best materializations and cache frequently read top pages. Workers serialize updates by segment and carry fencing/version checks during ownership changes. Kafka ordering helps processing, but database constraints still protect concurrent retries. Leaderboards repeat the same popular reads while effort corrections must remain recoverable. We accept materialization and replacement work to preserve one ranked best per athlete, rather than paying historical aggregation on every page.
 
 Deletion of a best effort selects the next eligible result. Attribute/filter policy changes create a new view generation and replay affected history. Exact personal rank over huge populations requires additional rank/count structures or a bounded offline computation; top-100 lookup alone does not make deep rank a constant-time query.
 
-**Updating a personal best.** A new eligible effort of 58 seconds arrives for an athlete whose best is 61 seconds. In the segment-owned transaction, insert the effort, conditionally replace that athlete's best, and update the ordered best index. A slower 64-second effort is retained in history while leaving the ranking unchanged. The unique athlete/view key prevents duplicate leaderboard entries during replay.
+**How it works: Updating a personal best.** A new eligible effort of 58 seconds arrives for an athlete whose best is 61 seconds. In the segment-owned transaction, insert the effort, conditionally replace that athlete's best, and update the ordered best index. A slower 64-second effort is retained in history while leaving the ranking unchanged. The unique athlete/view key prevents duplicate leaderboard entries during replay.
 
 Use an ordered index such as `(segment_id, view_generation, elapsed_ms, athlete_id)`. The athlete ID breaks ties deterministically; presentation can still display tied rank according to policy. Cache top pages under a leaderboard generation and invalidate them only after the transaction commits.
 
-If the 58-second activity becomes private or is deleted, find the athlete's next eligible effort and replace the materialized best. This requires retained effort history or a replay source, not just the previous best value. Changing an age/category filter builds a separate view generation before publication. Exact deep personal rank needs an order-statistics/counting structure; a cache of the first page answers only top-page queries.
+**Tradeoffs and recovery.** If the 58-second activity becomes private or is deleted, find the athlete's next eligible effort and replace the materialized best. This requires retained effort history or a replay source, not just the previous best value. Changing an age/category filter builds a separate view generation before publication. Exact deep personal rank needs an order-statistics/counting structure; a cache of the first page answers only top-page queries.
 
 ### How do feeds and group cards preserve privacy?
 
-**Problem:** large follower counts increase writes, and group inference can reveal hidden activity.
+**Problem.** Large follower counts increase writes, and group inference can reveal hidden activity.
+
+**Options and tradeoffs.**
 
 - **Push every activity:** Fan out new activity IDs to all followers. Reads are cheap, but large authors and inactive followers create substantial write work.
 
@@ -339,12 +375,12 @@ If the 58-second activity becomes private or is deleted, find the athlete's next
 
 - **Hybrid delivery with current visibility checks — recommended:** Push ordinary active-follower work and merge high-fan-out authors on read. Costs are balanced; materialized views still require fresh privacy checks and group-card verification over only visible activity.
 
-**Recommendation:** tune hybrid thresholds from measured fan-out and merge cost. Precompute group candidates by time and route similarity, then verify spatial/temporal overlap. Similarity signatures are candidate features, not proof that athletes exercised together. Fan-out varies widely, while group inference can reveal hidden participation. We accept read-time eligibility and merge work so caching and similarity candidates never bypass current sharing policy.
+**Choice and rationale.** Tune hybrid thresholds from measured fan-out and merge cost. Precompute group candidates by time and route similarity, then verify spatial/temporal overlap. Similarity signatures are candidate features, not proof that athletes exercised together. Fan-out varies widely, while group inference can reveal hidden participation. We accept read-time eligibility and merge work so caching and similarity candidates never bypass current sharing policy.
 
 Apply the requesting user's visibility filters before assembling a group card. On privacy changes, invalidate feed entries, grouping and heatmap generations together. Monitor propagation lag, cache recovery and hidden-content audit checks alongside feed latency.
 
-**Privacy-aware assembly.** Fan-out writes activity IDs into feed candidates, not permanent copies of all private content. At read time, batch-check current activity visibility and assemble cards only from permitted records. A stale feed entry then becomes removable metadata rather than an information leak.
+**How it works: Privacy-aware assembly.** Fan-out writes activity IDs into feed candidates, not permanent copies of all private content. At read time, batch-check current activity visibility and assemble cards only from permitted records. A stale feed entry then becomes removable metadata rather than an information leak.
 
 Group detection uses coarse candidate matching followed by a bounded comparison of overlapping time and route samples. Two athletes on the same route an hour apart are not a group. Store the participating activity versions with the group generation so a privacy change can find every derived card that depends on that activity.
 
-For a requester, filter group members before exposing names, route geometry or group size; even an anonymous extra participant can reveal private activity. Heatmaps use their separate aggregation and minimum-population policy. Privacy updates publish invalidation events for feed caches, group cards and aggregate generations, and read-time checks protect the transition while those consumers catch up.
+**Tradeoffs and recovery.** For a requester, filter group members before exposing names, route geometry or group size; even an anonymous extra participant can reveal private activity. Heatmaps use their separate aggregation and minimum-population policy. Privacy updates publish invalidation events for feed caches, group cards and aggregate generations, and read-time checks protect the transition while those consumers catch up.

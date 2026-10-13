@@ -7,7 +7,7 @@ tags: [Distributed-Systems, Interview-Prep, Scheduling]
 thumbnail: /images/posts/2026-06-29-system-design-job-scheduler.svg
 redirect_from:
   - /2026/06/29/system-design-job-scheduler.html
-last_modified_at: 2026-10-07
+last_modified_at: 2026-10-12
 description: "Design of a job scheduler that accepts work for a future time, executes it and records each attempt."
 notion_source: https://app.notion.com/p/390d865005a881d6bd39e10b3c575fed
 ---
@@ -127,15 +127,15 @@ The API writes jobs to PostgreSQL. Pollers claim due jobs in short transactions 
 
 ```mermaid
 flowchart TB
-  U["User / calling service"] --> API["Job API"]
+  U["User / calling<br>service"] --> API["Job API"]
   API --> DB[("Job shards")]
-  P["Due-job pollers"] -->|claim| DB
+  P["Due-job<br>pollers"] -->|claim| DB
   P --> W["Task workers"]
   W -->|heartbeat / result| DB
-  W --> T["Registered task targets"]
-  W --> O[("Payload / result storage")]
+  W --> T["Registered<br>task targets"]
+  W --> O[("Payload /<br>result storage")]
   R["Lease recovery"] --> DB
-  DB --> A["History archive"]
+  DB --> A["History<br>archive"]
   classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
@@ -153,9 +153,9 @@ flowchart TB
 
 The [PostgreSQL SKIP LOCKED mechanism](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE) allows competing pollers to claim different rows. SQS or another durable queue is an alternative execution transport, but scheduled state and queue publication would then need an outbox and duplicate-safe consumers.
 
-## From request to response
+## Functional scenarios
 
-### One end-to-end request
+### Accepting and completing a scheduled job
 
 A submission creates one durable job identity.
 
@@ -196,13 +196,7 @@ sequenceDiagram
 
 Pollers claim only due work that available workers can accept; lease-conditioned completion rejects an obsolete attempt, and downstream effects reuse the logical job identity across retries. Users read the durable outcome through the Job API, which checks access before returning status.
 
-### Scheduling and cancellation
-
 The API validates the task type, payload size, tenant quota and execution time. It writes the Job and Submission record in one transaction. A duplicate submission key returns the original job when the request hash matches; different input returns HTTP 409.
-
-Cancellation uses a conditional update from scheduled to cancelled. A worker claim competes with that update in the database: whichever commits first determines whether the job can still be cancelled.
-
-### Claiming and executing
 
 A poller selects due jobs using row locks, assigns each a fresh lease token and attempt record, and commits before dispatching. Workers invoke only registered task handlers and report heartbeats while running.
 
@@ -210,17 +204,52 @@ A successful result transitions the job to completed only when its lease token s
 
 Polling all rows would become expensive as history grows. Partial indexes and archiving keep scans focused on due work; sharding and admission limits keep the execution backlog within worker capacity.
 
+### Cancelling a scheduled job
+
+A user can cancel a scheduled job before a worker claims it.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    participant U as User
+    participant A as Job API
+    participant D as Job store
+    participant P as Due-job poller
+    rect rgb(232, 240, 254)
+        U->>A: Cancel pending job
+        A->>D: Cancel only if still scheduled
+        P->>D: Claim only if still scheduled
+    end
+    rect rgb(254, 247, 224)
+        alt Cancellation commits first
+            D-->>A: Cancelled
+            D-->>P: Claim rejected
+            A-->>U: Cancelled
+        else Claim commits first
+            D-->>P: Current attempt token
+            D-->>A: Already running
+            A-->>U: Conflict and current status
+        end
+    end
+```
+
+The cancellation and claim compete on the same durable state. Only one scheduled-state transition succeeds. A running or terminal job returns a conflict and its current status; this API promises cancellation before claim, not preemption of executing work.
+
+Cancellation uses a conditional update from scheduled to cancelled. A worker claim competes with that update in the database: whichever commits first determines whether the job can still be cancelled.
+
 ## Deep dives
 
 ### Claiming work across multiple pollers
 
 **Problem.** Concurrent pollers may find the same due job.
 
+**Options and tradeoffs.**
+
 - **Single leader:** one poller owns due-work selection. Competing claims disappear, but throughput and availability depend on leader capacity and timely failover.
 - **Distributed lock per job:** acquire a separate lock before dispatch. It coordinates pollers, but lock state and job state can diverge across a crash and require another fencing/recovery protocol.
 - **Transactional row claims:** lock eligible rows with SKIP LOCKED and commit their attempt/lease together. Pollers scale without waiting on already claimed rows; transactions must stay short and indexes/claim limits determine scan cost and fairness.
 
-**Recommendation.** Use short PostgreSQL transactions with SKIP LOCKED. Claim only as much work as available workers can accept. Transactional claims fit a PostgreSQL-backed scheduler because the job and ownership decision share one authority. We accept database claim throughput as a capacity limit and avoid holding locks while a job runs.
+**Choice and rationale.** Use short PostgreSQL transactions with SKIP LOCKED. Claim only as much work as available workers can accept. Transactional claims fit a PostgreSQL-backed scheduler because the job and ownership decision share one authority. We accept database claim throughput as a capacity limit and avoid holding locks while a job runs.
 
 ```sql
 WITH due AS (
@@ -247,12 +276,12 @@ Insert attempt records in the same transaction. A crash before commit releases t
 
 ```mermaid
 flowchart TB
-  D["Due-job index"] --> C["Short claim transaction"]
-  C --> L["Attempt and lease committed"]
-  L --> W["Dispatch to worker"]
-  W --> H["Renew matching lease"]
-  W --> F["Conditional completion"]
-  L --> E["Expiry recovery"]
+  D["Due-job index"] --> C["Short claim<br>transaction"]
+  C --> L["Attempt and<br>lease<br>committed"]
+  L --> W["Dispatch to<br>worker"]
+  W --> H["Renew matching<br>lease"]
+  W --> F["Conditional<br>completion"]
+  L --> E["Expiry<br>recovery"]
   E --> C
   classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
@@ -262,17 +291,19 @@ flowchart TB
   class C,L,H control
 ```
 
-If dispatch fails after claim, the lease eventually expires and recovery requeues the job. This adds delay but preserves discoverability. Keep the claim batch no larger than available dispatch capacity: preclaiming thousands of jobs makes them appear running while they wait locally. Due-job scans and expiry scans use separate indexes and bounded pages. Under many tenants, per-tenant quotas prevent one large due backlog from consuming every claim.
+**Tradeoffs and recovery.** If dispatch fails after claim, the lease eventually expires and recovery requeues the job. This adds delay but preserves discoverability. Keep the claim batch no larger than available dispatch capacity: preclaiming thousands of jobs makes them appear running while they wait locally. Due-job scans and expiry scans use separate indexes and bounded pages. Under many tenants, per-tenant quotas prevent one large due backlog from consuming every claim.
 
 ### Preventing duplicate submissions
 
 **Problem.** The job may be stored successfully even when the client receives a timeout.
 
+**Options and tradeoffs.**
+
 - **Compare payloads:** collapse matching request bodies into one job. No explicit client key is needed, but identical work may be intentionally submitted twice and canonicalization mistakes can merge different jobs.
 - **Accept every retry:** create a new job for each request. The API is simple, but a lost response can duplicate expensive work or external effects.
 - **Tenant-scoped idempotency key:** store one validated request hash and job ID under a unique tenant/key constraint. Ambiguous retries recover the original job; mappings need retention and changed input under the same key must be rejected.
 
-**Recommendation.** Enforce a unique `(tenant_id, idempotency_key)` constraint and store a hash of the validated request. Concurrent submissions converge on one job; retries read that record and compare its hash. Explicit keys fit intentional repeated jobs and network retries because the client decides which submissions are the same operation. We accept retained mapping state and a documented replay window rather than deriving identity from payload similarity.
+**Choice and rationale.** Enforce a unique `(tenant_id, idempotency_key)` constraint and store a hash of the validated request. Concurrent submissions converge on one job; retries read that record and compare its hash. Explicit keys fit intentional repeated jobs and network retries because the client decides which submissions are the same operation. We accept retained mapping state and a documented replay window rather than deriving identity from payload similarity.
 
 Retain the mapping through the promised retry window. Document what happens after that window and keep keys tenant-scoped so a collision cannot expose another tenant's job.
 
@@ -280,17 +311,19 @@ Retain the mapping through the promised retry window. Document what happens afte
 
 Do not use the payload hash as the job identity. A user can intentionally run identical work twice under different keys. Scope keys to the tenant and operation, and normalize only fields whose semantic equivalence is defined—silently dropping a parameter while hashing can merge different requests.
 
-Store the job and mapping in the same shard transaction. After an ambiguous response, the client queries or retries that same key. If the promised retry window has expired, the API says that a new submission may create new work. Retaining terminal job history does not automatically retain a reusable idempotency contract forever.
+**Tradeoffs and recovery.** Store the job and mapping in the same shard transaction. After an ambiguous response, the client queries or retries that same key. If the promised retry window has expired, the API says that a new submission may create new work. Retaining terminal job history does not automatically retain a reusable idempotency contract forever.
 
 ### Recovering from worker failures
 
 **Problem.** A worker may crash, lose connectivity or keep running after the scheduler has reassigned its job.
 
+**Options and tradeoffs.**
+
 - **Fixed timeout:** retry once the execution deadline passes. Recovery is simple for tightly bounded tasks, but legitimate long jobs can be reassigned and short crashed jobs wait for the full timeout.
 - **Renewable lease:** healthy workers extend ownership and new attempts replace expired tokens. Recovery adapts to duration; heartbeats and fencing add state, and an old worker may still perform an external side effect.
 - **Durable workflow engine:** persist step history and resume a multi-step execution. Long dependent tasks gain richer recovery, but workflow definitions, history growth and engine operations exceed a simple job runner's needs.
 
-**Recommendation.** Use renewable leases and a separate maximum runtime. A recovery transaction checks the expired token, records the attempt outcome, and reschedules the job or marks it failed. Stale workers cannot update the new attempt's state. Renewable leases plus a maximum runtime fit independent jobs of variable duration. We accept at-least-once execution and require downstream idempotency for effects; fenced scheduler completion alone cannot make arbitrary external actions exactly once.
+**Choice and rationale.** Use renewable leases and a separate maximum runtime. A recovery transaction checks the expired token, records the attempt outcome, and reschedules the job or marks it failed. Stale workers cannot update the new attempt's state. Renewable leases plus a maximum runtime fit independent jobs of variable duration. We accept at-least-once execution and require downstream idempotency for effects; fenced scheduler completion alone cannot make arbitrary external actions exactly once.
 
 A lease protects scheduler state; an external operation still needs an idempotency key based on the logical job and operation, rather than the attempt ID. After an ambiguous external timeout, query the target's operation status or retry with that same key. Track expired leases, rejected stale results and recovery delay.
 
@@ -298,17 +331,19 @@ A lease protects scheduler state; an external operation still needs an idempoten
 
 The harder case is A having already called an external payment or email service. Use a stable logical operation ID, such as job ID plus operation name, across both attempts. Where supported, pass that identity to the external service and query its outcome after a timeout. Fencing only the scheduler database cannot retract an external side effect.
 
-Heartbeat and completion requests compare the exact token and use server-side time. A maximum runtime bounds repeatedly renewed but stuck jobs. Keep expired-attempt evidence so operators can distinguish a failed process, a scheduler reassignment and an external outcome still awaiting reconciliation.
+**Tradeoffs and recovery.** Heartbeat and completion requests compare the exact token and use server-side time. A maximum runtime bounds repeatedly renewed but stuck jobs. Keep expired-attempt evidence so operators can distinguish a failed process, a scheduler reassignment and an external outcome still awaiting reconciliation.
 
 ### Retrying without overloading dependencies
 
 **Problem.** An outage can make thousands of jobs retry together.
 
+**Options and tradeoffs.**
+
 - **Fixed delays:** retry every failure after one interval. Scheduling is predictable, but an outage synchronizes many jobs into repeated traffic spikes.
 - **Exponential backoff:** increase delay after consecutive failures. Average pressure falls, but jobs failing together can remain synchronized at each retry round.
 - **Capped backoff with full jitter:** sample each wait within a growing cap and enforce target concurrency/retry budgets. Retries spread over time and preserve recovery capacity; individual completion times become variable and exhausted jobs need an explicit terminal/replay path.
 
-**Recommendation.** Use capped backoff with full jitter, per-target concurrency limits and a retry budget, following the [AWS backoff-and-jitter guidance](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/). Jittered capped backoff fits shared dependencies that can fail for many jobs at once. We accept less predictable retry timing and stop within a declared budget to keep recovery traffic from extending the outage.
+**Choice and rationale.** Use capped backoff with full jitter, per-target concurrency limits and a retry budget, following the [AWS backoff-and-jitter guidance](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/). Jittered capped backoff fits shared dependencies that can fail for many jobs at once. We accept less predictable retry timing and stop within a declared budget to keep recovery traffic from extending the outage.
 
 ```python
 def retry_delay(attempt, base_seconds=2, cap_seconds=300):
@@ -322,4 +357,4 @@ Retry transient failures within the job's deadline; invalid payloads fail immedi
 
 Separate first attempts from retries using quotas or fair queues. During a provider outage, a circuit breaker stops most calls and allows a small probe budget; queued work remains durable. Per-target concurrency limits bound the number of blocked workers, while per-tenant admission prevents a retrying tenant from starving others.
 
-Classify errors before retrying. A temporary transport failure is different from invalid input, permission denial or a confirmed business rejection. When the deadline or attempt budget is exhausted, store the terminal reason and any unresolved external operation. Monitor queue age and successful completion rate by class; a falling queue length caused by permanent failures is not recovery.
+**Tradeoffs and recovery.** Classify errors before retrying. A temporary transport failure is different from invalid input, permission denial or a confirmed business rejection. When the deadline or attempt budget is exhausted, store the terminal reason and any unresolved external operation. Monitor queue age and successful completion rate by class; a falling queue length caused by permanent failures is not recovery.

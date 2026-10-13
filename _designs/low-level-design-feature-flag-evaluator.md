@@ -3,7 +3,7 @@ layout: post
 title: "LD: Feature Flag Evaluator"
 category: low-level-design
 date: 2026-10-04
-last_modified_at: 2026-10-04
+last_modified_at: 2026-10-12
 tags: [Feature Flags, SDK Design, Object Design, Concurrency]
 description: "Build a local feature-flag evaluator with ordered rules, stable rollouts and request-consistent configuration."
 thumbnail: /images/posts/low-level-design-feature-flag-evaluator.svg
@@ -27,7 +27,7 @@ We'll design the part that makes this decision inside the application. The servi
 ### Functional requirements
 
 - **Target a group.** A rule can enable the new checkout for employees, or disable it for an excluded customer segment. Rules run in their configured order; the first match wins.
-- **Roll out gradually.** A customer gets a stable position in a rollout. Increasing the percentage adds customers without removing people who were already included, provided the flag key, rollout salt and customer identity stay the same.
+- **Roll out gradually.** A customer gets a stable position in a rollout. With the other evaluation inputs unchanged, increasing the percentage adds customers without removing those already included.
 - **Switch a feature off.** A disabled flag returns `false`, even if a targeting rule would otherwise enable it.
 - **Use a fallback.** The caller supplies a default for a missing flag or a rollout that cannot identify the customer. An anonymous customer may still match an explicit targeting rule.
 - **Explain a decision.** Return the value, the reason, the configuration version and, when applicable, the rule that matched.
@@ -49,27 +49,125 @@ We'll design the part that makes this decision inside the application. The servi
 
 Feature flags are not authorization checks. A customer who is shown a new checkout must still pass the application's normal access and payment checks.
 
+## High-level design
+
+The library runs inside the application process. A **snapshot** is one complete, immutable configuration. `SnapshotStore` holds the active snapshot; the application captures it once in an `EvaluationSession` for each request. That session combines the snapshot with a `Context` containing the customer's identity and attributes, then returns an `Evaluation` for each flag check.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+flowchart TB
+    accTitle: Feature flag evaluator component overview
+    accDescr: Configuration enters SnapshotStore; each application request captures a session that reads one snapshot and context.
+    U["Configuration<br>input"]
+    subgraph Process["Application process"]
+        A["Application<br>request"]
+        S["SnapshotStore<br>Active<br>configuration"]
+        P["Snapshot<br>Complete<br>flag set"]
+        C["Context<br>Identity and<br>attributes"]
+        E["Evaluation<br>Session<br>One request"]
+        R["Evaluation<br>Value and<br>diagnostics"]
+        A -->|"Capture session"| S
+        S -->|"Retain reference"| P
+        S -->|"Create"| E
+        A -->|"Supply"| C
+        C -->|"Captured inputs"| E
+        P -->|"Captured configuration"| E
+        A -->|"Evaluate flag"| E
+        E -->|"Return"| R
+    end
+    U -->|"Publish complete snapshot"| S
+    classDef service fill:#e8f0fe,stroke:#9aa0a6,color:#202124
+    classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124
+    classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124
+    class A,E service
+    class P,C,R data
+    class U,S control
+    style Process fill:#e8f0fe,stroke:#9aa0a6,color:#202124
+```
+
+Configuration publication changes the snapshot captured by new sessions. Existing sessions retain their own configuration until their requests finish. The application supplies configuration and handles authentication; this design covers the local evaluator and its publication boundary.
+
 ## Core entities
 
-- **Context** identifies the subject and carries string attributes such as `employee=true` or `plan=business`. Use a stable, opaque customer ID, not an email address. The evaluator does not authenticate the supplied attributes.
-- **Condition** compares one attribute with one expected value. A missing attribute does not match.
-- **Rule** owns an ID, a list of conditions and a Boolean result. All its conditions must match. Empty rules are rejected so they cannot accidentally enable everyone.
-- **Flag** owns its key, enabled state, ordered rules, rollout threshold and salt. A threshold of `1,000` means 10% of a 10,000-bucket space; `10,000` includes every identified subject.
-- **Snapshot** owns a version and an immutable mapping of flag keys to flags. It is a complete configuration, not a collection of partially applied updates.
-- **Evaluation** records the Boolean value, reason, snapshot version and optional matching rule ID.
+The evaluator captures immutable context and configuration records. The caller supplies attributes and handles authentication; the returned `Evaluation` explains the decision.
 
-The result separates application behavior from diagnostics. The application uses `value`; logs and support tools can use `reason` and `version`. This resembles [OpenFeature's distinction between a typed value and detailed evaluation](https://openfeature.dev/docs/reference/concepts/evaluation-api/), without attempting to implement its full API.
+```protobuf
+message Context {
+  // Stable, opaque customer ID; absent for anonymous users.
+  optional string subject_id;
+  // Copied, read-only inputs, e.g. employee="true".
+  map<string, string> attributes;
+}
+
+message Condition {
+  string attribute;
+  string expected; // Exact string equality; a missing attribute fails.
+}
+
+message Rule {
+  string rule_id;                 // Unique within its flag.
+  repeated Condition conditions; // At least one condition; all must match.
+  bool value;
+}
+```
+
+```protobuf
+message Flag {
+  string key;
+  bool enabled;       // false overrides targeting rules and rollout.
+  repeated Rule rules; // Evaluate in order; first match wins.
+  int32 rollout_bps;  // 0..10,000; 1,000 means a 10% rollout.
+  string salt;        // Keep stable to preserve customer assignments.
+}
+
+message Snapshot {
+  int64 version; // Positive; publication requires a newer version.
+  // Complete, immutable configuration; map key = Flag.key.
+  map<string, Flag> flags;
+}
+
+message Evaluation {
+  bool value;
+  string reason; // DISABLED, RULE_MATCH, ROLLOUT or a fallback reason.
+  int64 version;           // Identifies the captured snapshot.
+  optional string rule_id; // Present when a targeting rule matches.
+}
+```
+
+The application uses `value`; logs and support tools use `reason` and `version`. [OpenFeature's typed values and evaluation details](https://openfeature.dev/docs/reference/concepts/evaluation-api/) use the same separation between application behavior and diagnostics.
 
 ## Classes and interfaces
 
-Only two objects coordinate evaluation:
+`SnapshotStore` publishes configuration and creates request-scoped sessions. `EvaluationSession` evaluates flags using the snapshot and context captured for that request.
 
-- **SnapshotStore** holds the active snapshot. `publish(candidate)` replaces it only when the candidate has a newer version. `session(context)` captures the current snapshot once.
-- **EvaluationSession** owns that snapshot and context for one request. `evaluate(key, default)` can be called several times without recapturing configuration.
+```python
+class SnapshotStore:
+    _snapshot: Snapshot  # Active configuration for new sessions.
 
-The flags and rules are data, not subclasses with separate evaluators. Equality checks and Boolean results do not yet justify a plug-in hierarchy. A predicate interface would become useful if we added several genuinely different condition types.
+    def __init__(self, initial: Snapshot): ...
 
-## From flag to decision
+    # Reject stale versions; existing sessions retain their captured snapshot.
+    def publish(self, candidate: Snapshot) -> None: ...
+
+    # Capture the active snapshot once for this request.
+    def session(self, context: Context) -> "EvaluationSession": ...
+
+
+class EvaluationSession:
+    snapshot: Snapshot   # Fixed configuration for the request.
+    context: Context     # Fixed identity and attributes for every flag check.
+
+    # Read captured objects; return the value and its diagnostic details.
+    def evaluate(self, key: str, default: bool = False) -> Evaluation: ...
+```
+
+Targeting rules remain data handled by one equality evaluator. Richer condition types would justify a shared predicate interface. Method implementations and synchronization are covered below.
+
+## Functional scenarios
+
+### Evaluating a flag
+
+At request entry, the application supplies the customer's context to `SnapshotStore.session`. It reuses the returned session for every flag check, passing the flag key and a Boolean fallback to `evaluate`.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
@@ -95,9 +193,88 @@ E-->>A: Decision from the same snapshot
 end
 ```
 
-The application captures one session at request entry and passes it to every component that needs a decision. Evaluation reads only that session's immutable snapshot and context; returning the version makes several decisions in one request traceable to the same configuration.
+The application branches on the returned `value`; the `reason`, configuration `version` and optional `rule_id` explain the result. An employee-targeting rule can select the new checkout. A disabled flag returns `false`, while a missing flag returns the caller's fallback. These outcomes remain distinguishable in diagnostics.
 
-The order matters: the off switch overrides everything, targeting rules take precedence over the rollout, and missing identity uses the caller's fallback.
+Evaluation reads the session's captured records. The [rule-precedence deep dive](#how-do-overlapping-rules-produce-one-decision) explains how targeting, rollouts and fallbacks interact.
+
+### Expanding a rollout
+
+An administrator increases `checkout_v2` from 10% to 50% and supplies a new configuration version. After publication, new requests capture that version and evaluate the larger rollout. The flag key, salt and customer identity remain unchanged, preserving each customer's rollout position. The flag remains enabled, with the same targeting rules and request attributes.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    accTitle: Expanding a feature rollout
+    accDescr: A new request captures the larger rollout after publication; a customer already included remains included.
+    participant U as Config updater
+    participant S as SnapshotStore
+    participant A as Application
+    rect rgb(232, 240, 254)
+        A->>S: Capture 10% configuration
+        S-->>A: Request session
+        A->>A: Evaluate customer-42: included
+    end
+    rect rgb(254, 247, 224)
+        U->>S: Publish next version with 50%
+        S-->>U: Publication accepted
+    end
+    rect rgb(230, 244, 234)
+        A->>S: Capture 50% configuration
+        S-->>A: New request session
+        A->>A: Evaluate customer-42: still included
+    end
+```
+
+Other customers become eligible when the larger threshold includes their position. Requests already in progress continue using their captured configuration. The [stable-rollout deep dive](#how-do-percentage-rollouts-preserve-customer-assignments) shows the calculation and the conditions under which membership stays stable.
+
+### Publishing configuration during a request
+
+Request A captures version 12. While it is running, the configuration updater publishes version 13 with the feature switched off. Request A finishes using version 12; a new Request B captures version 13 and sees the disabled feature.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    accTitle: Configuration publication during a request
+    accDescr: Request A retains version 12 while publication makes version 13 available to Request B.
+    participant A as Request A
+    participant S as SnapshotStore
+    participant U as Config updater
+    participant B as Request B
+    rect rgb(232, 240, 254)
+        A->>S: Capture version 12
+        S-->>A: Session with version 12
+    end
+    rect rgb(254, 247, 224)
+        U->>S: Publish validated version 13
+        S-->>U: Publication accepted
+        A->>A: Evaluate using version 12
+    end
+    rect rgb(230, 244, 234)
+        B->>S: Capture active configuration
+        S-->>B: Session with version 13
+        B->>B: Disabled flag returns false
+    end
+```
+
+Invalid configuration is rejected before publication; a stale version is rejected by `publish`. Both leave the active snapshot unchanged. An off switch takes effect for new sessions after publication; interrupting an existing request requires an application cancellation policy. The [request-consistency deep dive](#how-do-refreshes-preserve-one-requests-configuration) explains synchronization and retained versions.
+
+## Deep dives
+
+### How do overlapping rules produce one decision?
+
+**Problem.** Several targeting rules may match the same customer and return conflicting values. The evaluator needs predictable precedence, including a feature-wide off switch and a caller-provided fallback.
+
+**Options and tradeoffs.**
+
+| Option | Mechanism and benefit | Cost and failure mode |
+| --- | --- | --- |
+| Combine matching results | Evaluate all matches with a policy such as “deny overrides allow”; useful for cumulative policies. | Requires conflict semantics and more condition checks; a poorly chosen combination can obscure the intended result. |
+| Rank by specificity | Prefer the rule judged most specific; reduces manual ordering. | Requires a ranking definition and tie handling; changes to a condition can unexpectedly change precedence. |
+| Ordered first match | Evaluate rules in configured order and stop at the first match; precedence is explicit and evaluation can stop early. | Authors must order rules carefully; a broad early rule can shadow later exceptions. |
+
+**Choice and rationale.** Use ordered first-match rules, with a separate off switch. This Boolean evaluator needs deliberate targeting precedence and a small local decision path. Configuration order expresses the policy directly; it adds no ranking model or result-combination language.
+
+**How it works.** A missing flag uses the caller's fallback. For an existing flag, the off switch takes precedence, followed by the first matching targeting rule. If no rule matches, an identified customer enters the percentage rollout; an unidentified customer receives the fallback. Every outcome carries the captured version and a diagnostic reason.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
@@ -105,22 +282,22 @@ flowchart TB
     accTitle: Feature flag evaluation
     accDescr: Capture one configuration, apply the off switch and targeting rules, then use a stable rollout if no rule matches.
     subgraph Request["Captured configuration"]
-        A["Capture snapshot<br>and request context"] --> B["Look up flag"]
+        A["Capture<br>snapshot and<br>context"] --> B["Look up flag"]
     end
     subgraph Targeting["Flag evaluation"]
         C{"Flag enabled?"}
-        D["Evaluate rules in order"]
+        D["Rules in<br>order"]
     end
     subgraph Rollout["Stable rollout"]
-        E{"Stable subject ID?"}
-        H["Hash flag key, salt<br>and subject ID"]
-        T["Return bucket below<br>rollout threshold"]
+        E{"Stable<br>subject ID?"}
+        H["Hash key, salt<br>and subject ID"]
+        T["Return bucket<br>below rollout<br>threshold"]
     end
-    B -->|"Missing"| F["Return caller's default"]
+    B -->|"Missing"| F["Return<br>caller default"]
     B -->|"Found"| C
     C -->|"No"| OFF["Return false"]
     C -->|"Yes"| D
-    D -->|"First match"| R["Return rule's value"]
+    D -->|"First match"| R["Return<br>rule value"]
     D -->|"No match"| E
     E -->|"No"| F
     E -->|"Yes"| H
@@ -136,7 +313,88 @@ flowchart TB
     style Rollout fill:#e6f4ea,stroke:#e6f4ea,color:#202124
 ```
 
-Every return also carries a reason and the captured version. We can therefore distinguish a deliberate `false` from a missing-flag fallback, even though both might keep the old checkout visible.
+All conditions within a rule must match using string equality. With “excluded customer → false” before “employee → true,” an employee in the excluded group receives `false`. Reversing those rules changes that result, which makes ordering part of the configuration contract.
+
+**Tradeoffs and recovery.** The first-match choice trades automatic conflict resolution for explicit authoring responsibility. Condition work grows with the rules inspected before a decision; the rollout hash runs only when targeting leaves the result undecided. Keep regression cases for overlapping rules, missing attributes, off-switch precedence and both fallback values. Validate duplicate IDs and empty rules before publication, and correct a shadowing rule by publishing a newer complete snapshot.
+
+### How do percentage rollouts preserve customer assignments?
+
+**Problem.** Repeated evaluations should keep a customer in the same rollout position. Raising the percentage should add eligible customers while preserving those already included, provided the other decision inputs remain unchanged.
+
+**Options and tradeoffs.**
+
+| Option | Mechanism and benefit | Cost and failure mode |
+| --- | --- | --- |
+| Random choice per call | Sample each evaluation independently; minimal state and useful for independent per-call sampling. | Refreshes can switch a customer's experience, and processes may disagree. |
+| Persist assignments | Save a customer-to-variant record; supports audited enrollment, explicit overrides and cohort history. | Needs durable storage and cached records; stale caches delay changes and authority outages affect new enrollment. |
+| Stable hash bucket | Derive a repeatable position from identity, flag key and salt; evaluation stays local without per-customer storage. | Changing those inputs or the hash contract reshuffles customers; a percentage is not an exact customer quota. |
+
+**Choice and rationale.** Use stable hash buckets because this design needs memory-only Boolean percentage rollout, rather than an enrollment ledger. Explicit customer exceptions fit the ordered rules. Audited enrollment or an exact cohort quota would justify a separate persisted assignment model.
+
+**How it works.** Encode `[flag.key, flag.salt, subject_id]` as a compact JSON array in UTF-8. Hash it with SHA-256, interpret the first eight bytes as an unsigned big-endian integer, and scale it into the 10,000-bucket space. [Python's hashlib](https://docs.python.org/3/library/hashlib.html) supplies the hash primitive; the encoding and bucket formula are this evaluator's contract.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+flowchart TB
+    accTitle: Stable rollout calculation
+    accDescr: Stable inputs determine a bucket; only the comparison threshold changes as a rollout expands.
+    I["Flag key, salt<br>and subject ID"] -->|"Compact JSON in UTF-8"| H["SHA-256<br>First 8 bytes"]
+    H -->|"Unsigned big-endian integer"| B["Bucket<br>0 to 9,999"]
+    B -->|"Compare"| D{"Bucket below<br>rollout_bps?"}
+    D -->|"Yes"| Y["Included"]
+    D -->|"No"| N["Excluded"]
+    classDef service fill:#e8f0fe,stroke:#9aa0a6,color:#202124
+    classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124
+    classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124
+    class H,B service
+    class I,Y,N data
+    class D control
+```
+
+The calculation is `bucket = floor(number × 10,000 / 2^64)`, followed by `bucket < rollout_bps`. A threshold of 1,000 covers 10% of the bucket space; 5,000 covers 50%. The version and threshold stay outside the hash so publishing a larger rollout leaves the customer's bucket unchanged.
+
+With `checkout_v2` and salt `checkout-v1`, the implementation produces these test vectors:
+
+| Customer | Bucket | At 10%: below 1,000 | At 50%: below 5,000 |
+| --- | ---: | --- | --- |
+| customer-42 | 250 | New checkout | New checkout |
+| customer-17 | 4,560 | Old checkout | New checkout |
+| customer-91 | 7,524 | Old checkout | Old checkout |
+
+Customer 42 stays included as the threshold rises; customer 17 joins. These are calculated examples, not production measurements. A small customer population can differ from the configured percentage because the threshold selects bucket space rather than a fixed customer count.
+
+**Tradeoffs and recovery.** Stable buckets depend on stable identity, salt, flag key and hash encoding. Changed attributes or targeting rules can still change the final decision, even when the bucket stays fixed. Anonymous customers use the fallback after targeting rules are checked; switching identity at sign-in is a caller-owned product decision.
+
+Keep cross-process and cross-language vectors for UTF-8 encoding, JSON serialization, SHA-256 truncation, byte order and scaling. Treat an algorithm change as a coordinated contract migration. Preserve the old contract until callers and configuration move together; silently changing it can move customers between experiences.
+
+### How do refreshes preserve one request's configuration?
+
+**Problem.** A checkout can check several flags while building one response. If each check uses the latest configuration, a refresh between calls can mix behaviors from different versions.
+
+**Options and tradeoffs.**
+
+| Option | Mechanism and benefit | Cost and failure mode |
+| --- | --- | --- |
+| Read the active snapshot per call | Each evaluation reads a complete current snapshot; simple and quick to adopt updates. | Several calls in one request can observe different versions. |
+| Lock configuration for the request | Keep a read lock through the request; several checks share one version. | Slow application work delays publication; an incomplete locking protocol can still allow mixed versions. |
+| Capture an immutable snapshot | Briefly capture one reference per request and evaluate against it; decisions share a version and need no configuration lock. | Old generations remain referenced until sessions finish, delaying off-switch adoption for those requests. |
+
+**Choice and rationale.** Capture one immutable snapshot per request. The consistency boundary is **one session, one version**. The application reuses that session for every check, allowing publication to proceed independently of request processing.
+
+**How it works.**
+
+1. Build and validate a complete candidate configuration. Copy mappings and freeze the declared record graph so a caller-owned dictionary cannot change it later.
+2. In `publish`, acquire the store lock, require a newer positive version, replace the active reference and release the lock.
+3. In `session`, acquire the same lock only long enough to capture the active snapshot. The session holds that reference and its immutable context.
+4. Evaluate by reading the session's captured objects. Existing sessions keep the previous snapshot; new sessions capture the newly published one.
+
+The [publication scenario](#publishing-configuration-during-a-request) shows those old and new requests side by side. [Python's lock primitive](https://docs.python.org/3/library/threading.html#lock-objects) provides mutual exclusion for the publication/capture boundary. The object reference, rather than a lock held through application work, preserves the session's version.
+
+**Tradeoffs and recovery.** Invalid and stale candidates leave the last valid snapshot active. A rollback publishes earlier settings as a newer version—for example, version 14 can restore version 12's values after version 13. One configuration authority must assign those increasing versions.
+
+Full-copy publication temporarily retains active and candidate data; long-lived sessions and frequent updates can retain additional generations. The runtime can reclaim a snapshot after its last session releases it. Keep sessions request-scoped and release them at request completion. The surrounding application or SDK should monitor snapshot bytes, retained generations, oldest-session age and configuration-delivery health; those metrics are not implemented by this example.
+
+This guarantees request consistency within one session, rather than simultaneous adoption across processes. If delivery stops, the last snapshot stays usable but new settings cannot take effect until delivered and published. An emergency off switch affects new sessions; immediate interruption of existing work needs separate application cancellation.
 
 ## Key implementation
 
@@ -293,9 +551,9 @@ class SnapshotStore:
 
 A delayed version 12 cannot overwrite version 13. A rollback of flag values would be a new version 14 containing the older settings, not an exception to the version rule. This assumes one configuration authority supplies monotonically increasing versions.
 
-## A worked example
+### A worked example
 
-Employees get the new checkout regardless of percentage. Other identified customers enter the rollout. The request creates one session and passes it to the components that need a flag decision.
+While the flag is enabled, employees get the new checkout regardless of percentage. Other identified customers enter the rollout. The request creates one session and passes it to the components that need a flag decision.
 
 ```python
 staff = Rule("employees", (Condition("employee", "true"),), True)
@@ -313,66 +571,6 @@ assert session.evaluate("checkout_v2").value is True
 assert store.session(session.context).evaluate("checkout_v2").reason == "DISABLED"
 ```
 
-With this flag key and salt, the sample hash function gives the following assignments. These are calculated examples, not measurements from a production SDK.
-
-| Customer | Bucket | At 10%: below 1,000 | At 50%: below 5,000 |
-| --- | ---: | --- | --- |
-| customer-42 | 250 | New checkout | New checkout |
-| customer-17 | 4,560 | Old checkout | New checkout |
-| customer-91 | 7,524 | Old checkout | Old checkout |
-
-The first customer stays in; the second joins when the threshold rises. The percentage describes the fraction of the bucket space, not an exact count of customers in a small sample.
-
-## Deep dives
-
-### How do we keep a rollout stable?
-
-Choosing a random number on every call is tempting, but the same customer could alternate between two checkout experiences. We need assignment to depend on identity, not on the moment of evaluation.
-
-- **Random choice per call:** simple, but inconsistent across refreshes and services. Suitable only when each independent invocation really should be sampled.
-- **Remember an assignment:** persist a customer-to-variant record. This supports explicit enrollment, manual overrides and cohort history, but needs a durable authority and a cached copy for local evaluation. A stale assignment cache delays enrollment changes; an unavailable authority affects new assignments.
-- **Deterministic hashing:** derive a bucket from stable identity, flag key and salt, then compare it with the configured threshold. Evaluation stays local and repeatable, but changing identity, salt or algorithm reshuffles the cohort. It also gives a fraction of bucket space rather than an exact customer quota.
-
-For this memory-only Boolean evaluator, use deterministic hashing because stable percentage rollout needs no per-customer enrollment workflow. We accept that membership is determined by the identity contract rather than an editable assignment ledger. Explicit customer exceptions belong in ordered targeting rules; audited enrollment or an exact cohort quota would justify a persisted assignment model outside this library. Deterministic partitioning is also used by [LaunchDarkly's percentage rollouts](https://launchdarkly.com/docs/home/releases/percentage-rollouts); this example's 10,000-bucket algorithm is our own and is not compatible with its SDK.
-
-The assignment algorithm is a versioned contract: identical UTF-8 inputs, JSON encoding, SHA-256 truncation, byte order and bucket formula must produce the same test vectors in every language. Preserve it while changing rollout percentages. An algorithm migration needs an explicit new contract and coordinated SDK/configuration rollout; changing implementations silently can move customers between experiences. [Python's hashlib](https://docs.python.org/3/library/hashlib.html) supplies the hash primitive; the surrounding encoding and bucket rules define this evaluator's cohort.
-
-### What happens when configuration changes during a request?
-
-Suppose a checkout checks a flag when selecting the screen, then checks it again when calculating its response. A refresh between those calls could select the new screen but return data for the old one. Each lookup might be individually correct, while the request as a whole is not.
-
-- **Mutate one shared dictionary:** cheap, but readers can see partially applied changes, and a request can observe different settings between calls.
-- **Lock every lookup:** protects each lookup, but does not give several lookups a common version. Holding the lock for an entire request would also delay refreshes behind application work.
-- **Capture an immutable snapshot:** construct and validate a candidate separately, swap the active pointer, and let each request retain one version. Evaluation avoids configuration locks and partial updates, at the cost of retaining old generations until their sessions finish; a long-running session delays off-switch adoption.
-
-Use the snapshot approach. It makes the consistency boundary explicit: one session, one version. The caller must reuse that session; repeatedly opening a session inside a request would discard the guarantee.
-
-```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
-sequenceDiagram
-    accTitle: Request-consistent configuration
-    accDescr: Request A keeps version 12 after an update, while a new request captures version 13.
-    participant A as Request A
-    participant S as SnapshotStore
-    participant U as Config updater
-    participant B as Request B
-    rect rgb(232, 240, 254)
-        A->>S: Capture version 12
-        S-->>A: Session with version 12
-    end
-    rect rgb(254, 247, 224)
-        U->>S: Publish validated version 13
-        A->>A: Evaluate again using version 12
-    end
-    rect rgb(230, 244, 234)
-        B->>S: Capture active configuration
-        S-->>B: Session with version 13
-    end
-```
-
-Each session holds an ordinary reference to its captured snapshot. Publication makes version 13 active for new sessions while requests on version 12 finish coherently. The runtime can reclaim version 12 after its last session releases it.
-
-This trades memory and update responsiveness for request consistency. Full-copy publication briefly retains the active and candidate configurations; frequent refreshes plus long-lived sessions can retain several generations. Memory is proportional to the live snapshots and their retained flag/rule data, while the oldest session bounds how long stale settings remain in use. Keep sessions request-scoped, release them at request completion and monitor retained generations, snapshot bytes and oldest-session age. An emergency off switch applies to new sessions after publication; immediate interruption of existing requests needs a separate application cancellation policy.
 
 ## Edge cases and tests
 
@@ -382,7 +580,7 @@ Test the decision contract, not just the happy path:
 - A disabled flag returns `false` even for an employee and even when the caller's default is `true`.
 - The first matching rule wins when two rules disagree; missing attributes do not match.
 - An anonymous subject uses the fallback after rules have been checked.
-- The threshold comparison is strict: bucket 1,000 is excluded at a 10% threshold. Zero excludes all identified subjects; 10,000 includes all.
+- The threshold comparison is strict: bucket 1,000 is excluded at a 10% threshold. For identified subjects reaching the rollout branch, zero excludes all and 10,000 includes all.
 - The same subject stays in the cohort when only the threshold increases. Restarting the process produces the same bucket.
 - Invalid candidates and stale versions leave the active snapshot unchanged. A source dictionary changed after construction cannot change a snapshot or context.
 - Publishing while requests capture sessions yields complete old or new snapshots, never a mixture. Sessions captured before publication keep the old result.
@@ -394,5 +592,3 @@ The example also needs a caller-chosen identity policy. Switching from an anonym
 Keep the first version Boolean and equality-only. Add typed variants or richer predicates when a real use case needs them, with matching typed defaults and validation. Add reusable segments before copying large customer lists into every rule. If prerequisites are introduced, validate their dependency graph and define how missing or cyclic references behave.
 
 Snapshot capture gives consistency within one request, not simultaneous updates across all application processes. If configuration delivery stops, the last valid snapshot remains usable, but an off switch cannot take effect until it arrives and a new session captures it. Delivery health and maximum configuration age belong in the surrounding SDK, not in `evaluate`.
-
-The class boundaries follow the progression from behavior to entities, interfaces and working methods in [Hello Interview's low-level design delivery framework](https://www.hellointerview.com/learn/low-level-design/in-a-hurry/delivery). The feature-flag problem, implementation and examples here are original.

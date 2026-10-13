@@ -5,7 +5,7 @@ category: system-design-ml
 date: 2026-07-08
 tags: [Machine-Learning, Video-Recommendation, Recommendation, Ranking]
 thumbnail: /images/posts/video-recommendations.svg
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-12
 description: "Design of a personalized “Up Next” service that recommends five videos after a user finishes watching."
 notion_source: https://app.notion.com/p/397d865005a88177b0c1df06dae36295
 ---
@@ -16,9 +16,9 @@ Design of a personalized “Up Next” service that recommends five videos after
 
 ## Problem
 
-A user finishes a video and wants something worthwhile to watch next. The recommendation service selects a small slate from a large catalog using the current video, recent viewing history and language preferences.
+A user finishes a video and wants something worthwhile to watch next. The recommendation service selects a small ordered list, called a **slate**, from a large catalog using the current video, recent viewing history and language preferences.
 
-The service needs to balance immediate relevance with discovery and user satisfaction. Optimizing clicks alone can favor appealing thumbnails with disappointing content; optimizing total watch time alone can overvalue long videos. Retrieval, ranking and slate selection address these concerns at different stages.
+The service balances immediate relevance with discovery and user satisfaction. Clicks can favor appealing thumbnails with disappointing content; total watch time can overvalue long videos. Retrieval narrows the catalog, ranking scores candidates, and slate selection forms the final list. Similarity retrieval compares learned numeric representations (**embeddings**) using approximate nearest-neighbor (**ANN**) search.
 
 ## Requirements
 
@@ -130,19 +130,19 @@ The authenticated session supplies user identity. Ingestion deduplicates by `eve
 
 ## High-level design
 
-A two-tower model retrieves candidates using precomputed video embeddings. A richer model ranks the shortlist, and a policy step builds the final slate. Training and index publication run separately from requests.
+One encoder summarizes the user's context and another summarizes each video; together they form a **two-tower model** for similarity retrieval. A richer model ranks the shortlist, and a policy step builds the final slate. Training and index publication run separately from requests.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-    U["User"] --> API["Recommendation API"]
-    API --> RET["Personalized and<br/>popular retrieval"]
-    RET --> RANK["Multi-task ranker"]
-    RANK --> SLATE["Eligibility and diversity"]
-    SLATE --> OUT["Five-video slate"]
-    F[("Session and<br/>video features")] --> RET
+    U["User"] --> API["Serving API"]
+    API --> RET["Personalized<br>and<br>popular<br>retrieval"]
+    RET --> RANK["Multi-task<br>ranker"]
+    RANK --> SLATE["Eligibility<br>and diversity"]
+    SLATE --> OUT["Five-video<br>slate"]
+    F[("Session and<br>video features")] --> RET
     F --> RANK
-    OUT -.->|"Displayed impressions"| EVENTS["Feedback pipeline"]
+    OUT -.->|"Displayed impressions"| EVENTS["Feedback<br>pipeline"]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
 classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
@@ -156,7 +156,7 @@ The retrieval/ranking separation follows the architecture described in [YouTube'
 
 ## Storage
 
-- **Partitioned catalog store:** use Bigtable for video-ID lookups and content/eligibility versions. Store media and immutable training data separately in object storage.
+- **[Cassandra](/designs/tech-apache-cassandra/) catalog:** partition by video ID for durable point reads and versioned content/eligibility records. Conditional version changes coordinate catalog writes; serving caches are advisory and required current eligibility checks use the authoritative policy. Store media and immutable training data separately in object storage.
 
 - **[Redis](/designs/tech-redis/):** keep bounded session history and recent aggregate features. Feature values carry timestamps; a cache miss uses documented defaults or catalog values.
 
@@ -168,9 +168,9 @@ The retrieval/ranking separation follows the architecture described in [YouTube'
 
 Video edits invalidate derived representations. A deletion updates eligibility immediately and remains a tombstone through index compaction and replay.
 
-## From request to response
+## Functional scenarios
 
-### Next-slate flow
+### Selecting the next slate
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -197,8 +197,6 @@ sequenceDiagram
 
 The request uses one compatible retrieval/ranking bundle and the current session features. Only actual display creates exposure evidence; watch outcomes join later, while deduplicated recent actions can already influence the next request.
 
-### Selecting the next slate
-
 1. Validate the current video and request limits. Pin a serving bundle and read bounded session history, language and consent-approved context.
 
 2. Compute the user embedding using the current session. Query the ANN index and merge candidates from related-video, fresh-video and popular-video sources.
@@ -213,9 +211,35 @@ The request uses one compatible retrieval/ranking bundle and the current session
 
 Candidate retrieval is cheap because item vectors are precomputed. Ranking incurs per-request feature and inference work; the cascade deep dive controls that cost.
 
-### Applying feedback
+### Updating session and training feedback
 
-A watch event updates recent session history after deduplication. Longer-term item aggregates are computed from the event stream with event-time windows. Training waits for outcomes to mature, while the next request can already use the updated session.
+The client reports which recommendations it actually displayed and later reports viewing outcomes. The feedback pipeline deduplicates those identities, updates bounded recent-session features promptly, and waits for complete label windows before constructing training examples.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+  participant U as Video client
+  participant I as Event ingestion
+  participant F as Session features
+  participant T as Training builder
+  participant A as Recommendation API
+  rect rgb(232, 240, 254)
+    U->>I: Actual displayed slate identity
+    U->>I: Watch, skip or playback-failure event
+    I->>I: Persist and deduplicate event identity
+    I->>F: Update recent-action window
+    U->>A: Next recommendation request
+    A->>F: Read fresh bounded session context
+    F-->>A: Actions and feature cutoff
+  end
+  rect rgb(230, 244, 234)
+    I-->>T: Replay impressions and outcomes
+    T->>T: Wait for mature labels and time-correct features
+    T->>T: Build versioned training examples
+  end
+```
+
+The next request can reflect a recent skip without waiting for retrained weights. A suggested item that was never displayed supplies no exposure label, and a failed playback is distinct from deliberate rejection. Longer-term item aggregates use event-time windows. Feature lag uses known serving defaults; label-window maturity and historical feature availability remain independent training requirements.
 
 ### Serving during a failure
 
@@ -225,7 +249,9 @@ If the ranker misses its deadline, order candidates using retrieval scores and l
 
 ### How do we narrow a billion videos to five?
 
-Scoring every video per request requires too much feature retrieval and model computation.
+**Problem.** Scoring every video per request requires too much feature retrieval and model computation.
+
+**Options and tradeoffs.**
 
 - **Popular-video lists:** Precompute a language-appropriate list. Serving is inexpensive and reliable, but current-session interests receive little personalization.
 
@@ -233,7 +259,7 @@ Scoring every video per request requires too much feature retrieval and model co
 
 - **Retrieval with bounded richer ranking — recommended:** Merge ANN and fresh/popular candidates, then score a shortlist with cross-features and select five. Detailed inference is limited; relevant videos lost during retrieval or pruning remain unavailable to the ranker.
 
-The billion-video catalog needs cheap retrieval before per-request inference. We accept measured stage recall loss and compatible index/model artifacts, tuning budgets using relevance and p99 rather than assuming a larger candidate set is free.
+**Choice and rationale.** Use bounded candidate retrieval followed by richer shortlist ranking. The billion-video catalog needs cheap retrieval before per-request inference. We accept measured stage recall loss and compatible index/model artifacts, tuning budgets using relevance and p99 rather than assuming a larger candidate set is free.
 
 The user tower encodes recent watches and permitted context; the item tower encodes metadata and content. Train with sampled softmax and correct for the negative-sampling distribution. In-batch negatives are efficient, but frequent items appear more often and some sampled items may also be relevant.
 
@@ -241,20 +267,20 @@ The user tower encodes recent watches and permitted context; the item tower enco
 
 The ranker combines explicit feature interactions from [DCN V2](https://arxiv.org/abs/2008.13535) with task-specific heads. [MMoE](https://research.google/pubs/modeling-task-relationships-in-multi-task-learning-with-multi-gate-mixture-of-experts/) is an option when task sharing causes negative transfer. Start with a simpler shared-bottom model and add expert routing only when controlled comparisons justify its serving cost.
 
-**Prepare item work once, spend user work per request**
+**How it works: Prepare item work once, spend user work per request.**
 
 Encode video content/metadata offline with the active item tower and publish its vector to the base/overlay index. A request encodes recent user watches and context, retrieves a bounded candidate set, merges it with eligible popular/followed/recent sources, then applies the richer ranker.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-    H["Recent user activity"] --> U["User tower"]
-    U --> A["Compatible ANN index"]
-    P["Popular and recent sources"] --> M["Deduplicated candidate set"]
+    H["Recent user<br>activity"] --> U["User tower"]
+    U --> A["Compatible ANN<br>index"]
+    P["Popular and<br>recent sources"] --> M["Deduplicated<br>candidate set"]
     A --> M
     M --> R["Batched ranker"]
-    R --> D["Eligibility and diversity"]
-    D --> S["Five-item slate"]
+    R --> D["Eligibility<br>and diversity"]
+    D --> S["Five-item<br>slate"]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
 classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
@@ -266,11 +292,13 @@ class D control;
 
 Evaluate candidate recall before adding ranker capacity. Approximate-search probes and quantization trade CPU/memory for recall; choose them against the catalog's relevant-video set rather than a synthetic benchmark alone.
 
-The final ranker needs batch hydration for video age, content and session features. Set a deadline for each source and keep a fallback order when richer scoring is unavailable. New item content is encoded with the serving bundle; a vector from another encoder version is rejected rather than silently inserted into the active index.
+**Tradeoffs and recovery.** The final ranker needs batch hydration for video age, content and session features. Set a deadline for each source and keep a fallback order when richer scoring is unavailable. New item content is encoded with the serving bundle; a vector from another encoder version is rejected rather than silently inserted into the active index.
 
 ### What should the ranker optimize?
 
-Clicks, watch duration and satisfaction capture different behavior. Long videos also provide more possible watch time, making unbounded duration a biased objective.
+**Problem.** Clicks, watch duration and satisfaction capture different behavior. Long videos also provide more possible watch time, making unbounded duration a biased objective.
+
+**Options and tradeoffs.**
 
 - **Click probability:** Train on fast click labels. Feedback is abundant, but enticing thumbnails can win even when the ensuing viewing experience is poor.
 
@@ -278,7 +306,7 @@ Clicks, watch duration and satisfaction capture different behavior. Long videos 
 
 - **Versioned multi-objective ranking — recommended:** Estimate bounded useful watch duration, engagement and negative outcomes, then apply explicit product weights. Several goals are visible; shared-task gradients can interfere and sparse negative labels require per-head calibration and quality checks.
 
-A useful session requires more than a click or raw duration. We accept loss-weight and product-policy tuning, checking satisfaction and negative outcomes separately so one headline engagement gain does not hide task interference.
+**Choice and rationale.** Use separately evaluated prediction heads and a versioned multi-objective policy. A useful session requires more than a click or raw duration. We accept loss-weight and product-policy tuning, checking satisfaction and negative outcomes separately so one headline engagement gain does not hide task interference.
 
 Clip extreme watch durations and evaluate by video length. A direct bounded-duration head is easier to interpret than treating a weighted logistic score as a calibrated number of seconds.
 
@@ -294,7 +322,7 @@ score = (
 
 Tune weights through controlled experiments with explicit satisfaction and diversity guardrails. Offline recall/NDCG measures candidate ordering; online session outcomes establish whether a change helps users.
 
-**Define the useful-watch label**
+**How it works: Define the useful-watch label.**
 
 A watch event needs playback start/stop, duration, foreground/interaction context where permitted, and a stable impression identity. Deduplicate client retries and cap impossible durations. A bounded useful-watch target avoids treating a looping or idle playback as unlimited satisfaction.
 
@@ -303,12 +331,12 @@ A long and short video differ in possible watch duration. Evaluate absolute usef
 The scoring policy combines calibrated probabilities and the bounded duration estimate with recorded units/weights. Train heads only when their label windows are mature. Hides and explicit dissatisfaction remain guardrails even when watch time grows.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-    A["Impression"] --> B["Playback evidence"]
-    B --> C["Mature watch and engagement labels"]
-    C --> D["Shared representation and prediction heads"]
-    D --> E["Versioned slate-scoring policy"]
+    A["Impression"] --> B["Playback<br>evidence"]
+    B --> C["Mature watch<br>and engagement<br>labels"]
+    C --> D["Shared<br>representation<br>and prediction<br>heads"]
+    D --> E["Versioned<br>slate-scoring<br>policy"]
     class A,D request;
     class B,C data;
     class E control;
@@ -318,11 +346,13 @@ classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
 classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
-Validate whole-session outcomes and return rate through a controlled experiment. Offline teacher agreement or an increase in average seconds alone cannot establish that recommendations improved for users.
+**Tradeoffs and recovery.** Validate whole-session outcomes and return rate through a controlled experiment. Offline teacher agreement or an increase in average seconds alone cannot establish that recommendations improved for users. Record head calibration and feature missingness; a guardrail regression rolls back the scoring policy with its compatible model bundle, not just one weight.
 
 ### How do new users and videos receive useful recommendations?
 
-New users have little history, and new videos have no interaction aggregates.
+**Problem.** New users have little history, and new videos have no interaction aggregates.
+
+**Options and tradeoffs.**
 
 - **Wait for engagement:** Rank only after reliable interaction aggregates arrive. Popularity evidence is mature, but new videos receive little exposure and new users have a generic experience.
 
@@ -330,13 +360,13 @@ New users have little history, and new videos have no interaction aggregates.
 
 - **Content representations with bounded exploration — recommended:** Encode approved content and current context, then allocate a limited eligible-item exposure budget. New items can compete; weaker behavioral evidence and exploratory slots can reduce immediate relevance.
 
-The feed needs fresh content before its interaction history exists. We accept a measured exploration cost and evaluate cold-start cohorts, keeping eligibility and creator-exposure controls active.
+**Choice and rationale.** Use content representations with a bounded exploration budget. The feed needs fresh content before its interaction history exists. We accept a measured exploration cost and evaluate cold-start cohorts, keeping eligibility and creator-exposure controls active.
 
 Mix a small, configurable share of eligible exploration candidates into the slate and log their selection probabilities. Update the session representation as watches arrive. Creator-level priors help when content is sparse, but exploration quotas prevent established creators from occupying all discovery opportunities.
 
 A greedy diversity rule can use `score - similarity_penalty` against selected items, with a proposed cap of two videos per creator in a five-item slate. Evaluate the cap against user intent: a playlist continuation may need a distinct policy.
 
-**A cold-start path with bounded exposure**
+**How it works: A cold-start path with bounded exposure.**
 
 For a new user, use explicit language/interests and early session actions to build context. For a new video, content and creator features generate an indexable representation before watch aggregates exist. Their missingness is passed to the ranker.
 
@@ -344,11 +374,13 @@ Allocate exploration after eligibility checks and log item/slot assignment proba
 
 A skip updates recent session features for the next request; it is interpreted with dwell, playback availability and exposure. A video that failed to load should not receive the same negative label as one deliberately rejected after viewing.
 
-Track quality and exposure by true item age and new-user cohort. Mature outcomes—not just initial clicks—determine whether to increase the exploration share or promote a content-based feature.
+**Tradeoffs and recovery.** Track quality and exposure by true item age and new-user cohort. Mature outcomes—not just initial clicks—determine whether to increase the exploration share or promote a content-based feature. Restore the previous exploration cap if cohort quality or safety guardrails regress; continue serving eligible baseline candidates while the experiment is reviewed.
 
 ### How do we prevent biased or mismatched training data?
 
-Only displayed videos can receive watch feedback. Position, UI layout and the previous model influence exposure, so passive logs reflect those choices.
+**Problem.** Only displayed videos can receive watch feedback. Position, UI layout and the previous model influence exposure, so passive logs reflect those choices.
+
+**Options and tradeoffs.**
 
 - **Raw-log training:** Treat observed watch outcomes as relevance. Collection is simple, but the previous policy and display position determine exposure and missing outcomes.
 
@@ -356,13 +388,13 @@ Only displayed videos can receive watch feedback. Position, UI layout and the pr
 
 - **Versioned serving snapshots with controlled exposure — recommended:** Log request-time evidence or reconstruct it with availability-aware histories and known exploration probabilities. Comparisons are better supported; storage, feature provenance and supported weighting add complexity.
 
-Ranking and exposure change which labels exist. We accept snapshot/history retention and a bounded randomized sample so training reproduces the served context rather than learning from future features or unobserved impressions.
+**Choice and rationale.** Retain versioned serving evidence with controlled exposure samples. Ranking and exposure change which labels exist. We accept snapshot/history retention and a bounded randomized sample so training reproduces the served context rather than learning from future features or unobserved impressions.
 
 Inverse-propensity weighting uses exposure/examination estimates, with bounded weights. `P(click | position)` also includes relevance and is unsuitable as an exposure estimate by itself. Position-as-feature is a useful model input, but equalizing it at serving time still requires bias evaluation.
 
 Use chronological splits and mature labels. Video age is computed relative to the request timestamp in both training and serving; setting every video's age to zero would change the feature's meaning. Monitor feature missingness and skew by schema version and session activity.
 
-**Reproduce what the serving model knew**
+**How it works: Reproduce what the serving model knew.**
 
 Store the request's bundle, user-history cutoff, feature timestamps and displayed video versions. Historical training joins only features available at that cutoff. Later popularity and the user's subsequent watches belong to labels or later examples.
 
@@ -370,11 +402,13 @@ If only the final slate is logged, the training pipeline cannot distinguish retr
 
 Sampling metadata records negative selection and randomized slot assignment. Weighting based on those probabilities needs adequate support and a cap; it cannot remove bias for videos the policy never considered.
 
-Run fixture tests that send the same historical request through offline feature extraction and serving encoding. Compare masks, age calculations and categorical mappings, then inspect drift by schema version. A user vector built with one tokenizer/encoder must query item vectors from its compatible bundle.
+**Tradeoffs and recovery.** Run fixture tests that send the same historical request through offline feature extraction and serving encoding. Compare masks, age calculations and categorical mappings, then inspect drift by schema version. A user vector built with one tokenizer/encoder must query item vectors from its compatible bundle. A parity or compatibility failure blocks promotion; retain the prior bundle and regenerate affected examples before reevaluation.
 
 ### How do releases and adaptation remain stable?
 
-Daily retraining captures gradual changes; breaking-news or seasonal shifts can move faster.
+**Problem.** Daily retraining captures gradual changes; breaking-news or seasonal shifts can move faster.
+
+**Options and tradeoffs.**
 
 - **Daily batch updates:** Train reproducible weights on mature evidence. Recovery is clear, but a new session action or sudden event is absent from the previous snapshot.
 
@@ -382,14 +416,14 @@ Daily retraining captures gradual changes; breaking-news or seasonal shifts can 
 
 - **Batch bundles with live session features — recommended:** Keep weights and index space stable while recent interactions update bounded features. Same-session adaptation is prompt; event lag remains visible and bundle releases need coordinated rebuilds and warm capacity.
 
-Immediate user context changes faster than stable model quality can be established. We accept separate feature and bundle clocks, including the storage and rebuild cost of compatible user/item encoders, index and ranker rollback artifacts.
+**Choice and rationale.** Use compatible batch model bundles and live session features. Immediate user context changes faster than stable model quality can be established. We accept separate feature and bundle clocks, including the storage and rebuild cost of compatible user/item encoders, index and ranker rollback artifacts.
 
 Block malformed-data and incompatible-index releases. Evaluate by video age, language, creator cohort and user activity; shadow checks validate operational behavior, while a controlled traffic experiment measures user impact. Roll back the whole compatible bundle and retain ingestion watermarks so new-video indexing can continue.
 
-**Adapt quickly through features, release weights deliberately**
+**How it works: Adapt quickly through features, release weights deliberately.**
 
 A session feature update reflects the latest watched/skipped videos without changing global weights. Stream consumers apply events idempotently and retain an event-time horizon; late actions update only the windows they still belong to.
 
 For a new weight candidate, publish the matched item embeddings/index as well as its user tower and heads. Run offline cohort gates, warm the bundle, then compare through shadow and controlled traffic.
 
-Existing feed sessions retain a cursor/snapshot contract where possible. Every continuation rechecks current removal state so a pinned older ranking cannot expose deleted content. Rollback restores the complete old bundle and reconciles its recent-item overlay watermark. Monitor feature lag, candidate-source failures and deep-ranker fallback rate independently so operational degradation is visible even if the API still returns five items.
+**Tradeoffs and recovery.** Existing feed sessions retain a cursor/snapshot contract where possible. Every continuation rechecks current removal state so a pinned older ranking cannot expose deleted content. Rollback restores the complete old bundle and reconciles its recent-item overlay watermark. Monitor feature lag, candidate-source failures and deep-ranker fallback rate independently so operational degradation is visible even if the API still returns five items.

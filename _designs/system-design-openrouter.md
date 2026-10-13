@@ -5,7 +5,7 @@ category: system-design
 date: 2026-07-23
 tags: [Interview-Prep, Distributed-Systems, API-Gateway, LLM-Infra]
 thumbnail: /images/posts/system-design-openrouter.svg
-last_modified_at: 2026-10-07
+last_modified_at: 2026-10-12
 description: "An OpenRouter-style gateway that gives applications one API for multiple LLM providers, with streaming, routing policies and tenant-level spending controls."
 notion_source: https://app.notion.com/p/3a7d865005a881f58000e2a2815d1111
 ---
@@ -148,7 +148,7 @@ flowchart TB
   subgraph Accounting["Background accounting"]
     E[Event stream]
     H[(ClickHouse)]
-    X[Accounting workers]
+    X["Accounting<br>workers"]
   end
   C -->|Request| G
   G -->|Policy and health| R
@@ -179,9 +179,9 @@ flowchart TB
 
 Database row locks and committed reservations supply the spending invariant. See [PostgreSQL's locking behavior](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS). High-volume accounts require measured admission throughput or a separately designed allocation of durable budget leases.
 
-## From request to response
+## Functional scenarios
 
-### One streaming request
+### Admitting and delivering a streaming request
 
 The gateway reserves enough budget before starting provider work. Tokens travel directly back through the gateway; finalized usage then settles that reservation and feeds reporting. This sequence shows a successful request. The retry and recovery deep dives explain rejected and uncertain attempts.
 
@@ -217,27 +217,45 @@ sequenceDiagram
 
 The committed reservation establishes the spending limit before inference. Streaming and settlement use one logical request identity; reporting consumes committed usage events independently of token delivery.
 
-### Admitting a request
-
-The gateway verifies the key, resolves the tenant and validates model features, context size and output limits. It filters providers by compatibility and data policy, estimates a conservative charge bound for the allowed attempts and reserves that amount.
+**Admission.** The gateway verifies the key, resolves the tenant and validates model features, context size and output limits. It filters providers by compatibility and data policy, estimates a conservative charge bound for the allowed attempts and reserves that amount.
 
 The budget service locks the affected accounts, checks finalized spend plus held reservations against each limit, then writes the reservation and request identity together. Insufficient balance returns `402`; an unavailable budget authority returns `503`. The gateway forwards only after commit.
 
-### Selecting and contacting a provider
-
-The router selects among compatible healthy providers, using the tenant's price or latency preference and each provider's available capacity. The adapter maps model IDs, tool formats and streaming events. It records the provider attempt and price version before dispatch.
+**Provider selection.** The router selects among compatible healthy providers, using the tenant's price or latency preference and each provider's available capacity. The adapter maps model IDs, tool formats and streaming events. It records the provider attempt and price version before dispatch.
 
 A fallback uses the same logical request ID and a new attempt ID. The gateway limits the total attempts and elapsed time. A provider failure can still incur upstream cost, which is retained independently of the customer charge.
 
-### Delivering the response
-
-The proxy forwards normalized SSE frames while tracking request state and provider usage. Bounded buffers and socket backpressure prevent slow clients from growing memory indefinitely. Sustained backpressure cancels the upstream request and records an interrupted outcome.
+**Stream delivery.** The proxy forwards normalized SSE frames while tracking request state and provider usage. Bounded buffers and socket backpressure prevent slow clients from growing memory indefinitely. Sustained backpressure cancels the upstream request and records an interrupted outcome.
 
 Successful completion produces the final usage record and settlement. A mid-stream failure produces an explicit error and a failed stream outcome; the service preserves the distinction between completed and interrupted output.
 
 ### Settling usage
 
 The settlement transaction replaces the held maximum with the finalized customer charge and writes an outbox event. A unique settlement key makes retries safe. Reporting consumers apply that event to the tenant's usage view.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    participant R as Recovery worker
+    participant P as LLM provider
+    participant B as Budget service
+    participant D as Account store
+    participant U as Reporting consumer
+    rect rgb(254, 247, 224)
+        R->>D: Claim unresolved attempt
+        D-->>R: Provider identity and held reservation
+        R->>P: Query supported usage record
+        P-->>R: Final usage evidence
+    end
+    rect rgb(230, 244, 234)
+        R->>B: Settle confirmed final charge
+        B->>D: Commit settlement and outbox once
+        D-->>B: Settlement recorded
+        D-->>U: Committed usage event
+    end
+```
+
+This settlement path proceeds only when final evidence or the documented unresolved-usage policy permits it. An unknown provider outcome retains its hold; a timer alone does not prove that inference was free. The settlement identity prevents recovery and a late gateway completion from applying the charge twice.
 
 On a crash or ambiguous upstream timeout, the reservation remains held while reconciliation queries provider usage or processes later events. Reservation age triggers investigation; an automatic TTL refund could release funds for inference that was already billed.
 
@@ -249,11 +267,13 @@ The durable writes add admission and settlement latency. Token-by-token budget t
 
 **Problem.** Always selecting the cheapest endpoint can overload it, while round-robin ignores different costs, model capabilities and latency.
 
+**Options and tradeoffs.**
+
 - **Round-robin:** rotate through compatible providers, giving each a similar request share. Routing is cheap and easy to inspect, but equal request counts ignore token volume, price and provider capacity; a slower endpoint can accumulate a queue while another has spare capacity.
 - **Cheapest eligible provider:** send each request to the lowest-priced compatible endpoint. This minimizes quoted unit cost while capacity is available, but concentrates traffic there; throttling and fallback can increase completion time and actual total cost.
 - **Health- and capacity-aware weighted selection:** sample among eligible providers using policy weights, then cap each provider's admitted concurrency. This spreads load while favoring cost or latency, but requires fresh telemetry, conservative capacity estimates and stable weight updates. Spare capacity at a higher price is sometimes the appropriate fallback.
 
-**Recommendation: use weighted selection after eligibility filtering.** At the proposed 50K-request/s peak, providers have different limits and tenants have different routing goals. Weighted selection can honor those policies without sending the entire fleet to one cheap endpoint. We accept telemetry and tuning overhead, and occasional higher-priced routing, to preserve usable capacity. Keep model choice separate from provider choice. A price-focused policy can use inverse-square price weights, while a latency-focused policy ranks providers against first-token and throughput targets. [OpenRouter's routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection) describes price-weighted routing and provider overrides.
+**Choice and rationale.** Use weighted selection after eligibility filtering. At the proposed 50K-request/s peak, providers have different limits and tenants have different routing goals. Weighted selection can honor those policies without sending the entire fleet to one cheap endpoint. We accept telemetry and tuning overhead, and occasional higher-priced routing, to preserve usable capacity. Keep model choice separate from provider choice. A price-focused policy can use inverse-square price weights, while a latency-focused policy ranks providers against first-token and throughput targets. [OpenRouter's routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection) describes price-weighted routing and provider overrides.
 
 A circuit breaker removes repeatedly failing endpoints, then allows bounded half-open probes. A provider-specific `429` respects its retry interval and capacity limits; invalid provider credentials disable that adapter until repaired. New providers receive limited trial traffic instead of an unrestricted optimistic share.
 
@@ -275,17 +295,19 @@ chosen = weighted_choice(available, policy_weights(available))
 release_unused_capacity_reservations(available, except_provider=chosen)
 ```
 
-Use a measured first-token estimate to reject a provider that cannot fit the deadline. Reserve an attempt slot before dispatch and release it when that attempt terminates; a timeout with an uncertain upstream outcome still counts as exposure. Persist the catalog/price version and selection reason so operators can reconstruct the decision. Maintain separate circuit-breaker state for transport failure, capacity rejection and model capability errors; combining them would disable otherwise healthy endpoints for the wrong reason.
+**Tradeoffs and recovery.** Use a measured first-token estimate to reject a provider that cannot fit the deadline. Reserve an attempt slot before dispatch and release it when that attempt terminates; a timeout with an uncertain upstream outcome still counts as exposure. Persist the catalog/price version and selection reason so operators can reconstruct the decision. Maintain separate circuit-breaker state for transport failure, capacity rejection and model capability errors; combining them would disable otherwise healthy endpoints for the wrong reason.
 
 ### How do retries interact with streaming?
 
 **Problem.** A fallback is straightforward before the user receives output. Once part of an answer is visible, starting another model creates a second generation with a potentially different answer.
 
+**Options and tradeoffs.**
+
 - **Buffer the entire answer:** keep output at the gateway until generation finishes, replacing a failed attempt before exposing it. This makes fallback invisible to the client, but removes incremental delivery and retains the entire answer in memory while the user waits.
 - **Fallback before output begins:** retry a definitely rejected attempt before forwarding the first token. The client receives one coherent generation with low first-token latency; after output begins, failure ends that stream rather than transparently recovering it.
 - **Restart after partial output:** start another generation and identify it explicitly in the client protocol. This can recover usable output, but the application must discard or distinguish the partial answer; another attempt adds latency and can incur another provider charge.
 
-**Recommendation: allow bounded fallback before output, then report a stream error after partial delivery.** Streaming is a core API capability here, so waiting for complete answers would defeat the user experience. The accepted limitation is that a partially delivered generation can fail visibly; an explicit terminal error is preferable to mixing two providers' answers. [OpenRouter's streaming contract](https://openrouter.ai/docs/api_reference/streaming) distinguishes errors before and during a stream. The proposed gateway uses the same clear boundary.
+**Choice and rationale.** Allow bounded fallback before output, then report a stream error after partial delivery. Streaming is a core API capability here, so waiting for complete answers would defeat the user experience. The accepted limitation is that a partially delivered generation can fail visibly; an explicit terminal error is preferable to mixing two providers' answers. [OpenRouter's streaming contract](https://openrouter.ai/docs/api_reference/streaming) distinguishes errors before and during a stream. The proposed gateway uses the same clear boundary.
 
 ```mermaid
 sequenceDiagram
@@ -325,17 +347,19 @@ A sends tokens; then fails  → end this stream with an error
 Client retries same key     → return the existing request's state
 ```
 
-Cancellation is also an upstream operation with an outcome. Stop accepting new frames for the canceled epoch, request provider cancellation, and wait for final usage or recovery evidence before releasing its financial reservation. A disconnect alone is not proof that computation stopped.
+**Tradeoffs and recovery.** Cancellation is also an upstream operation with an outcome. Stop accepting new frames for the canceled epoch, request provider cancellation, and wait for final usage or recovery evidence before releasing its financial reservation. A disconnect alone is not proof that computation stopped.
 
 ### How do we enforce budgets under concurrent requests?
 
 **Problem.** Reading a balance and updating it later lets concurrent requests spend the same remaining amount. Regional counters can also diverge during failover.
 
+**Options and tradeoffs.**
+
 - **Reconcile after inference:** start work immediately and deduct its charge when usage arrives. Admission is cheap, but several concurrent requests can spend the same remaining balance, leaving a debt that reconciliation cannot prevent.
 - **Redis atomic counters:** check and deduct allowance in one server-side operation. This gives fast coordination within that Redis authority, but acknowledged state can be lost during failover and parent/child accounts must share an atomic scope; hard durable budgets require an additional persistence protocol.
 - **Durable reservations:** lock related budget rows and commit a maximum charge hold before dispatch. Competing requests observe committed exposure, including uncertain attempts. The cost is transaction latency, contention on busy accounts and unavailable balance tied up by conservative or unresolved holds.
 
-**Recommendation: commit durable reservations on the organization's account shard.** This gateway promises tenant and organization spending limits while admitting requests concurrently. Colocating those accounts makes one transaction the admission authority. We accept lock contention and temporarily reduced concurrency to keep provider exposure within the committed allowance. The request's maximum output length, provider pricing and retry policy determine its charge bound. Unsupported or unbounded charging models require a stricter limit or separate policy.
+**Choice and rationale.** Commit durable reservations on the organization's account shard. This gateway promises tenant and organization spending limits while admitting requests concurrently. Colocating those accounts makes one transaction the admission authority. We accept lock contention and temporarily reduced concurrency to keep provider exposure within the committed allowance. The request's maximum output length, provider pricing and retry policy determine its charge bound. Unsupported or unbounded charging models require a stricter limit or separate policy.
 
 ```python
 # One budget transaction; accounts locked in a stable order.
@@ -373,17 +397,19 @@ RETURNING reserved_charge;
 -- Only the transaction that gets a row moves held funds to spend.
 ```
 
-The conservative bound includes potentially billable fallback attempts, fixed fees and the configured output ceiling. A recovery worker claims unresolved reservations with a fenced lease and renews them while provider evidence is pending. Expiry of the handler lease schedules recovery; it does not erase the hold.
+**Tradeoffs and recovery.** The conservative bound includes potentially billable fallback attempts, fixed fees and the configured output ceiling. A recovery worker claims unresolved reservations with a fenced lease and renews them while provider evidence is pending. Expiry of the handler lease schedules recovery; it does not erase the hold.
 
 ### What makes the cost ledger recoverable?
 
 **Problem.** A gateway crash can lose its in-memory token count and an unflushed completion event. A short batch interval limits exposure but cannot reconstruct the lost usage.
 
+**Options and tradeoffs.**
+
 - **Memory-only batching:** accumulate usage in gateway memory and publish completed batches. This minimizes durable writes, but a crash loses unacknowledged observations and may leave a billable attempt without recovery evidence.
 - **Persist every frame:** store each delivered frame before advancing the stream. Recovery can replay output precisely, but storage and write traffic scale with streaming chunks; frame counts still cannot establish billable token usage.
 - **Durable attempt records and checkpoints:** save provider identity before dispatch, publish cumulative usage versions and obtain final provider evidence during recovery. This bounds write volume while retaining reconciliation handles, but reports can remain pending and provider APIs may not expose the final usage needed to resolve every attempt.
 
-**Recommendation: persist attempt identity before dispatch, checkpoint bounded usage and settle from finalized evidence.** The estimated 1.73B requests/day already produces substantial accounting traffic; durable writes per token would multiply it. Attempt-level recovery keeps token delivery independent of that traffic. We accept delayed settlement and a documented unresolved-usage policy where a provider supplies insufficient evidence. Provider-reported token counts are preferred over counting text fragments. A worker queries supported provider usage endpoints for unknown attempts; providers without recoverable records require a conservative documented billing policy.
+**Choice and rationale.** Persist attempt identity before dispatch, checkpoint bounded usage and settle from finalized evidence. The estimated 1.73B requests/day already produces substantial accounting traffic; durable writes per token would multiply it. Attempt-level recovery keeps token delivery independent of that traffic. We accept delayed settlement and a documented unresolved-usage policy where a provider supplies insufficient evidence. Provider-reported token counts are preferred over counting text fragments. A worker queries supported provider usage endpoints for unknown attempts; providers without recoverable records require a conservative documented billing policy.
 
 Settlement and the corresponding outbox event commit together. Consumers use request, attempt and settlement versions to prevent double application. Reporting can lag behind the authoritative ledger and labels pending amounts separately.
 
@@ -395,11 +421,11 @@ Write the provider request ID, adapter version and reserved amount before dispat
 
 ```mermaid
 flowchart TB
-    A["Durable attempt record"] --> B["Provider dispatch"]
-    B --> C["Versioned usage checkpoints"]
-    C --> D["Final provider usage"]
-    D --> E["Settlement and outbox<br>one database transaction"]
-    E --> F["Reporting consumer<br>apply settlement version"]
+    A["Durable<br>attempt record"] --> B["Provider<br>dispatch"]
+    B --> C["Versioned<br>usage<br>checkpoints"]
+    C --> D["Final provider<br>usage"]
+    D --> E["Settlement and<br>outbox<br>one database<br>transaction"]
+    E --> F["Reporting<br>consumer<br>apply<br>settlement<br>version"]
   classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
@@ -409,17 +435,19 @@ flowchart TB
 
 If the gateway crashes after the provider finishes but before settlement, recovery retrieves the provider's final usage using that stored identity. If final usage is unavailable, the ledger exposes the amount as pending and follows the documented conservative policy. Text chunks may contain several tokens or parts of a token, so summing SSE frames cannot establish billable usage.
 
-The reporting consumer stores the highest applied settlement version per request. Rebuilding ClickHouse reports replays that authoritative record, including corrections, rather than recreating charges from dashboard totals. Compare provider invoices with attempt-level evidence and retain discrepancy age as an operational metric.
+**Tradeoffs and recovery.** The reporting consumer stores the highest applied settlement version per request. Rebuilding ClickHouse reports replays that authoritative record, including corrections, rather than recreating charges from dashboard totals. Compare provider invoices with attempt-level evidence and retain discrepancy age as an operational metric.
 
 ### When should the gateway cache an answer?
 
 **Problem.** Repeated prompts can reuse inference work, but request parameters, model changes and private context affect whether an old answer is eligible.
 
+**Options and tradeoffs.**
+
 - **Provider prompt caching:** ask the provider to reuse supported prefix computation while still generating a response for the current request. This can reduce prefill work without reusing a completed answer, but support, retention and pricing vary by provider; decoding and output charges can remain.
 - **Gateway exact-response caching:** key a completed answer by the complete eligible request and tenant. A hit avoids a new inference call, but exact equality limits reuse and model/policy changes require invalidation. Retaining private output also adds access and retention obligations.
 - **Semantic response caching:** search for a sufficiently similar previous prompt and reuse its answer. This increases potential hits, but similarity is not equivalent intent: a changed number, negation or tool contract can make the cached answer wrong, requiring quality gates beyond exact-key checks.
 
-**Recommendation: use provider prompt caching and opt-in exact-response caching.** Applications depend on correct tool contracts and tenant isolation, so a high cache-hit rate is secondary to eligible reuse. Prefix caching saves repeated setup; exact completed answers are reused only under explicit policy. We accept a narrower hit rate and provider-specific behavior instead of semantic answer substitution. Send the complete request unless the provider explicitly offers a stored-prefix handle. A gateway prefix hash alone cannot substitute for provider-side cache support.
+**Choice and rationale.** Use provider prompt caching and opt-in exact-response caching. Applications depend on correct tool contracts and tenant isolation, so a high cache-hit rate is secondary to eligible reuse. Prefix caching saves repeated setup; exact completed answers are reused only under explicit policy. We accept a narrower hit rate and provider-specific behavior instead of semantic answer substitution. Send the complete request unless the provider explicitly offers a stored-prefix handle. A gateway prefix hash alone cannot substitute for provider-side cache support.
 
 The exact key includes tenant, model version, messages, tool definitions, generation settings and relevant policy versions. Cache completed eligible responses with bounded retention; tool-executing, time-sensitive or private requests require explicit rules.
 
@@ -436,4 +464,4 @@ Key: tenant + model revision + messages + tools + generation settings
 Value: completed output + usage evidence + policy version + expires_at
 ```
 
-A hit still applies current access and policy checks, then records the declared cache-hit charge independently of upstream cost. A model upgrade changes the namespace; a policy removal invalidates or rejects older entries. Semantic similarity is useful for candidate retrieval, but the first implementation keeps exact equality for response reuse because a small wording change can alter the correct answer. Measure hit rates only among eligible requests so the metric reflects actual avoided work.
+**Tradeoffs and recovery.** A hit still applies current access and policy checks, then records the declared cache-hit charge independently of upstream cost. A model upgrade changes the namespace; a policy removal invalidates or rejects older entries. Semantic similarity is useful for candidate retrieval, but the first implementation keeps exact equality for response reuse because a small wording change can alter the correct answer. Measure hit rates only among eligible requests so the metric reflects actual avoided work.

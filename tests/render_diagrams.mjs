@@ -94,10 +94,11 @@ export function thumbnailTargets(diagrams, root) {
   const paths = [...new Set(diagrams.filter(diagram => diagram.systemDesign || diagram.lowLevelDesign).map(diagram => diagram.path))];
   return paths.map(path => {
     const lowLevelDesign = diagrams.find(diagram => diagram.path === path).lowLevelDesign;
-    const heading = lowLevelDesign ? /^From .+ to .+$/i : /^High-level design$/i;
-    const diagram = diagrams.find(diagram => diagram.path === path && heading.test(diagram.heading)
+    const flowcharts = diagrams.filter(diagram => diagram.path === path
       && /^(?:flowchart|graph)\s/m.test(diagram.source));
-    if (!diagram) throw new Error(`${path}: missing ${lowLevelDesign ? "decision-flow" : "HLD"} Mermaid flowchart`);
+    const diagram = flowcharts.find(diagram => /^High-level design$/i.test(diagram.heading))
+      || (lowLevelDesign && flowcharts.find(diagram => /^From .+ to .+$/i.test(diagram.heading)));
+    if (!diagram) throw new Error(`${path}: missing ${lowLevelDesign ? "HLD or decision-flow" : "HLD"} Mermaid flowchart`);
     if (!diagram.thumbnail || !/^\/images\/posts\/[a-zA-Z0-9_-]+\.svg$/.test(diagram.thumbnail)) {
       throw new Error(`${path}: missing or unsafe thumbnail path`);
     }

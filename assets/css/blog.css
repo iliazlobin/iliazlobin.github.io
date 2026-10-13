@@ -147,8 +147,13 @@
 }
 
 /* ---------- Single post ---------- */
-.post { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-        box-shadow: var(--shadow); padding: 2.4rem clamp(1.2rem, 4vw, 3rem) 2.8rem; max-width: 800px; margin: 0 auto; }
+.post:not(.post--page) { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+        box-shadow: var(--shadow); padding: 2.4rem clamp(1.2rem, 4vw, 3rem) 2.8rem; max-width: none; margin: 0 auto; }
+/* Blog articles share the page boundary but retain a shorter prose measure.
+   Listing pages and documents with their own outline use the full inner grid. */
+.post:not(.post--page):not(.post--document) > :is(.post-header, .post-content) {
+  max-width: 800px; margin-inline: auto;
+}
 .post-header { margin-bottom: 1.8rem; padding-bottom: 1.4rem; border-bottom: 1px solid var(--line); }
 .post-header .meta { display: flex; flex-wrap: wrap; gap: .7rem; align-items: center; font-size: .85rem; color: var(--ink-faint); margin-bottom: .7rem; }
 .post-header h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); margin: 0; }
@@ -231,7 +236,8 @@
 .post-content .mermaid svg { max-width: 100%; height: auto; }
 /* Hide raw fenced mermaid source until rendered, to avoid a flash of code */
 .post-content .language-mermaid { display: none; }
+.post-content .mermaid--pending { visibility: hidden; }
 
 /* ---------- Post footer / nav ---------- */
-.post-footer { max-width: 800px; margin: 1.6rem auto 0; display: flex; justify-content: space-between; gap: 1rem; }
+.post-footer { margin: 1.6rem auto 0; display: flex; justify-content: space-between; gap: 1rem; }
 .post-footer a { font-weight: 600; font-size: .9rem; }

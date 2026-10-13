@@ -7,7 +7,7 @@ redirect_from:
 date: 2026-07-08
 tags: [Machine-Learning, Search-Ranking, Ranking, Retrieval, Web-Search]
 thumbnail: /images/posts/system-design-ml-search-ranking-web-search.svg
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-12
 description: "Design of a web search service that retrieves relevant pages and ranks the results for a user's query."
 notion_source: https://app.notion.com/p/397d865005a8811d94baea413e149054
 ---
@@ -78,7 +78,9 @@ message Document {
   string text_ref; // Object-storage reference
   string language;
   Timestamp crawled_at;
-  string content_version;
+  string content_version; // Identifies the content used by indexes/models.
+  int64 crawl_revision; // Orders accepted changes; unchanged on replay.
+  bool removed; // Deletion marker committed with the revision.
 }
 
 message SearchImpression {
@@ -138,13 +140,13 @@ The query service searches lexical and vector indexes in parallel, merges their 
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart TB
     U["User"] --> Q["Query service"]
-    Q --> L["Lexical retrieval"]
-    Q --> V["Dense retrieval"]
-    L --> M["Merge and deduplicate"]
+    Q --> L["Lexical<br>retrieval"]
+    Q --> V["Dense<br>retrieval"]
+    L --> M["Merge and<br>deduplicate"]
     V --> M
-    M --> R["Light then neural ranking"]
-    R --> O["Results and snippets"]
-    F[("Features / metadata")] --> R
+    M --> R["Light then<br>neural ranking"]
+    R --> O["Results and<br>snippets"]
+    F[("Features /<br>metadata")] --> R
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
 classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
@@ -158,7 +160,7 @@ class F data;
 
 - **ANN vector index:** use sharded ScaNN or HNSW for dense retrieval. The query encoder and indexed document embeddings belong to the same bundle; publish a compatible snapshot before switching traffic.
 
-- **Document metadata store:** use a partitioned key-value store such as Bigtable for document/version lookups. Keep crawled text and immutable training snapshots in object storage.
+- **Partitioned document metadata — [Cassandra](/designs/tech-apache-cassandra/):** key current page metadata by `document_id` across replicated partitions. The 100B-page estate needs distributed point reads rather than cross-document transactions. Conditional updates—Cassandra's [lightweight transactions](https://cassandra.apache.org/doc/latest/cassandra/developing/cql/dml.html#update)—accept only a higher `crawl_revision` and commit its content version and deletion marker together. Their coordination cost and quorum availability must be measured against crawl throughput and the five-minute freshness target. Keep crawled text and immutable training snapshots in object storage.
 
 - **[Redis](/designs/tech-redis/):** cache public query results and recent feature aggregates. Keys include language, index generation and ranking policy; personalized results need separate keys and access controls.
 
@@ -166,9 +168,9 @@ class F data;
 
 The index is derived from versioned crawl records. Replay rebuilds a lost shard; tombstones prevent removed pages from reappearing during recovery.
 
-## From request to response
+## Functional scenarios
 
-### Search flow
+### Retrieving and ranking search results
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -194,8 +196,6 @@ sequenceDiagram
 
 Retrieval determines which items can compete, and staged ranking spends expensive inference only on a bounded shortlist. The application reports actual display separately from the server response, so training outcomes join to the same request and item IDs. Eligibility checks remain active on fallback paths.
 
-### Running a search
-
 1. Validate query length and context, assign a request ID and pin a serving bundle. Normalize text using that bundle's tokenizer and language rules.
 
 2. Search the lexical index for exact terms and the vector index for semantic matches. Merge by document ID using reciprocal-rank fusion, which combines ranks without assuming the two score scales are comparable.
@@ -212,13 +212,39 @@ Each shard and ranking stage has a deadline. A slow dense shard yields lexical c
 
 ### Applying a crawl update
 
-The ingestion worker validates the document, records its new version and publishes an indexing event. Lexical and dense consumers update their indexes and report watermarks. A deletion produces an eligibility tombstone before replicas remove the physical index entries. Freshness monitoring measures the time from accepted crawl event to searchable version.
+The ingestion worker validates the document, records its new version and publishes an indexing event. Accepted changes carry increasing per-document `crawl_revision` values; retries and replay retain the original value. Lexical and dense consumers apply only newer revisions and report watermarks. A deletion produces an eligibility tombstone before replicas remove the physical index entries. Freshness monitoring measures the time from accepted crawl event to searchable version.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    participant C as Crawler
+    participant D as Document store
+    participant I as Index builders
+    participant Q as Search service
+    rect rgb(230, 244, 234)
+        C->>D: Commit document version or removal
+        D-->>I: Versioned change
+        I->>I: Update lexical and compatible dense indexes
+        I->>D: Record applied watermarks
+    end
+    rect rgb(232, 240, 254)
+        Q->>I: Retrieve candidate document versions
+        I-->>Q: Bounded candidate IDs
+        Q->>D: Hydrate and check current eligibility
+        D-->>Q: Current eligible content
+        Q->>Q: Rank and assemble results
+    end
+```
+
+Indexing follows the accepted document change, while serving checks current removal and access state before returning content. A model-space release publishes a compatible encoder/index bundle separately; replaying a crawl event must not introduce a vector from an incompatible generation.
 
 ## Deep dives
 
 ### How should lexical and semantic retrieval work together?
 
-Exact matching is important for product names, identifiers and navigation queries. Semantic retrieval helps when the user and document express the same idea with different words.
+**Problem.** Exact matching is important for product names, identifiers and navigation queries. Semantic retrieval helps when the user and document express the same idea with different words.
+
+**Options and tradeoffs.**
 
 - **Lexical retrieval only:** Use exact terms and term statistics in an inverted index. Identifiers and navigation queries work well, but documents using different vocabulary can be missed.
 
@@ -226,7 +252,7 @@ Exact matching is important for product names, identifiers and navigation querie
 
 - **Hybrid retrieval — recommended:** Retrieve both sets, deduplicate document IDs and fuse ranks before detailed scoring. Coverage is broader; two index families add fan-out, freshness coordination and candidate-budget tuning.
 
-Web queries include both exact entities and vocabulary mismatch. We accept dual-index cost and bounded fan-out so one retrieval representation does not determine all coverage; downstream ranking measures the merged candidates.
+**Choice and rationale.** Use hybrid retrieval with bounded rank fusion. Web queries include both exact entities and vocabulary mismatch. We accept dual-index cost and bounded fan-out so one retrieval representation does not determine all coverage; downstream ranking measures the merged candidates.
 
 [DPR](https://arxiv.org/abs/2004.04906) demonstrates separately encoded query and passage retrieval. For this design, train the query/document encoders on relevant pairs with in-batch and mined negatives; keep unknown relevance separate from judged irrelevance. Sampling correction matters when popular documents dominate the batches.
 
@@ -247,11 +273,13 @@ score[doc] = sum(1 / (constant + rank)
 
 A navigation query like a product serial number may rely primarily on exact terms, while a paraphrased question benefits from dense candidates. Evaluate those intents independently. Track retrieval recall against judged relevant pages and record when one source times out; an apparently successful result can still have degraded recall.
 
-Current removal/access filters apply before return even if an older index still retrieves the document. Versioned IDs prevent deduplication from selecting an obsolete passage.
+**Tradeoffs and recovery.** Current removal/access filters apply before return even if an older index still retrieves the document. Versioned IDs prevent deduplication from selecting an obsolete passage.
 
 ### Where should expensive ranking happen?
 
-A cross-encoder evaluates query/document interactions directly, but doing that for every retrieved candidate makes inference dominate latency.
+**Problem.** A cross-encoder evaluates query/document interactions directly, but doing that for every retrieved candidate makes inference dominate latency.
+
+**Options and tradeoffs.**
 
 - **Feature ranker throughout:** Score with prepared match, quality and context features. Serving is inexpensive and inspectable, but fine query–passage interactions may be missed.
 
@@ -259,7 +287,7 @@ A cross-encoder evaluates query/document interactions directly, but doing that f
 
 - **Bounded ranking cascade — recommended:** Use LambdaMART or a distilled student to shortlist, then cross-encode a final batch. Deep scoring fits a deadline; useful documents pruned earlier are irrecoverable and need stage-retention evaluation.
 
-The search deadline leaves limited capacity for joint text inference. We accept measured shortlist loss in exchange for bounded work, tuning candidate budgets with relevance and tail latency rather than average throughput alone.
+**Choice and rationale.** Shortlist with a light ranker, then cross-encode the bounded final set. The search deadline leaves limited capacity for joint text inference. We accept measured shortlist loss in exchange for bounded work, tuning candidate budgets with relevance and tail latency rather than average throughput alone.
 
 The [LambdaMART overview](https://www.microsoft.com/en-us/research/publication/from-ranknet-to-lambdarank-to-lambdamart-an-overview/) explains ranking losses for tree-based models; [BERT passage re-ranking](https://arxiv.org/abs/1901.04085) provides the query/text interaction model.
 
@@ -268,8 +296,8 @@ Train a student on teacher scores or ordering while also retaining judged labels
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart LR
-    A["Hybrid candidates"] --> B["Cheap shortlist"]
-    B --> C["Bounded neural batch"]
+    A["Hybrid<br>candidates"] --> B["Cheap<br>shortlist"]
+    B --> C["Bounded neural<br>batch"]
     C --> D["Final results"]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
@@ -292,11 +320,13 @@ Query paired with each shortlisted passage → cross-encoder → final order
 
 Select passages with the same versioned text pipeline used in training. Truncation needs a policy: blindly taking the first tokens can omit the matching answer deep in the page. Cache document preprocessing, batch pairs by length and cap queue wait.
 
-Distill teacher scores for cheaper shortlist ranking, while retaining judged labels to avoid copying every teacher error. Plot final relevance versus neural candidate count on the actual hybrid-retrieval distribution. When inference exceeds its budget, the saved light-stage order becomes the fallback; annotate that mode for measurement and still hydrate current document eligibility.
+**Tradeoffs and recovery.** Distill teacher scores for cheaper shortlist ranking, while retaining judged labels to avoid copying every teacher error. Plot final relevance versus neural candidate count on the actual hybrid-retrieval distribution. When inference exceeds its budget, the saved light-stage order becomes the fallback; annotate that mode for measurement and still hydrate current document eligibility.
 
 ### How do clicks become useful training labels?
 
-A click reflects relevance, display position, snippet quality and user behavior. Some queries are answered directly by a snippet, so a successful search may have no click.
+**Problem.** A click reflects relevance, display position, snippet quality and user behavior. Some queries are answered directly by a snippet, so a successful search may have no click.
+
+**Options and tradeoffs.**
 
 - **Raw clicks:** Treat clicked documents as useful. Labels are abundant, but position, snippet quality and the previous exposure policy determine what can be clicked.
 
@@ -304,7 +334,7 @@ A click reflects relevance, display position, snippet quality and user behavior.
 
 - **Judgments plus exposure-aware interactions — recommended:** Use human judgments for evaluation and impression-linked outcomes for learning. Scale and semantic evidence complement each other; selection bias, delayed actions and annotation consistency require separate controls.
 
-A successful search can end with a snippet rather than a click. We accept reviewed relevance cost and richer event joins so the design can improve usefulness without optimizing only attractive result positions.
+**Choice and rationale.** Combine judged relevance with exposure-aware interactions. A successful search can end with a snippet rather than a click. We accept reviewed relevance cost and richer event joins so the design can improve usefulness without optimizing only attractive result positions.
 
 Record displayed positions, UI version and known exploration probabilities. Inverse-propensity weighting uses estimated examination/exposure probabilities, with clipping to control variance; the observed click rate at a position mixes exposure and relevance. Small randomized experiments help estimate these effects.
 
@@ -315,14 +345,14 @@ Join labels only after their observation window closes. Use request-time feature
 The exposure record contains query, displayed document versions, positions, snippets, UI version and exploration policy. Join later clicks/dwell or successful reformulation to that exact request. A retrieved document that never appeared is not a displayed negative.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryTextColor":"#202124","primaryBorderColor":"#9aa0a6","lineColor":"#5f6368","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteTextColor":"#202124","noteBorderColor":"#9aa0a6","signalColor":"#5f6368","signalTextColor":"#202124","labelBoxBkgColor":"#fef7e0","labelBoxBorderColor":"#9aa0a6"}}}%%
 flowchart TB
-    A["200 retrieved documents"] --> B["10 displayed documents"]
-    B --> C["User examines a subset<br/>Partly unobserved"]
-    C --> D["Click or no-click success"]
+    A["200 retrieved<br>documents"] --> B["10 displayed<br>documents"]
+    B --> C["User examines<br>a subset<br>Partly<br>unobserved"]
+    C --> D["Click or<br>no-click<br>success"]
     B -.-> E["Exposure log"]
     D -.-> F["Outcome log"]
-    E --> G["Join evidence by request"]
+    E --> G["Join evidence<br>by request"]
     F --> G
     class A,B,C,D request;
     class E,F data;
@@ -335,11 +365,13 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 Use judged query/document pairs as the stable evaluation anchor. A no-click can mean failure, abandonment or a useful answer in the snippet; the label policy distinguishes these where evidence supports it.
 
-Randomized position exposure helps estimate examination effects, but rare-query support and high-variance inverse weights still require limits. Keep snippets and document versions in historical examples so today's improved snippet is not accidentally used to explain yesterday's click. Group sessions in chronological splits and leave the final test set out of candidate selection.
+**Tradeoffs and recovery.** Randomized position exposure helps estimate examination effects, but rare-query support and high-variance inverse weights still require limits. Keep snippets and document versions in historical examples so today's improved snippet is not accidentally used to explain yesterday's click. Group sessions in chronological splits and leave the final test set out of candidate selection.
 
 ### How do freshness and model updates stay reliable?
 
-A new page needs a searchable representation before its eventual popularity is known. A new encoder also changes the meaning of every vector in its index.
+**Problem.** A new page needs a searchable representation before its eventual popularity is known. A new encoder also changes the meaning of every vector in its index.
+
+**Options and tradeoffs.**
 
 - **Full rebuild for every update:** Publish one consistent snapshot after each crawl change. Recovery is straightforward, but repeatedly rebuilding a large corpus cannot meet the five-minute freshness target efficiently.
 
@@ -347,7 +379,7 @@ A new page needs a searchable representation before its eventual popularity is k
 
 - **Incremental ingestion with periodic base rebuilds — recommended:** Query an immutable base plus versioned deltas, merging the newest document version. Freshness and compaction have separate clocks; watermarks, deletion filters and compatible encoder cutovers add operational work.
 
-Crawl changes are smaller and more frequent than model-space releases. We accept layered-index coordination and periodic rebuild cost to preserve fresh documents and reproducible rollback without serving incompatible vectors.
+**Choice and rationale.** Incrementally update versioned document indexes and publish compatible model/index bundles. Crawl changes are smaller and more frequent than model-space releases. We accept layered-index coordination and periodic rebuild cost to preserve fresh documents and reproducible rollback without serving incompatible vectors.
 
 Use crawl age and query intent as ranking features. Time-sensitive queries can favor recent pages; reference queries often benefit from established sources. If a freshness adjustment is used, its half-life is query-dependent:
 
@@ -365,12 +397,12 @@ Crawling writes a versioned document event. The delta lexical index and the acti
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart TB
-    E["Versioned crawl event"] --> L["Lexical delta index"]
-    E --> V["Active-encoder vector overlay"]
-    L --> M["Latest-version merge"]
+    E["Versioned<br>crawl event"] --> L["Lexical delta<br>index"]
+    E --> V["Active-encoder<br>vector overlay"]
+    L --> M["Latest-version<br>merge"]
     V --> M
-    B["Immutable base snapshots"] --> M
-    M --> F["Current removal filter"]
+    B["Immutable base<br>snapshots"] --> M
+    M --> F["Current<br>removal filter"]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
 classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
@@ -382,4 +414,4 @@ class F control;
 
 A tombstone wins over older base content and survives replay through the retention window. Compaction atomically publishes the new base generation before retiring inputs.
 
-For an encoder release, build vectors using that encoder and warm its query tower before cutover. New-document updates during the build need a matching overlay after the snapshot watermark. Rollback restores both retrieval components, not just the ranking weights. Report freshness from observed publish watermarks and measure deleted-document propagation separately.
+**Tradeoffs and recovery.** For an encoder release, build vectors using that encoder and warm its query tower before cutover. New-document updates during the build need a matching overlay after the snapshot watermark. Rollback restores both retrieval components, not just the ranking weights. Report freshness from observed publish watermarks and measure deleted-document propagation separately.

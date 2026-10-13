@@ -7,7 +7,7 @@ tags: [Caching, Distributed-Systems, Redis, Consistent-Hashing]
 thumbnail: /images/posts/system-design-distributed-cache.svg
 redirect_from:
   - /2026/07/02/system-design-distributed-cache.html
-last_modified_at: 2026-10-07
+last_modified_at: 2026-10-12
 description: "Design of a distributed key-value cache using Redis Cluster, with bounded freshness and recoverable cache misses."
 notion_source: https://app.notion.com/p/391d865005a881b7b450c92e42369931
 ---
@@ -104,12 +104,12 @@ A cluster-aware client routes a key to its owning primary. Each primary replicat
 
 ```mermaid
 flowchart TB
-    A["Application"] --> C["Cluster-aware client"]
-    C --> P1["Cache primary A"]
-    C --> P2["Cache primary B"]
+    A["Application"] --> C["Cluster-aware<br>client"]
+    C --> P1["Cache primary<br>A"]
+    C --> P2["Cache primary<br>B"]
     P1 --> R1["Replica A"]
     P2 --> R2["Replica B"]
-    A -->|"Cache miss"| D[("Source database")]
+    A -->|"Cache miss"| D[("Source<br>database")]
   classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
@@ -125,9 +125,9 @@ flowchart TB
 
 Use TLS, authenticated service identities, tenant key prefixes and value-size limits. Keep replica, resynchronization and migration memory outside the eviction budget.
 
-## From request to response
+## Functional scenarios
 
-### One end-to-end request
+### Reading a value
 
 A client routes a key through its cached slot map.
 
@@ -136,7 +136,7 @@ sequenceDiagram
   box rgb(232,240,254) Request path
     participant U as Application
   end
-  box rgb(230,244,234) Durable state
+  box rgb(230,244,234) Cache and source state
     participant A as Cache primary
     participant D as Source store
     participant W as Cache replica
@@ -156,19 +156,57 @@ sequenceDiagram
 
 A hit returns a value within its freshness deadline; a miss loads the authoritative store and fills the cache. Replication improves cache availability while the authoritative record remains the recovery source.
 
+**Request steps.**
+
+Route GET to the primary. Return a value only within the application's freshness bound. On nil, expiry or an allowed cache error, read the source database and populate the cache with a bounded TTL.
+
+Coalesce concurrent fills for the same key and bound total fallback concurrency. A cache outage can otherwise move the entire workload onto the database.
+
 ### Storing a value
 
 The client computes the key's slot, sends SET to its primary and receives the primary acknowledgment. Replication follows asynchronously.
 
 A MOVED response updates routing knowledge; an ASK response directs a one-request migration retry. Retried SET operations need a version-aware policy where concurrent source updates can otherwise overwrite a newer cached value.
 
-### Reading a value
-
-Route GET to the primary. Return a value only within the application's freshness bound. On nil, expiry or an allowed cache error, read the source database and populate the cache with a bounded TTL.
-
-Coalesce concurrent fills for the same key and bound total fallback concurrency. A cache outage can otherwise move the entire workload onto the database.
-
 ### Invalidating or extending expiration
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    accTitle: Invalidating a cache after a source update
+    participant A as Application
+    participant D as Source database
+    participant W as Change consumer
+    participant C as Cache primary
+    rect rgb(254, 247, 224)
+        A->>D: Commit new source version and change event
+        D-->>A: Durable source update
+    end
+    rect rgb(230, 244, 234)
+        D-->>W: Retained invalidation event, possible replay
+        W->>C: Invalidate affected key
+        alt Deletion completed
+            C-->>W: Deleted
+        else Cache unavailable
+            C-->>W: Retryable failure
+            W->>W: Retain invalidation for retry
+        end
+    end
+    rect rgb(232, 240, 254)
+        A->>C: Next GET
+        alt Key absent or past freshness deadline
+            C-->>A: Miss or expired value
+            A->>D: Read source and freshness deadline
+            D-->>A: Current version for bounded refill
+        else Invalidation pending, value still permitted
+            C-->>A: Cached version and freshness deadline
+            A->>A: Serve only within allowed freshness bound
+        end
+    end
+```
+
+The source commit succeeds independently of cache availability. Retained invalidation work retries until delivered; the value's freshness deadline bounds exposure if delivery is delayed. Late fills also require the version-aware refill policy described in the storing scenario, because deleting once does not prevent an old concurrent read from repopulating the key.
+
 
 After committing a source update, invalidate affected keys through a recoverable change stream or outbox. A direct best-effort deletion improves speed; the retained event and TTL provide recovery.
 
@@ -184,28 +222,30 @@ Hash tags can colocate related keys, such as `user:{42}:profile` and `user:{42}:
 
 ### How should keys be distributed?
 
-Modulo hashing by the current node count remaps many keys during a topology change.
+**Problem.** Modulo hashing by the current node count remaps many keys during a topology change.
+
+**Options and tradeoffs.**
 
 - **Consistent hashing:** place independent nodes on a hash ring and use virtual nodes to spread key ranges. Only part of the key set moves when membership changes; clients and migration tooling still need a shared membership view, and equal ranges do not ensure equal traffic.
 - **Fixed slots:** hash keys into a stable slot set and assign slot owners separately. Redis Cluster can migrate explicit partitions and direct clients to their owners; clients must handle redirects and multi-key operations are constrained by colocation.
 - **Central proxy:** route every operation through a service that owns topology knowledge. Applications stay simple, but the proxy adds a hop, capacity demand and an availability boundary.
 
-**Recommendation.** Fixed slots fit the selected Redis Cluster because its protocol already defines ownership and migration. We accept topology-aware clients and slot-colocation constraints rather than implementing a competing ring or introducing a mandatory routing proxy.
+**Choice and rationale.** Fixed slots fit the selected Redis Cluster because its protocol already defines ownership and migration. We accept topology-aware clients and slot-colocation constraints rather than implementing a competing ring or introducing a mandatory routing proxy.
 
 The [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/) defines 16,384 slots and client redirects. Cache the slot map, bound redirect retries and refresh topology after ownership changes.
 
 Migration requires destination capacity, a transfer plan and a final ownership transition. Partial migrations may temporarily restrict multi-key commands. Track moved bytes, errors and p99 rather than promising instantaneous resharding.
 
-**A request during slot migration**
+**How it works — A request during slot migration.**
 
 The client hashes a key to its fixed slot and uses its cached owner map. A moved slot produces a topology redirect; an in-progress transfer can produce a one-request redirect to the destination. The client follows the documented protocol with a retry limit, then refreshes its map.
 
 ```mermaid
 flowchart TB
     K["Key"] --> H["Fixed slot"]
-    H --> M["Client owner map"]
-    M --> P["Current primary"]
-    P -->|ownership changed| R["Bounded redirect and map refresh"]
+    H --> M["Client owner<br>map"]
+    M --> P["Current<br>primary"]
+    P -->|ownership changed| R["Bounded<br>redirect and<br>map refresh"]
     R --> N["New primary"]
   classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
@@ -215,23 +255,25 @@ flowchart TB
 
 Moving keys needs destination memory and a rate budget so migration does not exhaust the same bandwidth used by replication. Keep ownership transitions distinct from per-key copy progress. A multi-key atomic command needs keys in the compatible slot scope; moving arbitrary keys cannot preserve a cross-slot transaction.
 
-For disposable cached values, migration can tolerate some misses and refill from the source under a limit. For any value used as authority, the stronger migration/durability protocol must be defined separately rather than assumed from the slot map.
+**Tradeoffs and recovery.** For disposable cached values, migration can tolerate some misses and refill from the source under a limit. For any value used as authority, the stronger migration/durability protocol must be defined separately rather than assumed from the slot map.
 
 ### Which eviction policy protects useful values?
 
-A full cache must choose what to remove while continuing to serve requests.
+**Problem.** A full cache must choose what to remove while continuing to serve requests.
+
+**Options and tradeoffs.**
 
 - **Strict LRU:** maintain exact recency on every access and evict the least recently used key. The policy is intuitive, but bookkeeping consumes CPU and one-off scans can displace repeatedly useful values.
 - **Approximate LRU:** sample candidates and prefer older accesses. It keeps recency behavior with lower overhead; sampling can evict a useful record and remains vulnerable to scan-heavy workloads.
 - **Approximate LFU:** retain decayed access-frequency estimates and prefer less-used keys. Repeated hotspots survive scans better, but counters and decay need tuning and old popularity can delay adaptation to a new hotspot.
 
-**Recommendation.** Start with `allkeys-lru` and a measured memory ceiling. Approximate recency bounds bookkeeping for general regenerable records; we accept imperfect eviction and compare `allkeys-lfu` on scan-heavy traces before switching. Source load and byte-weighted value matter alongside hit rate.
+**Choice and rationale.** Start with `allkeys-lru` and a measured memory ceiling. Approximate recency bounds bookkeeping for general regenerable records; we accept imperfect eviction and compare `allkeys-lfu` on scan-heavy traces before switching. Source load and byte-weighted value matter alongside hit rate.
 
 [Redis eviction policies](https://redis.io/docs/latest/develop/reference/eviction/) describe the available choices.
 
 Track hit rate, bytes per key, evictions and source-store load. Leave memory headroom for replication and allocator behavior. TTL handles logical freshness; eviction handles memory pressure.
 
-**Eviction and expiry answer different questions**
+**How it works — Eviction and expiry answer different questions.**
 
 The cached record carries its authoritative data version and `fresh_until`. Expiry prevents reuse after that deadline. Eviction frees space when memory pressure rises, even if the value is still fresh.
 
@@ -242,17 +284,19 @@ TTL expired?      → value is too old to serve
 Memory pressure?  → choose a value to remove regardless of freshness
 ```
 
-Set limits on value size and cached collections. Keep memory headroom for replication backlog, allocator fragmentation and resharding. Monitor source cost per miss, not just hit ratio, and pin no unbounded “critical” key set outside the eviction budget.
+**Tradeoffs and recovery.** Set limits on value size and cached collections. Keep memory headroom for replication backlog, allocator fragmentation and resharding. Monitor source cost per miss, not just hit ratio, and pin no unbounded “critical” key set outside the eviction budget.
 
 ### What does replication guarantee during failover?
 
-A primary can acknowledge a write before its replica receives it.
+**Problem.** A primary can acknowledge a write before its replica receives it.
+
+**Options and tradeoffs.**
 
 - **Asynchronous replication:** acknowledge at the primary and copy to replicas afterward. Regenerable values get a low-latency write path, but promotion can lose an acknowledged update or expose an older value.
 - **Replica acknowledgment with WAIT:** wait for a chosen number of replica acknowledgments. This narrows some replication-loss windows at additional latency and reduced availability; it still does not provide a consensus-backed durability contract.
 - **Consensus-backed authority:** commit writes through a durable replicated decision before acknowledgment. This fits records whose loss changes correctness, but quorum coordination costs more than a disposable cache write.
 
-**Recommendation.** Asynchronous replication fits cache values that can be rebuilt from the source store. We accept acknowledged cache loss and enforce freshness on reads; balances, unique allocations and other irreversible decisions stay in a durable authority rather than gaining a misleading guarantee from WAIT.
+**Choice and rationale.** Asynchronous replication fits cache values that can be rebuilt from the source store. We accept acknowledged cache loss and enforce freshness on reads; balances, unique allocations and other irreversible decisions stay in a durable authority rather than gaining a misleading guarantee from WAIT.
 
 [WAIT](https://redis.io/docs/latest/commands/wait/) does not make Redis a strongly consistent system. Failover can still lose or restore a stale value depending on the failure.
 
@@ -260,20 +304,20 @@ Use primary reads where recent-write visibility matters, and replica reads only 
 
 Place primary and replica in separate failure domains. During cluster interruption, bound source fallback and shed optional work. Test primary loss, network partitions, incomplete replication and cold-cache recovery.
 
-**An acknowledged cache write can still be lost**
+**How it works — An acknowledged cache write can still be lost.**
 
 Suppose the primary stores version 12 and returns success, then fails before its replica receives it. The promoted replica may contain version 11. A client requiring current state compares the version/deadline or reads the authority; a tolerant display read may use the older value within its explicit policy.
 
 Replica acknowledgment narrows some windows but does not replace an authoritative transactional record. Store source versions with cache values and prevent a slow fill of version 10 from overwriting an already observed version 12 where the cache update path supports a conditional version check.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart TB
-  S["Source commits v12"] --> P["Primary cache stores v12<br>and acknowledges success"]
-  P --> F["Primary fails<br>before replica receives v12"]
-  R["Replica still has an older value"] --> M["Replica promoted"]
+  S["Source commits<br>v12"] --> P["Primary cache<br>stores v12 and<br>acknowledges<br>success"]
+  P --> F["Primary fails<br>before replica<br>receives v12"]
+  R["Replica still<br>has an older<br>value"] --> M["Replica<br>promoted"]
   F --> M
-  M --> O["Cache may return an older version"]
+  M --> O["Cache may<br>return an<br>older version"]
   class S,R data
   class P,M request
   class F,O danger
@@ -283,17 +327,19 @@ classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
 classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
-Cold failover sends more misses to the source. Apply a global fallback concurrency budget, prioritize necessary reads and shed optional expensive work. Test replica resynchronization and source recovery while traffic remains high, rather than testing only the healthy cache path.
+**Tradeoffs and recovery.** Cold failover sends more misses to the source. Apply a global fallback concurrency budget, prioritize necessary reads and shed optional expensive work. Test replica resynchronization and source recovery while traffic remains high, rather than testing only the healthy cache path.
 
 ### How do hot keys and synchronized misses stay manageable?
 
-Adding shards spreads different keys, but a single popular key still maps to one slot.
+**Problem.** Adding shards spreads different keys, but a single popular key still maps to one slot.
+
+**Options and tradeoffs.**
 
 - **More shards:** distribute different keys among more owners. Aggregate capacity rises, but one popular key still belongs to one slot and can saturate that owner.
 - **Short-lived local copies with coalescing:** serve tolerant hot reads near the application and let one fill serve concurrent misses. This absorbs bursts, but local staleness, invalidation and memory budgets must be bounded.
 - **Application-level splitting:** divide a counter or collection across keys and merge at read time. Writes can scale across owners; the merge changes read cost and consistency and is unsuitable for an indivisible value.
 
-**Recommendation.** Local copies and single-flight fills fit repeated hot reads without changing the stored value's semantics. We accept a short freshness window and bounded authoritative fallback; write sharding is reserved for operations whose merge rule is explicitly defined.
+**Choice and rationale.** Local copies and single-flight fills fit repeated hot reads without changing the stored value's semantics. We accept a short freshness window and bounded authoritative fallback; write sharding is reserved for operations whose merge rule is explicitly defined.
 
 ```python
 value = local_cache.get(key)
@@ -306,18 +352,18 @@ Singleflight coalesces fills within one process. Cross-instance fill storms need
 
 Invalidate local copies where possible and retain a hard freshness deadline for missed events. Jitter expiration to avoid synchronized refills. Warm only useful hot keys and rate-limit warmers against the source database.
 
-**Coalesce a popular key across application instances**
+**How it works — Coalesce a popular key across application instances.**
 
 Local single-flight turns concurrent misses in one process into one source read. With many application instances, acquire a short distributed fill lease or use a source-wide concurrency limiter. Lease losers wait briefly, use permitted stale data, or return a bounded fallback.
 
 The lease holder reads the source and writes a versioned value with its original freshness deadline. Lease expiry means another filler can begin; a paused former holder must not overwrite a newer result without a version check.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
 flowchart TB
-  C["1,000 concurrent callers"] --> L["Local single-flight<br>one fill per key per process"]
-  L --> B["Shared fill lease<br>or source-wide concurrency limit"]
-  B --> D[("Source database")]
+  C["1,000<br>concurrent<br>callers"] --> L["Local<br>single-flight<br>one fill per<br>key per<br>process"]
+  L --> B["Shared fill<br>lease or<br>source-wide<br>concurrency<br>limit"]
+  B --> D[("Source<br>database")]
   class C,L request
   class B control
   class D data
@@ -327,4 +373,4 @@ classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
 classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 ```
 
-Add expiry jitter only within the permissible freshness window. A refresh-ahead task can spread work for predictably hot keys, but it needs the same source budget as ordinary misses. Track fill concurrency, waiting time and requests suppressed per source read; cache stampede protection is successful when source load stays bounded during a cache outage.
+**Tradeoffs and recovery.** Add expiry jitter only within the permissible freshness window. A refresh-ahead task can spread work for predictably hot keys, but it needs the same source budget as ordinary misses. Track fill concurrency, waiting time and requests suppressed per source read; cache stampede protection is successful when source load stays bounded during a cache outage.

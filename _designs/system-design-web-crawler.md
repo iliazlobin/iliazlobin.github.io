@@ -7,7 +7,7 @@ tags: [Distributed-Systems, Write-Heavy, Interview-Prep]
 thumbnail: /images/posts/2026-07-02-system-design-web-crawler.svg
 redirect_from:
   - /2026/07/02/system-design-web-crawler.html
-last_modified_at: 2026-10-06
+last_modified_at: 2026-10-12
 description: "Crawl public web pages, extract text and links, and produce a recoverable dataset while respecting each site's access rules and capacity."
 notion_source: https://app.notion.com/p/390d865005a88191916fc3a2f5c03983
 ---
@@ -20,7 +20,7 @@ Crawl public web pages, extract text and links, and produce a recoverable datase
 
 A user submits seed URLs and a crawl scope. The crawler fetches eligible pages, extracts their text and follows discovered links until it reaches the job's limits.
 
-The difficulty is coordinating that work across many websites. One site may respond quickly, another may be unavailable, and a calendar can generate an effectively unlimited set of URLs. Scheduling needs to keep workers busy while controlling requests to each origin.
+The difficulty is coordinating that work across many websites. One site may respond quickly, another may be unavailable, and a calendar can generate an effectively unlimited set of URLs. An **origin** is a URL's scheme, hostname and port; the **frontier** is the pending work organized by those origins. Scheduling keeps workers busy while controlling requests to each origin.
 
 ## Requirements
 
@@ -137,16 +137,16 @@ Control operations are idempotent. A pause completes after active fetches finish
 The control service persists jobs and seed tasks. A distributed frontier schedules URLs by origin and due time. Fetchers retrieve pages, processors extract text and links, and committed output feeds both the dataset and further discovery.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
   U["User"] --> API["Crawl control"]
   API --> J[("Job records")]
   API --> F["URL frontier"]
   F --> W["Fetch workers"]
-  W --> R["Robots and DNS checks"]
-  R --> WEB["Public websites"]
-  WEB --> P["Page processing"]
-  P --> D["Content deduplication"]
+  W --> R["Robots and DNS<br>checks"]
+  R --> WEB["Public<br>websites"]
+  WEB --> P["Page<br>processing"]
+  P --> D["Content<br>deduplication"]
   D --> O[("Dataset shards")]
   P -->|discovered URLs| F
   W -->|outcome and retry| F
@@ -162,7 +162,7 @@ class R,D control;
 
 - **[PostgreSQL](/designs/tech-postgresql/):** jobs, scope, control state and committed dataset manifests. Job changes use transactions and version checks.
 
-- **Distributed URL index:** hash-partitioned durable key-value storage, such as Bigtable, keyed by job and normalized URL. Conditional insertion admits each URL once; states retain retry and completion information.
+- **[Cassandra](/designs/tech-apache-cassandra/) URL index:** durable job/normalized-URL records distributed by key. Conditional insertion admits each URL once; states retain retry and completion information. Uniqueness uses the database's coordinated conditional-write path, whose cost is budgeted separately from ordinary reads and writes.
 
 - **[Kafka](/designs/tech-kafka/):** discovery and result events keyed by origin or URL as appropriate. It transports work; a FIFO log alone does not implement a due-time scheduler.
 
@@ -174,9 +174,17 @@ class R,D control;
 
 Keeping one tiny object per page would produce billions of storage operations. Sharded output reduces that overhead while retaining a URL-to-result lookup.
 
-## From request to response
+## Functional scenarios
 
-### Fetch and commit flow
+### Discovering and admitting URLs
+
+Resolve relative links against the page's final URL. Lowercase the scheme and hostname, remove fragments and normalize default ports. Preserve path case, trailing slashes and query parameters unless a verified site-specific rule establishes equivalence.
+
+Check scheme, scope, depth and resource limits. Consult the Bloom filter, then use the URL index's conditional insert to admit new work. A positive filter result requires a durable lookup; a negative result still needs a conditional insert because discoveries can race.
+
+Broad normalization can merge different pages. Crawl-trap controls instead bound repeated path patterns, parameter combinations and per-origin discovery volume.
+
+### Fetching and committing a page
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -206,15 +214,7 @@ sequenceDiagram
 
 The scheduler owns per-origin timing, and a worker fetches only while its lease and safety checks permit it. A task becomes complete after its result is recoverable; discovered links use independent conditional admission, allowing retry without duplicate scheduling or lost frontier work.
 
-### Discovering and admitting URLs
-
-Resolve relative links against the page's final URL. Lowercase the scheme and hostname, remove fragments and normalize default ports. Preserve path case, trailing slashes and query parameters unless a verified site-specific rule establishes equivalence.
-
-Check scheme, scope, depth and resource limits. Consult the Bloom filter, then use the URL index's conditional insert to admit new work. A positive filter result requires a durable lookup; a negative result still needs a conditional insert because discoveries can race.
-
-Broad normalization can merge different pages. Crawl-trap controls instead bound repeated path patterns, parameter combinations and per-origin discovery volume.
-
-### Scheduling and fetching
+**Schedule and fetch.**
 
 The origin owner selects a due URL, confirms a valid lease and reserves its concurrency budget. Before connecting, validate the resolved IP against allowed public ranges and recheck every redirect target. Pin the validated address for that connection to reduce DNS-rebinding risk.
 
@@ -222,23 +222,50 @@ Evaluate robots rules before fetching content. Under [RFC 9309](https://www.rfc-
 
 Fetch with connection/read deadlines, redirect and response-size limits. Parse HTML with script execution disabled. Record status and retry time; honor applicable Retry-After guidance and reduce origin load after throttling or errors.
 
-### Committing a page
+**Commit a page.**
 
 Extract text, calculate an exact content digest and search the near-duplicate index when needed. Preserve URL provenance even when multiple URLs share stored content.
 
 Append the result to an output shard and commit its manifest before marking tasks complete. Replayed processing uses the same task/result identity. Discovered links enter durable admission independently, so a crash can resume without losing the next frontier.
 
-### Pausing and recovering
+### Pausing and resuming a crawl
 
-Stop issuing new leases, allow bounded in-flight work to finish, then checkpoint queues, origin delays and offsets. Resume restores those states before dispatch.
+A user pauses a running job. The control service changes the durable job state; schedulers stop new leases and dispatch, drain bounded in-flight fetches and checkpoint queues, origin delays and offsets before reporting the pause complete.
 
-A replacement owner waits out the old origin's lease and maximum fetch duration, or confirms that the old worker drained, before starting requests. Epoch checks prevent stale completion writes; the drain interval protects the website from overlapping fetches.
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+  participant U as User
+  participant C as Crawl control
+  participant S as Origin scheduler
+  participant W as Fetch worker
+  participant D as Frontier state
+  rect rgb(254, 247, 224)
+    U->>C: Pause job
+    C->>D: Commit pausing state
+    C-->>S: Stop new leases
+    S->>W: Drain existing bounded fetches
+    W-->>S: Committed outcome or recorded timeout
+    S->>D: Checkpoint queues, delays and outstanding state
+    C-->>U: Paused after checkpoint
+  end
+  rect rgb(230, 244, 234)
+    U->>C: Resume job
+    S->>D: Restore queues and origin delays
+    S->>S: Honor leases and safe drain interval
+    S->>W: Dispatch next eligible URL
+  end
+```
+
+Resuming preserves each origin's delay and retry history. A replacement scheduler waits out the old origin lease and maximum fetch duration, or confirms that the old worker drained, before dispatch; a fencing version protects writes but cannot recall an HTTP request already sent. Failed checkpoint completion leaves the job pausing or in recovery rather than falsely reporting a clean pause.
 
 ## Deep dives
 
 ### How do we balance useful work with polite crawling?
 
-**Problem:** one global FIFO queue can leave many workers waiting behind URLs from the same website.
+**Problem.** One global FIFO queue can leave many workers waiting behind URLs from the same website.
+
+**Options and tradeoffs.**
 
 - **Global FIFO:** Dispatch URLs in arrival order. The queue is simple, but many URLs for one delayed origin can block useful work for others and origin fairness is weak.
 
@@ -246,17 +273,19 @@ A replacement owner waits out the old origin's lease and maximum fetch duration,
 
 - **Sharded origin schedulers — recommended:** Assign one fenced owner per origin and run priority/aging plus due-time queues on each shard. Scheduling scales across origins; ownership changes and checkpoint recovery must preserve delays and in-flight leases.
 
-**Local dual-queue scheduling**
+**Choice and rationale.** Shard by origin and run the dual-queue scheduler within each shard. Add aging so lower-priority URLs make progress. Discovery topics have a fixed partition count; ownership changes rebuild scheduler state from checkpoints and its changelog. The crawler needs parallel progress across many sites while honoring each site's limits. We accept durable scheduler ownership and recovery work so adding workers does not multiply permitted load on one origin.
+
+**How it works: Local dual-queue scheduling.**
 
 [The URL-frontier model](https://nlp.stanford.edu/IR-book/html/htmledition/the-url-frontier-1.html) separates URL priority from per-host timing. Priority selection feeds origin queues; a due-time heap selects an origin that can currently be fetched.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-  P["Priority queues"] --> S["Priority and aging"]
+  P["Priority<br>queues"] --> S["Priority and<br>aging"]
   S --> A["Origin A queue"]
   S --> B["Origin B queue"]
-  A --> H["Due-time scheduler"]
+  A --> H["Due-time<br>scheduler"]
   B --> H
   H --> W["Fetch worker"]
   W -->|update next due time| H
@@ -271,16 +300,14 @@ class S,H control;
 
 **Distributed frontier**
 
-**Recommendation:** shard by origin and run the dual-queue scheduler within each shard. Add aging so lower-priority URLs make progress. Discovery topics have a fixed partition count; ownership changes rebuild scheduler state from checkpoints and its changelog. The crawler needs parallel progress across many sites while honoring each site's limits. We accept durable scheduler ownership and recovery work so adding workers does not multiply permitted load on one origin.
-
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-  D["Discovered URLs"] --> K["Partitioned event log"]
+  D["Discovered<br>URLs"] --> K["Partitioned<br>event log"]
   K --> A["Origin shard A"]
   K --> B["Origin shard B"]
-  A --> Q1["Durable due queues"]
-  B --> Q2["Durable due queues"]
+  A --> Q1["Durable due<br>queues"]
+  B --> Q2["Durable due<br>queues"]
   Q1 --> W1["Fetch workers"]
   Q2 --> W2["Fetch workers"]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
@@ -299,11 +326,13 @@ If origin A has 10,000 queued URLs and origin B has ten, A's delay makes it temp
 
 After owner failure, the successor restores queues, due times and outstanding reservations from the checkpoint/changelog and fences old dispatch state. Already-started HTTP requests cannot be recalled, so recovery preserves a conservative delay/concurrency grace period before issuing replacements. Avoid resetting every origin to immediately eligible on restart.
 
-Robots refreshes and IP-level limits are additional eligibility checks. Store the policy generation with the dispatch decision so an operator can explain why a URL was fetched or deferred.
+**Tradeoffs and recovery.** Robots refreshes and IP-level limits are additional eligibility checks. Store the policy generation with the dispatch decision so an operator can explain why a URL was fetched or deferred.
 
 ### Which duplicate checks are safe?
 
-**Problem:** URLs and content have different forms of duplication.
+**Problem.** URLs and content have different forms of duplication.
+
+**Options and tradeoffs.**
 
 - **URL normalization and conditional insertion:** Normalize only established equivalences and insert each fetch target once. Repeated discovery is handled, but different URLs can still contain identical content.
 
@@ -311,19 +340,21 @@ Robots refreshes and IP-level limits are additional eligibility checks. Store th
 
 - **Exact checks plus near-duplicate retrieval — recommended:** Use exact URL/content identities first, then retrieve SimHash/MinHash candidates for verification. Similar pages can be grouped; thresholds can merge distinct meaning or miss variations and therefore require corpus evaluation.
 
-**Recommendation:** use exact URL/content checks first, then approximate retrieval for near-duplicates. Verify candidate distance and meaningful text differences before collapsing results. Preserve uncertain candidates and their source URLs. Scheduling identity and content identity answer different questions. We accept a separate approximate candidate stage and preserve URL provenance, verifying meaningful differences before collapsing near-duplicate results.
+**Choice and rationale.** Use exact URL/content checks first, then approximate retrieval for near-duplicates. Verify candidate distance and meaningful text differences before collapsing results. Preserve uncertain candidates and their source URLs. Scheduling identity and content identity answer different questions. We accept a separate approximate candidate stage and preserve URL provenance, verifying meaningful differences before collapsing near-duplicate results.
 
 A Bloom-filter false positive must not discard a unique page. Near-duplicate indexes also need bounded, measured candidate search: splitting a 64-bit signature into four 16-bit buckets can create large candidate lists at billions of pages. Partition and index those signatures deliberately; report recall when search is capped.
 
-**Admission and content deduplication.** Canonicalize a discovered URL under explicit rules, then conditionally insert its job/URL key. Lowercasing the hostname is generally safe; dropping arbitrary query parameters can change the resource, so only remove documented tracking parameters. Redirect destinations are discovered/admitted separately while retaining the redirect chain.
+**How it works: Admission and content deduplication.** Canonicalize a discovered URL under explicit rules, then conditionally insert its job/URL key. Lowercasing the hostname is generally safe; dropping arbitrary query parameters can change the resource, so only remove documented tracking parameters. Redirect destinations are discovered/admitted separately while retaining the redirect chain.
 
 After fetching, hash the recorded normalized text for exact duplicate content. Store raw/source identities too: two URLs with identical extracted text can have different attribution or crawl policies. A Bloom-filter positive triggers an exact lookup rather than automatic rejection.
 
-Near-duplicate candidates pass a bounded verification step. For example, two product pages differing only in boilerplate may be near-duplicates, but a changed price or safety notice can be meaningful. Record the normalization/signature version and decision so rebuilding the index reproduces it. Limit candidate work and preserve uncertain pages instead of silently equating a capped search with proof of uniqueness.
+**Tradeoffs and recovery.** Near-duplicate candidates pass a bounded verification step. For example, two product pages differing only in boilerplate may be near-duplicates, but a changed price or safety notice can be meaningful. Record the normalization/signature version and decision so rebuilding the index reproduces it. Limit candidate work and preserve uncertain pages instead of silently equating a capped search with proof of uniqueness.
 
 ### How do we avoid crawl traps and retry storms?
 
-**Problem:** calendars, session identifiers and generated paths can expand faster than useful pages are collected.
+**Problem.** Calendars, session identifiers and generated paths can expand faster than useful pages are collected.
+
+**Options and tradeoffs.**
 
 - **Depth-only limits:** Stop beyond a configured link depth. Control is easy, but calendars or session URLs can create an unlimited shallow graph.
 
@@ -331,21 +362,21 @@ Near-duplicate candidates pass a bounded verification step. For example, two pro
 
 - **Novelty-based scheduling:** Prioritize URLs likely to produce new content. Useful-work yield can improve, but unusual low-frequency pages may receive insufficient exposure and the signal needs evaluation.
 
-**Recommendation:** enforce explicit budgets and pattern limits, then use measured novelty as a scheduling signal. Back off failures with jitter and a retry budget; separate DNS failures, throttling and permanent HTTP outcomes. A crawler must remain bounded even when a site generates endlessly changing URLs. We accept explicit coverage limits and recorded exclusions, using novelty to prioritize within those bounds rather than as the only safety control.
+**Choice and rationale.** Enforce explicit budgets and pattern limits, then use measured novelty as a scheduling signal. Back off failures with jitter and a retry budget; separate DNS failures, throttling and permanent HTTP outcomes. A crawler must remain bounded even when a site generates endlessly changing URLs. We accept explicit coverage limits and recorded exclusions, using novelty to prioritize within those bounds rather than as the only safety control.
 
 Keep reasons for exclusions and failures in the job report. Fetch deadlines, parser memory limits and maximum extracted links bound the work caused by one hostile page. Recovery tests should include a failed owner, duplicated events, an interrupted shard upload and a robots-policy change.
 
-**A bounded crawl expansion.** A calendar page can expose a link to every future date. Track per-origin URL count, total bytes, depth, parameter cardinality and repeated templates. If dates advance indefinitely with little new content, apply the configured pattern budget and record why the remaining URLs were excluded.
+**How it works: A bounded crawl expansion.** A calendar page can expose a link to every future date. Track per-origin URL count, total bytes, depth, parameter cardinality and repeated templates. If dates advance indefinitely with little new content, apply the configured pattern budget and record why the remaining URLs were excluded.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-  U["Discovered URL"] --> N["Normalize and admit once"]
-  N --> B{"Within scope and budgets?"}
-  B -->|"Yes"| Q["Origin frontier"]
-  B -->|"No"| X["Recorded exclusion"]
-  Q --> F["Bounded fetch and parse"]
-  F --> L["Bounded extracted links"]
+  U["Discovered URL"] --> N["Normalize and<br>admit once"]
+  N --> B{"Within scope<br>and budgets?"}
+  B -->|"Yes"| Q["Origin<br>frontier"]
+  B -->|"No"| X["Recorded<br>exclusion"]
+  Q --> F["Bounded fetch<br>and parse"]
+  F --> L["Bounded<br>extracted<br>links"]
   L --> U
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
@@ -356,4 +387,4 @@ class N,B,X control;
 
 ```
 
-Fetch workers impose connect/read deadlines, compressed and decoded byte limits, and parser memory/link limits. A compressed response can expand far beyond its transfer size, so enforce both limits. Retry only transient outcomes with jitter and origin budgets. A failed fetch remains a recorded failed result; repeated rediscovery does not reset its retry history and create a new storm.
+**Tradeoffs and recovery.** Fetch workers impose connect/read deadlines, compressed and decoded byte limits, and parser memory/link limits. A compressed response can expand far beyond its transfer size, so enforce both limits. Retry only transient outcomes with jitter and origin budgets. A failed fetch remains a recorded failed result; repeated rediscovery does not reset its retry history and create a new storm.

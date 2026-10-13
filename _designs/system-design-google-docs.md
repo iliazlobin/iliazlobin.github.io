@@ -7,7 +7,7 @@ tags: [Real-Time, Distributed-Systems, Interview-Prep]
 thumbnail: /images/posts/2026-07-01-system-design-google-docs.svg
 redirect_from:
   - /2026/07/01/system-design-google-docs.html
-last_modified_at: 2026-10-07
+last_modified_at: 2026-10-12
 description: "Design of a collaborative document editor where users edit shared text, see each other's changes and restore earlier versions."
 notion_source: https://app.notion.com/p/38fd865005a8814497dfe386571b1305
 ---
@@ -135,12 +135,12 @@ WebSocket gateways keep client connections open and route edits to the current d
 
 ```mermaid
 flowchart TB
-  U[User editor] <-->|edits and acknowledgments| G[WebSocket gateway]
-  G <-->|document channel| E[Document service]
-  G -->|cursor updates| P[Presence service]
-  E -->|revision transaction| D[(Spanner)]
+  U[User editor] <-->|Edits / replies| G["WebSocket<br>gateway"]
+  G <-->|document channel| E["Document<br>service"]
+  G -->|cursor updates| P["Presence<br>service"]
+  E -->|revision transaction| D[(PostgreSQL)]
   E -->|accepted edits| G
-  S[Snapshot worker] -->|read operation history| D
+  S["Snapshot<br>worker"] -->|read operation history| D
   S -->|immutable snapshots| O[(Object storage)]
   S -->|snapshot pointer| D
   U -->|authorized media upload| O
@@ -155,15 +155,15 @@ flowchart TB
 
 ## Storage
 
-- **Spanner:** stores document metadata, owner leases and the authoritative operation log. A serializable transaction checks the owner epoch, appends operations and advances the head revision together. [Spanner transactions](https://docs.cloud.google.com/spanner/docs/transactions) provide the required cross-table atomicity.
+- **Atomic document commits — [PostgreSQL](/designs/tech-postgresql/) shards by `doc_id`:** colocate document metadata, owner leases and the live operation log. One transaction locks the document's lease/head rows, checks the owner epoch and lease validity, appends operations and advances the revision. [Row locks](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS) serialize competing commits. Independent documents spread the 150K ops/s target across shards; a hot document still has one revision order and requires measured capacity.
 - **Keys and indexes:** operation history is ordered by `(doc_id, assigned_revision)`. A unique index on `(doc_id, client_id, client_sequence)` recognizes a retried submission. Owner/title indexes support document listing with access filtering.
 - **Object storage:** contains immutable snapshots and uploaded media. Publish a snapshot pointer only after the object is complete and verified. Keep the previous usable snapshot until the new pointer commits.
-- **Bigtable:** can hold archived history for sequential reads after a verified transfer. Keep the live revision commit in one transactional store; splitting its head and operation append across databases requires an additional coordination protocol.
+- **Archived operation segments:** immutable object-storage files hold retained history after a verified transfer and committed archive pointer. Keep the live head and operation append together in PostgreSQL; splitting them across stores would require another commit protocol. Shard routing, failover and archive publication are the operational cost of this choice.
 - **[Redis](/designs/tech-redis/):** stores leased presence information and publishes best-effort updates. Connected clients expire stale presence locally and refresh it after reconnecting.
 
-## From request to response
+## Functional scenarios
 
-### One end-to-end request
+### Committing a collaborative edit
 
 The browser displays a local edit immediately, while the document owner transforms and durably commits its operation before acknowledging it.
 
@@ -196,16 +196,6 @@ sequenceDiagram
 
 Other browsers apply the accepted revision; the sender retains unacknowledged edits for retry under the same client sequence.
 
-### Opening and managing a document
-
-The API checks access and reads the document head. The current owner loads a snapshot at revision S, replays operations S+1 through the captured head and returns that consistent state. Changes committed during loading follow on the edit channel.
-
-Rename updates metadata with a version check. Soft deletion marks the document unavailable to ordinary editing, disconnects active edit sessions and retains recoverable content under the retention policy.
-
-Snapshot replay keeps reads simple, but long operation tails increase open latency. The snapshot and recovery deep dive describes how to keep that tail bounded in normal operation.
-
-### Editing text and formatting
-
 The browser applies local typing immediately. It submits an operation with the revision on which it was based and a stable client sequence. Further local edits remain buffered while the first submission is in flight.
 
 The document owner transforms the incoming operation against intervening committed edits. It then assigns the next revision and commits the operation and updated head. After commit, it acknowledges the submitting client and broadcasts the accepted operation. Peers transform remote edits against their own outstanding and buffered operations before applying them.
@@ -213,6 +203,40 @@ The document owner transforms the incoming operation against intervening committ
 Formatting and table edits use a defined document operation model, including attributes and structured child nodes. Text offsets alone are insufficient for every rich-content operation; use a tested transformation implementation for that model.
 
 One owner simplifies revision ordering, but a busy document can exhaust its transform and fan-out budget. Batch compatible local changes and isolate noisy documents rather than promising unlimited concurrent editors.
+
+### Opening and managing a document
+
+The API checks access and reads the document head. The current owner loads a snapshot at revision S, replays operations S+1 through the captured head and returns that consistent state. Changes committed during loading follow on the edit channel.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
+sequenceDiagram
+    participant U as Browser
+    participant A as Document gateway
+    participant O as Document owner
+    participant D as Operation store
+    rect rgb(232, 240, 254)
+        U->>A: Open document
+        A->>A: Check document access
+        A->>O: Open current revision
+        O->>D: Read snapshot and committed tail
+        D-->>O: State through captured head
+    end
+    rect rgb(230, 244, 234)
+        O-->>A: Document and revision
+        A-->>U: Document and revision
+        U->>A: Subscribe after that revision
+        A->>O: Register revision cursor
+        O-->>A: Later committed edits
+        A-->>U: Later committed edits
+    end
+```
+
+The opening response identifies the revision it contains. The gateway keeps the browser connection and routes its subscription to the current owner. That channel catches up from the returned revision, covering edits committed while the snapshot was loading. Access denial ends the request before document content is returned; a failed load can be retried without creating an edit.
+
+Rename updates metadata with a version check. Soft deletion marks the document unavailable to ordinary editing, disconnects active edit sessions and retains recoverable content under the retention policy.
+
+Snapshot replay keeps reads simple, but long operation tails increase open latency. The snapshot and recovery deep dive describes how to keep that tail bounded in normal operation.
 
 ### Showing cursors and adding content
 
@@ -232,17 +256,14 @@ Snapshots accelerate reconstruction; they do not create unlimited history. Keep 
 
 **Problem.** Two users can insert text at the same position while each is already showing their own local edit. Applying their original offsets in arrival order can produce different results on different clients.
 
-| Approach | Strength | Tradeoff |
-| --- | --- | --- |
-| Whole-document locking | Simple update rules | Other users must wait |
-| Operational transformation (OT) | Fits server-ordered editing and compact text operations | Requires correct server and client transforms |
-| Conflict-free replicated data types (CRDTs) | Supports independently generated updates and offline merging | Adds identifier and synchronization state |
+
+**Options and tradeoffs.**
 
 - **Whole-document locking:** grant one editor exclusive mutation ownership. Conflict handling is simple, but collaborators wait and disconnected lock holders need expiry/recovery.
 - **Operational transformation:** order accepted operations at the server and transform their positions against concurrent accepted changes. Compact text operations fit an online document owner; correct client/server transforms and retained revision history are required for every supported operation.
 - **CRDTs:** assign stable identities and merge independently generated updates using a proven convergence algorithm. Offline edits can synchronize without arrival-order transforms; identifiers, tombstones and library-specific synchronization/garbage collection consume extra state.
 
-**Recommendation:** use server-ordered OT for this online-first design. A deterministic rule orders simultaneous inserts, and transforms adjust positions relative to operations already accepted. A CRDT is a useful alternative when offline editing becomes a requirement; libraries such as [Yjs](https://docs.yjs.dev/api/y.doc) provide their own synchronization and garbage-collection behavior. Server-ordered OT fits the stated online-first document and authoritative revision log. We accept transform complexity and a connection-dependent shared revision order; a move to offline-first editing would justify reassessing the CRDT alternative rather than mixing the two operation contracts.
+**Choice and rationale.** Use server-ordered OT for this online-first design. A deterministic rule orders simultaneous inserts, and transforms adjust positions relative to operations already accepted. A CRDT is a useful alternative when offline editing becomes a requirement; libraries such as [Yjs](https://docs.yjs.dev/api/y.doc) provide their own synchronization and garbage-collection behavior. Server-ordered OT fits the stated online-first document and authoritative revision log. We accept transform complexity and a connection-dependent shared revision order; a move to offline-first editing would justify reassessing the CRDT alternative rather than mixing the two operation contracts.
 
 ```text
 Base document: "cat"
@@ -260,17 +281,19 @@ This is a small text example. Deletes, overlapping formatting and structured con
 
 In the “cat” example, choose a deterministic tie rule for inserts at the same position. Accepting A first places “s” at position 3; transforming B shifts “!” to position 4. Clients must apply the corresponding transforms to remote operations and their unacknowledged local work, not simply append the server's text.
 
-A delete overlapping an insert requires more than shifting an offset. The implementation needs a transformation algebra covering each supported operation pair, including structured edits and formatting. Test that concurrent permutations converge and preserve the intended editing semantics. Use an established OT implementation or formally tested operation model; the small example explains the protocol rather than specifying a complete production editor.
+**Tradeoffs and recovery.** A delete overlapping an insert requires more than shifting an offset. The implementation needs a transformation algebra covering each supported operation pair, including structured edits and formatting. Test that concurrent permutations converge and preserve the intended editing semantics. Use an established OT implementation or formally tested operation model; the small example explains the protocol rather than specifying a complete production editor.
 
 ### How can typing stay responsive over a slow connection?
 
 **Problem.** Waiting for an acknowledgment before showing each keystroke would make editing depend on network latency. Sending unrestricted operations creates a growing transform backlog during outages.
 
+**Options and tradeoffs.**
+
 - **Committed-only rendering:** display text after the server acknowledges its operation. Client state is straightforward, but each keystroke inherits network round-trip latency.
 - **Independent keystroke submissions:** display locally and submit every edit separately. Typing feels immediate, but high latency grows an outstanding-operation queue and multiplies transformations and retry state.
 - **One outstanding operation plus a buffer:** compose compatible subsequent edits locally while one operation is in flight, transforming both against remote revisions. Typing stays immediate with bounded submissions; composition and cursor transformation must preserve the editor's semantics.
 
-**Recommendation:** render locally, keep one outstanding composed operation and compose subsequent compatible changes in a buffer. Remote edits transform against both. Once the outstanding operation is acknowledged, submit the transformed buffer using the updated base revision. One outstanding operation fits continuous typing over variable connections and the server-ordered OT model. We accept a more involved client buffer and unsynced state during outages instead of making UI responsiveness depend on acknowledgments.
+**Choice and rationale.** Render locally, keep one outstanding composed operation and compose subsequent compatible changes in a buffer. Remote edits transform against both. Once the outstanding operation is acknowledged, submit the transformed buffer using the updated base revision. One outstanding operation fits continuous typing over variable connections and the server-ordered OT model. We accept a more involved client buffer and unsynced state during outages instead of making UI responsiveness depend on acknowledgments.
 
 ```mermaid
 sequenceDiagram
@@ -294,17 +317,19 @@ Measure local render latency, acknowledgment latency, remote delivery delay and 
 
 When A's acknowledgement arrives, clear that outstanding operation and submit the transformed B using the acknowledged server revision. The client sequence stays stable for retransmission of A; a retry is not a new edit. Composition combines compatible adjacent changes without changing their effect.
 
-Persist unacknowledged work locally when the product promises crash recovery. On reconnect, ask for committed history after the known revision, identify whether A already committed, and transform remaining work. Bound buffered bytes and history distance. If the base is no longer supported, retain unsent content for an explicit rebase or review instead of discarding it during a fresh snapshot load.
+**Tradeoffs and recovery.** Persist unacknowledged work locally when the product promises crash recovery. On reconnect, ask for committed history after the known revision, identify whether A already committed, and transform remaining work. Bound buffered bytes and history distance. If the base is no longer supported, retain unsent content for an explicit rebase or review instead of discarding it during a fresh snapshot load.
 
 ### How do ownership and history survive a server failure?
 
 **Problem.** Consistent hashing identifies a preferred server, but it cannot by itself prevent an old and a replacement server from committing edits concurrently.
 
+**Options and tradeoffs.**
+
 - **Gateway routing alone:** consistently hash a document to one preferred server. Normal placement is simple, but a stale gateway can still reach an old server after failover and produce concurrent writers.
 - **Lease without storage fencing:** expire ownership and let a successor take over. Most takeover paths work, but a paused old owner can resume and commit unless the durable write checks ownership too.
 - **Fenced revision commits:** advance a durable owner epoch and require it on every log/head transaction. A successor makes stale commits fail and can replay committed history; lease renewal, epoch checks and verified snapshots add control-plane and storage work.
 
-**Recommendation:** keep a document owner lease with a monotonically increasing epoch. A new owner acquires it transactionally after expiration. Every edit transaction checks that epoch and lease validity, then writes the log and head together. A stale owner fails that check and redirects clients to the new owner. Fenced commits fit a document whose acknowledged revision must survive owner replacement. We accept a durable ownership dependency and pause acknowledgments during authority loss; locally visible buffered edits remain explicitly unsynced.
+**Choice and rationale.** Keep a document owner lease with a monotonically increasing epoch. A new owner acquires it transactionally after expiration. Every edit transaction checks that epoch and lease validity, then writes the log and head together. A stale owner fails that check and redirects clients to the new owner. Fenced commits fit a document whose acknowledged revision must survive owner replacement. We accept a durable ownership dependency and pause acknowledgments during authority loss; locally visible buffered edits remain explicitly unsynced.
 
 After a failure, the replacement reads a verified snapshot and replays committed operations. A submission whose commit succeeded before the connection failed is recognized by its client sequence and returns the original acknowledgment.
 
@@ -316,12 +341,12 @@ A presence outage may temporarily remove remote cursors. An authoritative-storag
 
 ```mermaid
 flowchart TB
-  O["Operation and client sequence"] --> T["Check owner epoch in transaction"]
-  T --> C["Append operation and advance head"]
-  C --> A["Acknowledge committed revision"]
-  C --> S["Snapshot builder"]
-  S --> V["Verify snapshot through revision R"]
-  V --> P["Commit snapshot pointer"]
+  O["Operation and<br>client<br>sequence"] --> T["Check owner<br>epoch in<br>transaction"]
+  T --> C["Append<br>operation and<br>advance head"]
+  C --> A["Acknowledge<br>committed<br>revision"]
+  C --> S["Snapshot<br>builder"]
+  S --> V["Verify<br>snapshot<br>through<br>revision R"]
+  V --> P["Commit<br>snapshot<br>pointer"]
   classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef background fill:#e6f4ea,stroke:#9aa0a6,color:#202124,stroke-width:1px
   classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124,stroke-width:1px
@@ -329,4 +354,4 @@ flowchart TB
   class S,V,P background
 ```
 
-A snapshot includes the exact state through revision R; recovery replays R+1 onward. Write and verify the immutable object before publishing its pointer. Retain log records required for history and client transforms, even if the snapshot covers their rendered text. Snapshot coverage, transform retention and user-visible revision history are different constraints.
+**Tradeoffs and recovery.** A snapshot includes the exact state through revision R; recovery replays R+1 onward. Write and verify the immutable object before publishing its pointer. Retain log records required for history and client transforms, even if the snapshot covers their rendered text. Snapshot coverage, transform retention and user-visible revision history are different constraints.

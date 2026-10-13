@@ -92,7 +92,8 @@ layout: default
   blocks.forEach((block) => {
     const code = block.querySelector("code") || block;
     const div = document.createElement("div");
-    div.className = "mermaid";
+    div.className = "mermaid mermaid--pending";
+    div.setAttribute("aria-busy", "true");
     div.dataset.source = code.textContent.trim();
     div.textContent = normalizeDiagramStyles(div.dataset.source);
     const container = block.matches("code") ? block.closest("pre") : block;
@@ -107,10 +108,13 @@ layout: default
         svg.style.setProperty("--diagram-natural-width", `${svg.viewBox.baseVal.width}px`);
       } catch (e) {
         console.error("Mermaid render error:", e);
-        // One invalid diagram must not hide the others. Retain its source for recovery.
-        const pre = document.createElement("pre");
-        pre.textContent = div.dataset.source;
-        div.replaceWith(pre);
+        // Keep the source in data-source for recovery, without exposing raw code.
+        // A failed diagram does not prevent later diagrams from rendering.
+        div.textContent = "Diagram unavailable. Please reload this page.";
+        div.setAttribute("role", "status");
+      } finally {
+        div.classList.remove("mermaid--pending");
+        div.setAttribute("aria-busy", "false");
       }
     }
   }

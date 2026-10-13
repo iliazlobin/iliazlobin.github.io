@@ -38,7 +38,6 @@
 }
 
 @media (min-width: 1240px) {
-  .page-content > .wrapper:has(.post--document .document-body) { max-width: 1440px; }
   .post--document:has(.article-toc) { max-width: none; }
   .post--document .document-body:has(.article-toc) {
     grid-template-columns: minmax(0, 1fr) 240px; gap: 2rem; align-items: start;

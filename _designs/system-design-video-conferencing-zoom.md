@@ -97,6 +97,7 @@ message MediaSession {
   string session_id;
   string participant_id;
   string forwarding_node;          // Assigned media server
+  int64 session_epoch;             // Connection version; rejects delayed commands
   int64 assignment_epoch;          // Media-server assignment version
   repeated string published_tracks; // Tracks this participant sends
 }
@@ -130,7 +131,8 @@ POST /v1/meetings:
 POST /v1/meetings/{meeting_id}/join:
   body: {user_token: string, device_capabilities: object}
   response: {participant_id: string, session_token: string,
-             signaling_url: string, media_server: string}
+             signaling_url: string, media_server: string,
+             session_epoch: integer, assignment_epoch: integer}
 
 WebSocket /v1/meetings/{meeting_id}/signal:
   message_categories: [connection_setup, track_selection,
@@ -158,15 +160,15 @@ The meeting service checks access and assigns a media server to each participant
 A device tells the SFU which streams it wants to receive as the user changes the meeting layout. A recording worker receives authorized streams and saves them; meeting and chat records use separate storage.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-    U["User devices"] -->|"Join and controls"| M["Meeting service"]
-    M --> D[("Meeting and chat state")]
-    M -->|"Media-server assignment"| S["Media server (SFU)"]
+    U["User devices"] -->|"Join and controls"| M["Meeting<br>service"]
+    M --> D[("Meeting and<br>chat state")]
+    M -->|"Media-server assignment"| S["Media server<br>(SFU)"]
     U -->|"Audio, video and screen"| S
-    S --> R["Receiving devices"]
-    S -->|"Authorized streams"| W["Recording worker"]
-    W --> O[("Recording storage")]
+    S --> R["Receiving<br>devices"]
+    S -->|"Authorized streams"| W["Recording<br>worker"]
+    W --> O[("Recording<br>storage")]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
 classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
@@ -187,7 +189,7 @@ class M control;
 
 Chat retention follows the meeting policy. Media packets remain in bounded transport and retransmission buffers; recording is an explicit operation.
 
-## From request to response
+## Functional scenarios
 
 ### Creating a meeting
 
@@ -195,10 +197,14 @@ The host submits an access policy and encryption mode to `POST /v1/meetings`. Th
 
 The host shares that URL with participants. Each join request is checked against the saved access policy. Participant roles determine who can change meeting controls or start a recording.
 
-### Meeting join and media flow
+### Joining a meeting
+
+The client sends the meeting ID, its authenticated identity and device capabilities to the join endpoint. The meeting service checks the meeting's access policy and available media capacity, then creates the participant and media-session records. It returns the participant ID, a short-lived session token, the control-connection address and the assigned media server.
+
+The client uses that token to open its WebSocket control connection. The meeting service relays connection-setup messages to the assigned SFU and updates the participant roster—the list of users in the meeting. Once the media connection is ready, the device can send its own tracks and request tracks from other participants.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 sequenceDiagram
   participant U as Joining device
   participant M as Meeting service
@@ -224,12 +230,6 @@ sequenceDiagram
 
 The meeting service authorizes the join and relays setup messages to the assigned SFU. The device then establishes its media connection, sends its tracks and requests the tracks it wants to receive. The SFU forwards those selected streams; a TURN relay can carry the connection on restrictive networks.
 
-### Joining a meeting
-
-The client sends the meeting ID, its authenticated identity and device capabilities to the join endpoint. The meeting service checks the meeting's access policy and available media capacity, then creates the participant and media-session records. It returns the participant ID, a short-lived session token, the control-connection address and the assigned media server.
-
-The client uses that token to open its WebSocket control connection. The meeting service relays connection-setup messages to the assigned SFU and updates the participant roster—the list of users in the meeting. Once the media connection is ready, the device can send its own tracks and request tracks from other participants.
-
 An access or capacity failure returns a clear join error. If an established connection fails, the client shows a reconnecting state and restores the connection using the same participant identity. The deep dives explain [path selection](#how-do-meetings-survive-restrictive-networks) and [session-version checks](#how-do-retries-and-reconnects-preserve-the-current-session).
 
 ### Sending and receiving audio and video
@@ -249,7 +249,7 @@ A user selects Share, and the browser prompts them to choose a tab, window or sc
 Once authorized, the client announces the screen track and sends it alongside the camera and microphone tracks. Receiving clients request the screen track and update their layouts. The sender chooses encoding settings suited to readable text or moving content; the SFU adapts the forwarded quality for each receiver.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 sequenceDiagram
   participant P as Presenting client
   participant M as Meeting service
@@ -283,7 +283,7 @@ The sender submits the message body and a client-generated message ID over the c
 Each recipient orders messages by sequence and merges repeated deliveries by message ID. The client keeps the last sequence it has synchronized from stored history, separately from live notifications. Periodic catch-up and reconnect both request retained messages after that position; each completed history read advances it. Repeated submissions with the same message ID return the saved result; the [retry deep dive](#how-do-retries-and-reconnects-preserve-the-current-session) covers the transaction and replay rules.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 sequenceDiagram
   participant S as Sending client
   participant M as Meeting service
@@ -316,7 +316,7 @@ The host sends a recording-start request with an `Idempotency-Key`. The meeting 
 A recording worker picks up the saved job and requests the permitted tracks from the SFU. When capture begins, the job becomes `recording` and participants see the active recording indicator. The worker writes media segments to object storage and keeps an index of completed segments, called a **manifest**, so finalization can resume from saved segments after an interruption.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 sequenceDiagram
   participant H as Host client
   participant M as Meeting service
@@ -353,7 +353,9 @@ Transport-encrypted meetings can support a trusted cloud recorder. End-to-end en
 
 ### Which media topology fits group meetings?
 
-A group call creates many subscriptions, and users have limited uplink and decoding capacity.
+**Problem.** A group call creates many subscriptions, and users have limited uplink and decoding capacity.
+
+**Options and tradeoffs.**
 
 - **Peer-to-peer mesh:** Send a separate copy from each publisher to every peer. Small calls avoid a forwarding server, but uplink and connection count grow with participants.
 
@@ -361,23 +363,23 @@ A group call creates many subscriptions, and users have limited uplink and decod
 
 - **Selective forwarding — recommended:** Forward existing encoded streams and select subscriptions/layers per receiver. Server encoding work is avoided; receiver bandwidth and decode limits still require bounded visible tiles and layer choices.
 
-In a 20-person mesh, sending a 2Mbps camera stream separately to 19 peers requires 38Mbps of upload bandwidth per participant. Selective forwarding sends a bounded set of quality versions to one media server, which distributes them to receivers. We choose it because client upload bandwidth and server encoding capacity are limited. The cost moves to server outbound bandwidth and per-receiver subscription state; mixing remains useful for authorized recording or constrained clients.
+**Choice and rationale.** In a 20-person mesh, sending a 2Mbps camera stream separately to 19 peers requires 38Mbps of upload bandwidth per participant. Selective forwarding sends a bounded set of quality versions to one media server, which distributes them to receivers. We choose it because client upload bandwidth and server encoding capacity are limited. The cost moves to server outbound bandwidth and per-receiver subscription state; mixing remains useful for authorized recording or constrained clients.
 
 Media travels in packets carrying sequence numbers and playback timestamps, using [Real-time Transport Protocol (RTP)](https://datatracker.ietf.org/doc/html/rfc3550). These let receivers order packets and align playback. Bound visible video subscriptions so each device stays within its receive-bandwidth and decoding capacity.
 
 Many compressed video frames describe changes relative to earlier frames. Switching quality versions can leave a receiver missing those references. The SFU switches at an independently decodable **keyframe**, or another switching point supported by the codec, and keeps a bounded history of recent packets for retransmission.
 
-**What the SFU forwards**
+**How it works: what the SFU forwards.**
 
 A publisher sends video using **simulcast**, several independently encoded quality versions, or **scalable video coding**, a base layer with enhancement layers that add quality. The SFU forwards a suitable version or decodable set of layers for each subscription: high quality for a large active-speaker tile, lower quality for a small mobile tile. Receiving devices decode their selected streams and compose their own meeting layouts.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-    P["Publisher<br>encoded layers"] --> S["SFU<br>per-receiver subscriptions"]
-    S --> A["Receiver A<br>active speaker high layer"]
-    S --> B["Receiver B<br>mobile low layer"]
-    S --> C["Receiver C<br>audio plus selected tiles"]
+    P["Publisher<br>encoded layers"] --> S["SFU<br>per-receiver<br>subscriptions"]
+    S --> A["Receiver A<br>active speaker<br>high layer"]
+    S --> B["Receiver B<br>mobile low<br>layer"]
+    S --> C["Receiver C<br>audio plus<br>selected tiles"]
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
 classDef control fill:#fef7e0,stroke:#9aa0a6,color:#202124;
@@ -385,11 +387,13 @@ class P,S,A,B,C request;
 
 ```
 
-On a layout change, the receiver requests a new subscription. The SFU requests a keyframe when needed for the switch and drops retransmissions after their playback deadline. Measure sender upload bandwidth, SFU outbound bandwidth and receiver decoding load separately.
+**Tradeoffs and recovery.** On a layout change, the receiver requests a new subscription. The SFU requests a keyframe when needed for the switch and drops retransmissions after their playback deadline. Measure sender upload bandwidth, SFU outbound bandwidth and receiver decoding load separately. A forwarding failure requires reassignment and republishing; retained meeting metadata cannot reconstruct media packets already lost.
 
 ### How do meetings survive restrictive networks?
 
-A direct media path sends individual packets without waiting for transport-level retransmission, using **User Datagram Protocol (UDP)**. This suits time-sensitive audio/video. A home router may translate a device's private address to a public address; this is **network address translation (NAT)**. That translation and firewall rules can make some advertised addresses unreachable. Connectivity checks, called [Interactive Connectivity Establishment (ICE)](https://www.rfc-editor.org/rfc/rfc8445.html), find a usable device-to-server path.
+**Problem.** A direct media path sends individual packets without waiting for transport-level retransmission, using **User Datagram Protocol (UDP)**. This suits time-sensitive audio/video. A home router may translate a device's private address to a public address; this is **network address translation (NAT)**. That translation and firewall rules can make some advertised addresses unreachable. Connectivity checks, called [Interactive Connectivity Establishment (ICE)](https://www.rfc-editor.org/rfc/rfc8445.html), find a usable device-to-server path.
+
+**Options and tradeoffs.**
 
 - **Direct transport only:** Use a direct supported media candidate. Relay spending is low, but restrictive NATs or firewalls prevent some participants from connecting.
 
@@ -397,9 +401,9 @@ A direct media path sends individual packets without waiting for transport-level
 
 - **ICE with relay fallback — recommended:** Check candidate pairs and use a working direct or TURN path. Most sessions can avoid unnecessary relay; candidate setup, relay capacity and connectivity metrics remain required.
 
-Participants use heterogeneous enterprise and mobile networks. We accept connectivity-check setup and provision measured TURN capacity so reachability does not depend on one assumed UDP path.
+**Choice and rationale.** Use ICE with relay fallback because participants use heterogeneous enterprise and mobile networks. We accept connectivity-check setup and provision measured TURN capacity so reachability does not depend on one assumed UDP path.
 
-**How connection setup works**
+**How it works: connection setup.**
 
 Before audio or video can flow, the client and its assigned media server agree on supported media formats and exchange network addresses they can try. This setup exchange is [**signaling**](https://www.rfc-editor.org/rfc/rfc8829.html#section-1.1). The meeting service relays these messages over the client's WebSocket control connection. Browser clients use [Web Real-Time Communication (WebRTC)](https://www.w3.org/TR/webrtc/) to negotiate media settings, test connectivity and establish the encrypted media connection.
 
@@ -412,13 +416,13 @@ Deploy TURN near users and require short-lived credentials. A client reserves a 
 When a phone moves from Wi-Fi to cellular, its earlier media path may stop working. The client and SFU exchange fresh connection credentials and addresses through signaling, then repeat connectivity checks. This renewal is an **ICE restart**; it replaces the media path while preserving the meeting session.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-  S["Signaling exchange"] --> G["Gather direct and TURN candidates"]
-  G --> C["Check candidate pairs"]
-  C --> N["Select a working path"]
-  N --> M["Secure media transport"]
-  M -->|"Network change"| R["ICE restart<br>new credentials and candidates"]
+  S["Signaling<br>exchange"] --> G["Gather direct<br>and TURN<br>candidates"]
+  G --> C["Check<br>candidate<br>pairs"]
+  C --> N["Select a<br>working path"]
+  N --> M["Secure media<br>transport"]
+  M -->|"Network change"| R["ICE restart<br>new<br>credentials<br>and candidates"]
   R --> C
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
@@ -429,11 +433,13 @@ class S,G,C,N,M,R request;
 
 Monitor the control connection and media path separately: either can fail while the other remains available. Record the selected address type, the time for a packet and reply to complete a round trip (**RTT**), packet loss and relay use to locate connectivity failures.
 
-Expire relay allocations and enforce per-user abuse limits. Test enterprise firewalls and Wi-Fi-to-mobile handoff with real clients. After a path changes, estimate its capacity before restoring the previous video bitrate.
+**Tradeoffs and recovery.** Expire relay allocations and enforce per-user abuse limits. Test enterprise firewalls and Wi-Fi-to-mobile handoff with real clients. After a path changes, estimate its capacity before restoring the previous video bitrate. Relay failure starts a new connectivity check; relay capacity shortages return a visible reconnect/join failure rather than claiming all networks meet the regional latency target.
 
 ### How do retries and reconnects preserve the current session?
 
-A client can lose a response after a command succeeds, and messages from an old connection can arrive after a reconnect. The service must recognize a repeated request while keeping delayed messages from changing the current session.
+**Problem.** A client can lose a response after a command succeeds, and messages from an old connection can arrive after a reconnect. The service must recognize a repeated request while keeping delayed messages from changing the current session.
+
+**Options and tradeoffs.**
 
 - **Retry each command as a new request:** little retained state, but a repeated recording-start or chat submission can create duplicate work.
 
@@ -441,9 +447,9 @@ A client can lose a response after a command succeeds, and messages from an old 
 
 - **Stable request IDs and service-checked versions — recommended:** retain command outcomes and check the current connection and server assignment. Retries recover the original result, while obsolete commands are rejected. This requires durable state, atomic updates and a bounded retention policy.
 
-Meetings frequently reconnect and can outlive a service process. We choose stable request identities plus independent versions so a reconnect preserves the participant, a retry preserves its original operation, and a reassignment takes effect once. PostgreSQL owns the durable records; Redis caches copies for fast routing. Media servers retain established connection state during a temporary cache or placement-controller outage.
+**Choice and rationale.** Meetings frequently reconnect and can outlive a service process. We choose stable request identities plus independent versions so a reconnect preserves the participant, a retry preserves its original operation, and a reassignment takes effect once. PostgreSQL owns the durable records; Redis caches copies for fast routing. Media servers retain established connection state during a temporary cache or placement-controller outage.
 
-Each control message carries a unique `command_id`. The current connection version is `session_epoch`; reconnecting advances it. The media-server assignment version is `assignment_epoch`; changing servers advances that separately. New commands must match the current versions, keeping delayed messages from changing the current session. The join response includes both versions so the client can attach them to subsequent control messages.
+**How it works.** Each control message carries a unique `command_id`. The current connection version is `session_epoch`; reconnecting advances it. The media-server assignment version is `assignment_epoch`; changing servers advances that separately. New commands must match the current versions, keeping delayed messages from changing the current session. The join response includes both versions so the client can attach them to subsequent control messages.
 
 ```yaml
 command: offer | answer | ice_candidate | subscribe | host_control | chat | reaction
@@ -461,11 +467,13 @@ A client-generated `Idempotency-Key` identifies a recording-start request so ret
 
 For chat, a PostgreSQL transaction locks the meeting-local sequence counter, assigns the next number, and saves the message, its unique ID and the updated counter together. The next writer acquires that lock after commit, keeping higher sequence numbers from becoming visible before earlier messages. Reconnecting clients replay messages after their last synchronized history position; live notifications leave that position unchanged. A repeated message ID returns the existing message.
 
-Retain command results through the supported retry window. Clients stop automatic retries once that window closes and show an unresolved outcome for recovery. Measure duplicate-result hits, rejected old-version commands and replay lag.
+**Tradeoffs and recovery.** Retain command results through the supported retry window. Clients stop automatic retries once that window closes and show an unresolved outcome for recovery. Measure duplicate-result hits, rejected old-version commands and replay lag. Durable command writes can pause during database failure while an already established media session continues from its live state.
 
 ### How do we keep quality consistent across receivers?
 
-A fast connection and a congested mobile connection can subscribe to the same publisher.
+**Problem.** A fast connection and a congested mobile connection can subscribe to the same publisher.
+
+**Options and tradeoffs.**
 
 - **One fixed quality:** Publish and forward one bitrate/resolution. Operation is simple, but a congested receiver stalls or a fast receiver receives unnecessarily low quality.
 
@@ -473,21 +481,21 @@ A fast connection and a congested mobile connection can subscribe to the same pu
 
 - **Encoded layers with receiver feedback — recommended:** Select a simulcast or scalable-codec layer per subscription and adjust sender bitrate as needed. Heterogeneous receivers share published layers; publishers spend extra encoding/uplink and transitions need congestion control.
 
-A meeting contains different devices and bandwidth conditions. We accept layer-management and publisher overhead to preserve audio and useful visible video without individualized server transcoding.
+**Choice and rationale.** Use encoded layers with receiver feedback because a meeting contains different devices and bandwidth conditions. We accept layer-management and publisher overhead to preserve audio and useful visible video without individualized server transcoding.
 
-Receiving devices report packet arrivals and losses. The SFU combines these reports with the delay in its outgoing packet queue to estimate each receiver's available bandwidth. It reduces forwarded video bitrate as congestion grows. Receivers briefly hold arriving packets to smooth timing variation; this **jitter buffer** has a fixed delay budget so buffering preserves the playback target.
+**How it works.** Receiving devices report packet arrivals and losses. The SFU combines these reports with the delay in its outgoing packet queue to estimate each receiver's available bandwidth. It reduces forwarded video bitrate as congestion grows. Receivers briefly hold arriving packets to smooth timing variation; this **jitter buffer** has a fixed delay budget so buffering preserves the playback target.
 
 **Allocate bandwidth per receiver**
 
 Reserve the estimated bandwidth for audio first, then screen content or the active speaker, then other selected tiles. Choose encoded layers that fit the remaining capacity; request a lower sender bitrate when the available versions are too large.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
-  B["Estimate receiver bandwidth"] --> A["Reserve audio bandwidth"]
-  A --> P["Select screen-share or active-speaker layers"]
-  P --> T["Fit secondary tiles within remaining capacity"]
-  T --> F["Receiver arrivals/loss<br>SFU queue delay"]
+  B["Estimate<br>receiver<br>bandwidth"] --> A["Reserve audio<br>bandwidth"]
+  A --> P["Select<br>screen-share<br>or<br>active-speaker<br>layers"]
+  P --> T["Fit secondary<br>tiles within<br>remaining<br>capacity"]
+  T --> F["Receiver<br>arrivals/loss<br>SFU queue<br>delay"]
   F --> B
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
 classDef data fill:#e6f4ea,stroke:#9aa0a6,color:#202124;
@@ -498,11 +506,13 @@ class B,A,P,T,F request;
 
 Require sustained spare bandwidth before upgrading quality; this **hysteresis** prevents small fluctuations from repeatedly switching layers. Downgrade sooner when loss or queue delay rises, and stop retransmitting packets after their playback deadline. Longer jitter buffering adds conversation delay, so keep it within the playback budget.
 
-Each receiver has its own quality selection; sender processing and upload capacity still limit the available versions. Test packet loss, bursty delay, mobile handoff and changing layouts. Measure audio interruptions and frozen-frame time alongside bitrate.
+**Tradeoffs and recovery.** Each receiver has its own quality selection; sender processing and upload capacity still limit the available versions. Test packet loss, bursty delay, mobile handoff and changing layouts. Measure audio interruptions and frozen-frame time alongside bitrate. When capacity estimates become uncertain, use a conservative video layer and preserve audio before probing upward again.
 
 ### How do we route a meeting across regions?
 
-One region is operationally simple, but users far from that region pay extra propagation delay.
+**Problem.** One region is operationally simple, but users far from that region pay extra propagation delay.
+
+**Options and tradeoffs.**
 
 - **One meeting region:** Keep all media on one regional forwarding group. Ownership and relay relationships are simple, but distant participants pay additional propagation delay.
 
@@ -510,9 +520,9 @@ One region is operationally simple, but users far from that region pay extra pro
 
 - **Regional SFU groups — recommended:** Group nearby participants on a regional set of media servers. Combine their requested tracks so each required stream crosses regions once per receiving group, then distribute it locally. This bounds relay copies, while routing and recovery must preserve subscriptions and server-assignment versions.
 
-Large meetings can span regions while only selected tracks are visible. We accept cross-region routing state and measured relay bandwidth, keeping small local meetings on the simpler one-region path.
+**Choice and rationale.** Use regional SFU groups because large meetings can span regions while only selected tracks are visible. We accept cross-region routing state and measured relay bandwidth, keeping small local meetings on the simpler one-region path.
 
-The meeting service's **placement controller** chooses a media server using participant locations, capacity and data-residency requirements, and records the assignment version. Media servers retain current connection and subscription state so established media can continue during a controller restart.
+**How it works.** The meeting service's **placement controller** chooses a media server using participant locations, capacity and data-residency requirements, and records the assignment version. Media servers retain current connection and subscription state so established media can continue during a controller restart.
 
 On SFU failure, clients receive a new assignment, establish a new transport and republish or resubscribe. Capacity reserves and regional admission limits keep failover from overloading healthy nodes. Measure recovery against the five-second target under the supported network conditions.
 
@@ -521,7 +531,7 @@ On SFU failure, clients receive a new assignment, establish a new transport and 
 Assign each participant to a nearby SFU with available capacity. An **inter-region relay** carries the required streams between regional SFUs when subscribers are in another region; the receiving SFU distributes them locally. This connects media servers to one another, while TURN handles a device's connectivity to its SFU.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
   subgraph LOCAL["Publisher region"]
     P["Publisher"] -->|"Encoded layers"| L["Local SFU"]
@@ -531,7 +541,7 @@ flowchart TB
     R["Remote SFU"] -->|"Local stream copy"| A["Subscriber A"]
     R -->|"Local stream copy"| B["Subscriber B"]
   end
-  X -->|"One inter-region copy per required layer"| R
+  X -->|"One copy per layer"| R
   style LOCAL fill:#e8f0fe,stroke:#9aa0a6,color:#202124
   style REMOTE fill:#e6f4ea,stroke:#9aa0a6,color:#202124
 classDef request fill:#e8f0fe,stroke:#9aa0a6,color:#202124;
@@ -543,11 +553,13 @@ class P,L,X,R,A,B request;
 
 After a media-server failure, receivers resume restored video subscriptions from a keyframe.
 
-Reserve failover capacity before accepting meetings at the advertised target. Reassignment advances `assignment_epoch`. Once a client has received a newer assignment, it discards older assignment responses; media servers reject commands carrying old assignment or connection versions. These checks prevent delayed control messages from overriding newer session state. Data-residency constraints can override nearest-region placement; expose that policy to the participant.
+**Tradeoffs and recovery.** Reserve failover capacity before accepting meetings at the advertised target. Reassignment advances `assignment_epoch`. Once a client has received a newer assignment, it discards older assignment responses; media servers reject commands carrying old assignment or connection versions. These checks prevent delayed control messages from overriding newer session state. Data-residency constraints can override nearest-region placement; expose that policy to the participant.
 
 ### How does end-to-end encryption change recording and trust?
 
-Transport encryption secures each client/server leg. End-to-end encryption additionally protects media payloads from the forwarding service.
+**Problem.** Transport encryption secures each client/server leg. End-to-end encryption additionally protects media payloads from the forwarding service, changing which recording operations are possible.
+
+**Options and tradeoffs.**
 
 - **Transport encryption:** Encrypt each client/server leg while trusted servers can process media. Recording and mixing are available, but the service remains inside the content trust boundary.
 
@@ -555,9 +567,9 @@ Transport encryption secures each client/server leg. End-to-end encryption addit
 
 - **Explicit meeting trust modes — recommended:** Choose and disclose a compatible encryption/recording mode before joining. Capabilities have a clear trust contract; mode negotiation and participant-visible changes add product and key-management work.
 
-A recorder needs media decryption keys to save readable content. In transport-encrypted mode, a trusted server can record; in E2EE mode, recording requires an authorized participant or client that holds the keys. We choose explicit meeting modes so users can see which devices or services can access the media before joining.
+**Choice and rationale.** A recorder needs media decryption keys to save readable content. In transport-encrypted mode, a trusted server can record; in E2EE mode, recording requires an authorized participant or client that holds the keys. We choose explicit meeting modes so users can see which devices or services can access the media before joining.
 
-In E2EE mode, clients encrypt media frames before sending them to the SFU, which uses visible routing metadata to forward them. [Secure Frame (SFrame)](https://www.rfc-editor.org/rfc/rfc9605.html) provides a standardized frame-encryption format. Authorized devices establish shared media keys through a reviewed, [authenticated group-key exchange](https://www.rfc-editor.org/rfc/rfc9420.html#section-1). The meeting service relays encrypted key-exchange messages; the media keys remain with authorized devices and are updated as membership changes.
+**How it works.** In E2EE mode, clients encrypt media frames before sending them to the SFU, which uses visible routing metadata to forward them. [Secure Frame (SFrame)](https://www.rfc-editor.org/rfc/rfc9605.html) provides a standardized frame-encryption format. Authorized devices establish shared media keys through a reviewed, [authenticated group-key exchange](https://www.rfc-editor.org/rfc/rfc9420.html#section-1). The meeting service relays encrypted key-exchange messages; the media keys remain with authorized devices and are updated as membership changes.
 
 A member who receives media keys can access that meeting's media. Membership verification, consent and client security therefore remain part of the trust model.
 
@@ -566,15 +578,15 @@ A member who receives media keys can access that meeting's media. Membership ver
 In transport-encrypted mode, the SFU terminates the transport and trusted server recording can process payloads. In client-managed media encryption mode, forwarding uses routing metadata while payload decryption belongs to authorized meeting members.
 
 ```mermaid
-%%{init: {'theme':'base','htmlLabels':false,'flowchart':{'htmlLabels':false},'themeVariables':{'fontFamily':'Arial, sans-serif','primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
 flowchart TB
   subgraph TRANSPORT["Transport encryption · service can process media"]
-    T1["Sending client"] <-->|"Encrypted transport"| S["Media server (SFU)<br>can decode or record"]
-    S <-->|"Encrypted transport"| T2["Receiving client"]
+    T1["Sending client"] <-->|"Encrypted transport"| S["Media server<br>(SFU)<br>can decode or<br>record"]
+    S <-->|"Encrypted transport"| T2["Receiving<br>client"]
   end
   subgraph E2EE["End-to-end encryption · clients hold media keys"]
-    E1["Authorized sending client<br>encrypts payload"] -->|"Encrypted media"| F["Media server (SFU)<br>routing metadata only"]
-    F -->|"Encrypted media"| E2["Authorized receiving client<br>decrypts payload"]
+    E1["Authorized<br>sending client<br>encrypts<br>payload"] -->|"Encrypted media"| F["Media server<br>(SFU)<br>routing<br>metadata only"]
+    F -->|"Encrypted media"| E2["Authorized<br>receiving<br>client<br>decrypts<br>payload"]
   end
   style TRANSPORT fill:#fef7e0,stroke:#9aa0a6,color:#202124
   style E2EE fill:#e6f4ea,stroke:#9aa0a6,color:#202124
@@ -587,4 +599,4 @@ class T1,S,T2,E1,F,E2 request;
 
 Give each sender distinct media keys and an increasing frame counter; receivers reject replayed frames. A sender restarts its counter only after changing its key, keeping each encryption key/counter pair unique. After a member leaves or is removed, deliver fresh keys only to remaining authorized devices. Previously received keys or decoded media remain part of the prior trust exposure. Authenticate the participant list and host actions so signaling manipulation cannot silently add a receiver.
 
-Display the encryption mode, recording consent and authorized recorder before joining. Verify key updates after participant removal and admission of a late-joining device against the reviewed protocol version.
+**Tradeoffs and recovery.** Display the encryption mode, recording consent and authorized recorder before joining. Verify key updates after participant removal and admission of a late-joining device against the reviewed protocol version. A failed key update pauses affected encrypted media until members recover a valid group state; it never silently downgrades the meeting to service-readable media.
