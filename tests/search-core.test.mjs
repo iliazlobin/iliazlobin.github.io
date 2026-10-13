@@ -40,6 +40,28 @@ test('titles and exact tags outrank body mentions while the body remains searcha
   assert.match(body.results[0].snippet, /careful leases/);
 });
 
+test('word-prefix completion never matches midword text, and quoted phrases require both boundaries', () => {
+  const documents = prepareDocuments([
+    { url: '/zoom/', title: 'Zoom', category: 'sd', html: '<h2 id="storage">Storage</h2><p>State survives service restarts.</p><h2 id="restrictive-networks">Restrictive networks</h2><p>Use an ICE restart to renew the media path.</p>' },
+    { url: '/chat/', title: 'Chat', category: 'sd', html: '<h2 id="prompts">Prompts</h2><p>Its service restarts cleanly.</p>' },
+    { url: '/redis/', title: 'Redis', category: 'tech', html: '<p>expires_at and Éclair_name are important fields.</p>' }
+  ]);
+  const phrase = searchDocuments(documents, { query: '"ICE restart"' });
+  assert.equal(phrase.total, 1);
+  assert.equal(phrase.results[0].url, '/zoom/#restrictive-networks');
+  assert.match(phrase.results[0].snippet, /ICE restart/);
+  assert.equal(searchDocuments(documents, { query: 'ice' }).total, 1);
+  assert.equal(searchDocuments(documents, { query: '"service restart"' }).total, 0);
+  assert.equal(searchDocuments(documents, { query: 'service restart' }).total, 2);
+  assert.equal(searchDocuments(documents, { query: 'red' }).results[0].title, 'Redis');
+  assert.equal(searchDocuments(documents, { query: 'edis' }).total, 0);
+  assert.equal(searchDocuments(documents, { query: 'expires_at' }).results[0].title, 'Redis');
+  assert.equal(searchDocuments(documents, { query: 'expires_' }).total, 1);
+  assert.equal(searchDocuments(documents, { query: 'éclair' }).total, 1);
+  assert.equal(searchDocuments(documents, { query: 'clair' }).total, 0);
+  assert.equal(getSearchFacets(documents, { query: '"ICE restart"' }).categories[0].count, 1);
+});
+
 test('multiple tags are AND, categories OR, and chips merge inline filters', () => {
   const documents = fixture();
   assert.equal(searchDocuments(documents, { query: 'type:infra', categories: ['tech'] }).total, 2);

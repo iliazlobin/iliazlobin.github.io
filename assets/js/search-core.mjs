@@ -159,8 +159,19 @@ export function parseSearchQuery(query) {
 
 function searchState(state = {}) {
   const parsed = parseSearchQuery(state.query);
-  const tokens = unique((normalize(parsed.text).match(/"[^"]+"|'[^']+'|[^\s]+/g) ?? [])
-    .map(value => value.replace(/^["']|["']$/g, '')).filter(Boolean));
+  const tokens = [], seen = new Set();
+  for (const raw of normalize(parsed.text).match(/"[^"]+"|'[^']+'|[^\s]+/g) ?? []) {
+    const phrase = /^(["']).*\1$/.test(raw);
+    const value = phrase ? raw.slice(1, -1) : raw;
+    const key = `${phrase ? 'phrase' : 'prefix'}:${value}`;
+    if (!value || seen.has(key)) continue;
+    seen.add(key);
+    const characters = Array.from(value), word = /[\p{L}\p{N}_]/u;
+    const leading = word.test(characters[0]) ? '(^|[^\\p{L}\\p{N}_])' : '()';
+    const trailing = phrase && word.test(characters.at(-1)) ? '(?![\\p{L}\\p{N}_])' : '';
+    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    tokens.push({ value, phrase, pattern: new RegExp(`${leading}${escaped}${trailing}`, 'u') });
+  }
   return {
     tokens,
     categories: unique([...(Array.isArray(state.categories) ? state.categories : []).map(categoryValue).filter(Boolean), ...parsed.categories]),
@@ -168,17 +179,23 @@ function searchState(state = {}) {
   };
 }
 
+/** Prefix completion is allowed at a word start, never inside another word. */
+function matchPosition(text, token) {
+  const match = token.pattern.exec(text);
+  return match ? match.index + match[1].length : -1;
+}
+
 function matches(document, state) {
   return (!state.categories.length || state.categories.includes(document.category))
     && state.tags.every(tag => document.normalizedTags.includes(tag))
-    && state.tokens.every(token => document.normalizedTitle.includes(token) || document.normalizedDescription.includes(token)
-      || document.normalizedTags.some(tag => tag.includes(token)) || document.normalizedText.includes(token));
+    && state.tokens.every(token => matchPosition(document.normalizedTitle, token) >= 0 || matchPosition(document.normalizedDescription, token) >= 0
+      || document.normalizedTags.some(tag => matchPosition(tag, token) >= 0) || matchPosition(document.normalizedText, token) >= 0);
 }
 
 function snippet(text, tokens, length = 200) {
   if (!text) return '';
   const normalized = normalize(text);
-  const positions = tokens.map(token => normalized.indexOf(token)).filter(index => index >= 0);
+  const positions = tokens.map(token => matchPosition(normalized, token)).filter(index => index >= 0);
   // Snippet boundaries are only approximate after Unicode normalization. The
   // source stays plain text, and a nearby sentence is more useful than markup.
   const hit = positions.length ? Math.min(...positions) : 0;
@@ -196,18 +213,19 @@ function snippet(text, tokens, length = 200) {
 function rank(document, state) {
   let score = 0;
   for (const token of state.tokens) {
-    if (document.normalizedTitle === token) score += 150;
-    else if (document.normalizedTitle.startsWith(token)) score += 65;
-    else if (document.normalizedTitle.includes(token)) score += 45;
-    if (document.normalizedTags.includes(token)) score += 35;
-    else if (document.normalizedTags.some(tag => tag.includes(token))) score += 15;
-    if (document.normalizedDescription.includes(token)) score += 12;
-    if (document.normalizedText.includes(token)) score += 2;
+    const titlePosition = matchPosition(document.normalizedTitle, token);
+    if (document.normalizedTitle === token.value) score += 150;
+    else if (titlePosition === 0) score += 65;
+    else if (titlePosition > 0) score += 45;
+    if (document.normalizedTags.includes(token.value)) score += 35;
+    else if (document.normalizedTags.some(tag => matchPosition(tag, token) >= 0)) score += 15;
+    if (matchPosition(document.normalizedDescription, token) >= 0) score += 12;
+    if (matchPosition(document.normalizedText, token) >= 0) score += 2;
   }
   let bestSection = null, bestSectionScore = 0;
   for (const section of document.sections) {
     const sectionScore = state.tokens.reduce((total, token) => total
-      + (section.normalizedTitle.includes(token) ? 14 : 0) + (section.normalized.includes(token) ? 4 : 0), 0);
+      + (matchPosition(section.normalizedTitle, token) >= 0 ? 14 : 0) + (matchPosition(section.normalized, token) >= 0 ? 4 : 0), 0);
     if (sectionScore > bestSectionScore) { bestSection = section; bestSectionScore = sectionScore; }
   }
   return { score: score + bestSectionScore, section: bestSection };
