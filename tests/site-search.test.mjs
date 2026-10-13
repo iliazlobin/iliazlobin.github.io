@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { isSearchShortcut, removeQueryFilter, setupSiteSearch } from '../assets/js/site-search.mjs';
+import { isSearchShortcut, removeQueryFilter, highlightSegments, setupSiteSearch } from '../assets/js/site-search.mjs';
 
 class Node {
   constructor(doc, tag = 'div') { this.doc = doc; this.tagName = tag; this.dataset = {}; this.children = []; this.events = new Map(); this.attributes = {}; this.hidden = false; this.value = ''; this.isConnected = true; this.tabIndex = 0; }
@@ -62,6 +62,15 @@ test('removing an inline chip respects aliases, casing and quoted tags', () => {
   assert.equal(removeQueryFilter('type:unknown cache', 'categories', 'tech'), 'type:unknown cache');
   assert.equal(removeQueryFilter('"before tag:caching after"', 'tags', 'caching'), '"before tag:caching after"');
   assert.equal(removeQueryFilter('foo-type:tech', 'categories', 'tech'), 'foo-type:tech');
+});
+
+test('highlighting shares word-prefix and quoted-phrase boundaries without inserting markup', () => {
+  const matched = (text, query) => highlightSegments(text, query).filter(part => part.match).map(part => part.text);
+  assert.deepEqual(matched('service restarts; ICE restart', '"ICE restart"'), ['ICE restart']);
+  assert.deepEqual(matched('Redis credits', 'red'), ['Red']);
+  assert.deepEqual(matched('Redis credits', 'edis'), []);
+  assert.deepEqual(matched('v[1] <safe>', 'v[1]'), ['v[1]']);
+  assert.equal(highlightSegments('<img src=x>', 'nothing').map(part => part.text).join(''), '<img src=x>');
 });
 
 test('initialization is idempotent, loads lazily and keeps requests local and query-free', async () => {

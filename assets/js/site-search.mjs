@@ -16,6 +16,26 @@ export function removeQueryFilter(query, kind, value) {
   }).join(' ');
 }
 
+export function highlightSegments(text, query) {
+  const tokens = (parseSearchQuery(query).text.match(/"[^"]+"|'[^']+'|[^\s]+/g) || []).slice(0, 12);
+  const patterns = tokens.map(raw => {
+    const phrase = /^(["']).*\1$/.test(raw), value = phrase ? raw.slice(1, -1) : raw;
+    if (!value) return '';
+    const characters = Array.from(value), word = /[\p{L}\p{N}_]/u;
+    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return `${word.test(characters[0]) ? '(?<![\\p{L}\\p{N}_])' : ''}${escaped}${phrase && word.test(characters.at(-1)) ? '(?![\\p{L}\\p{N}_])' : ''}`;
+  }).filter(Boolean);
+  const source = String(text);
+  if (!patterns.length) return [{ text: source, match: false }];
+  const segments = []; let offset = 0;
+  for (const match of source.matchAll(new RegExp(patterns.join('|'), 'giu'))) {
+    segments.push({ text: source.slice(offset, match.index), match: false }, { text: match[0], match: true });
+    offset = match.index + match[0].length;
+  }
+  segments.push({ text: source.slice(offset), match: false });
+  return segments;
+}
+
 export function setupSiteSearch(doc = document, view = doc.defaultView) {
   if (controllers.has(doc)) return controllers.get(doc);
   const dialog = doc.querySelector('[data-site-search]');
@@ -40,17 +60,7 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
     return node;
   }
   function highlight(node, text) {
-    const terms = (parseSearchQuery(state.query).text.match(/"[^"]+"|'[^']+'|[^\s]+/g) || [])
-      .map(value => value.replace(/^["']|["']$/g, '')).filter(Boolean).slice(0, 12);
-    if (!terms.length) { node.textContent = text; return; }
-    const pattern = new RegExp(terms.map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi');
-    let offset = 0;
-    for (const match of String(text).matchAll(pattern)) {
-      node.append(doc.createTextNode(String(text).slice(offset, match.index)));
-      node.append(element('mark', '', match[0]));
-      offset = match.index + match[0].length;
-    }
-    node.append(doc.createTextNode(String(text).slice(offset)));
+    for (const part of highlightSegments(text, state.query)) node.append(part.match ? element('mark', '', part.text) : doc.createTextNode(part.text));
   }
   function options(select, facets, placeholder, selected = '') {
     select.replaceChildren(element('option', '', placeholder));
