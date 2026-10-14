@@ -14,6 +14,4 @@ description: "Infrastructure and technology deep dives by Ilia Zlobin: cloud pla
   .portfolio-item h3 a:hover { color: var(--accent); }
 </style>
 
-<p class="portfolio-intro">Cloud platforms and the technologies behind them: databases, messaging, orchestration, deployment and observability. Diagrams and code throughout.</p>
-
 {% include design-list.html categories="infra,tech" label="Infrastructure" %}

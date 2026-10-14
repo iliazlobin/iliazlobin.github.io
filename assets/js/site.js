@@ -194,7 +194,31 @@
     }
     function alignCard(card) {
       var padding = parseFloat(getComputedStyle(feed).paddingTop) || 0;
-      feed.scrollTo({ top: card.offsetTop - padding, behavior: "instant" });
+      // offsetTop is relative to the offset parent, not necessarily this panel.
+      // Use viewport geometry so positioned ancestors and restored scroll do not
+      // push the selected card underneath the panel's top edge.
+      var top = feed.scrollTop + card.getBoundingClientRect().top -
+        feed.getBoundingClientRect().top - feed.clientTop - padding;
+      feed.scrollTo({ top: Math.max(0, top), behavior: "instant" });
+    }
+    function mobileCardTop(card) {
+      var headerHeight = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--site-header-height')) || 0;
+      return Math.max(0, window.scrollY + card.getBoundingClientRect().top - headerHeight - controls.offsetHeight - 16);
+    }
+    function resetFeed() {
+      anchoredCard = null;
+      feed.scrollTop = 0;
+      measure();
+      var first = visibleCards()[0];
+      if (first && desktop.matches) {
+        anchoredCard = first;
+        alignCard(first);
+      } else if (first && window.scrollY > mobileCardTop(first)) {
+        // Filtering while the mobile controls are sticky must not leave the
+        // first matching card above/behind the header and search controls.
+        window.scrollTo({ top: mobileCardTop(first), behavior: "auto" });
+      }
+      markActive(first);
     }
     function measure() {
       browser.style.setProperty("--design-controls-height", controls.offsetHeight + "px");
@@ -218,8 +242,7 @@
       if (desktop.matches) {
         alignCard(card);
       } else {
-        var headerHeight = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--site-header-height')) || 0;
-        window.scrollTo({ top: window.scrollY + card.getBoundingClientRect().top - headerHeight - controls.offsetHeight - 16,
+        window.scrollTo({ top: mobileCardTop(card),
           behavior: reduceMotion ? "auto" : "smooth" });
       }
       markActive(card);
@@ -242,12 +265,7 @@
     window.addEventListener("scroll", function () { if (!desktop.matches) queueActive(); }, { passive: true });
     window.addEventListener("hashchange", function () { navigate(findCard(decodeURIComponent(window.location.hash.slice(1)))); });
     window.addEventListener("resize", measure);
-    feed.addEventListener("design:filter", function () {
-      anchoredCard = null;
-      feed.scrollTop = 0;
-      measure();
-      markActive(visibleCards()[0]);
-    });
+    feed.addEventListener("design:filter", resetFeed);
     if ("ResizeObserver" in window) {
       var observer = new ResizeObserver(measure);
       observer.observe(feed); observer.observe(controls);
@@ -256,7 +274,7 @@
     measure();
     requestAnimationFrame(function () {
       var card = findCard(decodeURIComponent(window.location.hash.slice(1)));
-      if (card) navigate(card); else updateActive();
+      if (card) navigate(card); else resetFeed();
     });
   }
 
@@ -306,6 +324,10 @@
       tagCounts.forEach(function (count, name) { allTags.push({ name: name, count: count }); });
     }
     allTags.sort(function (a, b) { return a.name.localeCompare(b.name); });
+    var allCategories = [];
+    var categoryData = document.querySelector("[data-content-categories]");
+    if (categoryData) { try { allCategories = JSON.parse(categoryData.textContent); } catch (e) {} }
+    var hasCategories = allCategories.length > 0 || typeButtons.length > 0;
     var selected = [];
     var selectedType = "";
     var searchWords = [];
@@ -333,6 +355,11 @@
       for (var i = 0; i < allTags.length; i++) { if (allTags[i].name === name) return allTags[i].label || name; }
       return name;
     }
+    function categoryLabel(name) {
+      var category = allCategories.find(function (item) { return item.name === name; });
+      return category ? category.label : name;
+    }
+    function focusField() { field.focus({ preventScroll: true }); }
     function matches(card) {
       if (selectedType && cardTypes(card).indexOf(selectedType) < 0) return false;
       var text = normalize(card.getAttribute("data-search") || card.textContent);
@@ -386,7 +413,7 @@
       });
       var url = new URL(window.location);
       if (selected.length) url.searchParams.set("tag", selected.join(",")); else url.searchParams.delete("tag");
-      if (typeButtons.length) {
+      if (hasCategories) {
         if (selectedType) url.searchParams.set("type", selectedType); else url.searchParams.delete("type");
       }
       if (searchField) {
@@ -398,11 +425,21 @@
 
     function renderTokens() {
       tokensWrap.innerHTML = "";
+      if (selectedType) {
+        var category = document.createElement("span");
+        category.className = "ti-token ti-token-category";
+        var name = categoryLabel(selectedType);
+        category.innerHTML = "<span>Category: " + esc(name) + "</span><button type=\"button\" aria-label=\"Remove category " + esc(name) + "\">×</button>";
+        category.querySelector("button").addEventListener("click", function (e) {
+          e.stopPropagation(); selectType(""); focusField();
+        });
+        tokensWrap.appendChild(category);
+      }
       selected.forEach(function (name) {
         var tok = document.createElement("span");
         tok.className = "ti-token";
         var label = tagLabel(name);
-        tok.innerHTML = "<span>" + esc(label) + "</span><button type=\"button\" aria-label=\"Remove " + esc(label) + "\">×</button>";
+        tok.innerHTML = "<span>Tag: " + esc(label) + "</span><button type=\"button\" aria-label=\"Remove tag " + esc(label) + "\">×</button>";
         tok.querySelector("button").addEventListener("click", function (e) { e.stopPropagation(); removeTag(name); });
         tokensWrap.appendChild(tok);
       });
@@ -412,11 +449,11 @@
       selected.push(name);
       renderTokens(); field.value = "";
       if (unifiedSearch) searchWords = [];
-      closeSuggest(); applyFilter(); field.focus();
+      closeSuggest(); applyFilter(); focusField();
     }
     function removeTag(name) {
       selected = selected.filter(function (s) { return s !== name; });
-      renderTokens(); applyFilter(); field.focus();
+      renderTokens(); applyFilter(); focusField();
     }
 
     function highlight(name, q) {
@@ -428,6 +465,12 @@
     function openSuggest(showAll) {
       var q = (field.value || "").toLowerCase().trim();
       if (unifiedSearch && !q && !showAll) { closeSuggest(); return; }
+      var categoryOptions = allCategories.filter(function (category) {
+        return category.name !== selectedType &&
+          (normalize(category.name).indexOf(normalize(q)) > -1 || normalize(category.label).indexOf(normalize(q)) > -1);
+      }).map(function (category) {
+        return { name: category.name, label: category.label, kind: "Category" };
+      });
       var tagOptions = allTags.filter(function (t) {
         return selected.indexOf(t.name) < 0 &&
           (normalize(t.name).indexOf(normalize(q)) > -1 || normalize(tagLabel(t.name)).indexOf(normalize(q)) > -1);
@@ -450,7 +493,7 @@
             a.label.localeCompare(b.label);
         }).slice(0, 6);
       }
-      var avail = articleOptions.concat(tagOptions);
+      var avail = categoryOptions.concat(articleOptions, tagOptions);
       if (unifiedSearch) avail = avail.slice(0, 8);
       if (!avail.length) { closeSuggest(); return; }
       if (!suggest.id) suggest.id = "tag-suggestions";
@@ -459,7 +502,8 @@
         return "<button type=\"button\" id=\"" + suggest.id + "-" + i + "\" class=\"ti-opt" + (active ? " active" : "") +
                "\" role=\"option\" aria-label=\"" + esc(option.label + (unifiedSearch ? ", " + option.kind.toLowerCase() : "")) +
                "\" aria-selected=\"" + active + "\"" +
-               (option.url ? " data-url=\"" + esc(option.url) + "\"" : " data-name=\"" + esc(option.name) + "\"") + ">" +
+               (option.url ? " data-url=\"" + esc(option.url) + "\"" :
+                 (option.kind === "Category" ? " data-category=\"" + esc(option.name) + "\"" : " data-name=\"" + esc(option.name) + "\"")) + ">" +
                "<span>" + highlight(option.label, q) + "</span>" +
                " <span class=\"ti-c\">" + esc(unifiedSearch ? option.kind : option.count) + "</span></button>";
       }).join("");
@@ -480,6 +524,12 @@
         if (url.charAt(0) === "#" && isPanelBrowser) {
           feed.dispatchEvent(new CustomEvent("content:navigate", { detail: url.slice(1) }));
         } else window.location.assign(url);
+      } else if (option.hasAttribute("data-category")) {
+        // The query is the autocomplete draft, not a second copy of the chosen
+        // filter. Existing tag chips remain while the category is replaced.
+        field.value = "";
+        if (unifiedSearch) searchWords = [];
+        selectType(option.getAttribute("data-category")); focusField();
       } else addTag(option.getAttribute("data-name"));
     }
     function closeSuggest() {
@@ -512,19 +562,30 @@
       if (unifiedSearch) updateSearch();
       openSuggest(false);
     });
-    field.addEventListener("focus", function () { openSuggest(false); });
+    field.addEventListener("focus", function () { openSuggest(true); });
     field.addEventListener("keydown", function (e) {
+      if (e.isComposing) return;
       if (e.key === "Enter") {
         e.preventDefault();
         var a = suggest.querySelector(".ti-opt.active");
         var exact = allTags.find(function (t) {
           return normalize(t.name) === normalize(field.value) || normalize(tagLabel(t.name)) === normalize(field.value);
         });
+        var exactCategory = allCategories.find(function (category) {
+          return normalize(category.name) === normalize(field.value) || normalize(category.label) === normalize(field.value);
+        });
         if (a) chooseOption(a);
+        else if (unifiedSearch && exactCategory) {
+          field.value = ""; searchWords = [];
+          selectType(exactCategory.name);
+        }
         else if (unifiedSearch && exact) addTag(exact.name);
         else closeSuggest();
       }
-      else if (e.key === "Backspace" && field.value === "" && selected.length) { removeTag(selected[selected.length - 1]); }
+      else if (e.key === "Backspace" && field.value === "") {
+        if (selected.length) { e.preventDefault(); removeTag(selected[selected.length - 1]); }
+        else if (selectedType) { e.preventDefault(); selectType(""); }
+      }
       else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         if (suggest.hidden) openSuggest(true);
@@ -543,7 +604,7 @@
       field.value = "";
       if (searchField) searchField.value = "";
       closeSuggest(); renderTokens(); applyFilter();
-      (searchField || field).focus();
+      (searchField || field).focus({ preventScroll: true });
     }
     if (clearBtn) clearBtn.addEventListener("click", function (e) {
       e.stopPropagation();
@@ -560,7 +621,7 @@
     if (searchField && searchField !== field) searchField.addEventListener("input", updateSearch);
     function selectType(type) {
       selectedType = isType(type) ? type : "";
-      closeSuggest(); applyFilter();
+      closeSuggest(); renderTokens(); applyFilter();
     }
     typeButtons.forEach(function (button) {
       button.addEventListener("click", function () { selectType(button.getAttribute("data-type-filter")); });
@@ -592,7 +653,7 @@
       });
     }
     var initialType = params.get("type");
-    if (typeButtons.length && isType(initialType)) selectedType = initialType;
+    if (hasCategories && isType(initialType)) selectedType = initialType;
     if (searchField) {
       searchField.value = params.get("q") || "";
       var query = normalize(searchField.value);
