@@ -26,7 +26,7 @@
 }
 .document-shell .article-toc .article-toc-list > li > a { font-weight: 600; }
 .document-shell :is(.article-toc, .document-nav) a:hover { color: #174ea6; background: #e8f0fe; }
-.document-shell .article-toc a[aria-current="location"], .document-shell .document-nav a[aria-current="page"] {
+.document-shell .article-toc a[aria-current="location"], .document-shell .document-nav a[aria-current="page"], .document-shell .document-nav a[data-article-category][aria-current="true"] {
   color: #174ea6; background: #e8f0fe; border-left-color: #4285f4;
 }
 .document-shell :is(.article-toc, .document-nav) :is(a, summary):focus-visible {
@@ -45,7 +45,17 @@
 .document-nav a { display: block; border-left: 2px solid transparent; border-radius: 0 4px 4px 0; padding: .32rem .5rem; font-size: .78rem; line-height: 1.4; color: var(--ink-soft); overflow-wrap: anywhere; text-decoration: none; }
 .document-nav-group { margin-top: .85rem; }
 .document-nav-group-title { display: block; margin: .3rem .5rem; font-size: .78rem; font-weight: 700; color: var(--ink); }
-.document-nav-indexes { padding-bottom: .5rem; border-bottom: 1px solid #dadce0; }
+/* Keep the category map visible while the article list scrolls independently. */
+.document-shell .document-nav nav { display: flex; flex-direction: column; overflow: visible; }
+.document-nav-categories {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .15rem;
+  flex: none; padding-bottom: .45rem; border-bottom: 1px solid #dadce0;
+}
+.document-nav-categories a { padding: .24rem .35rem; font-size: .72rem; line-height: 1.3; }
+.document-nav-articles {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
 
 @media (min-width: 960px) {
   .document-shell { grid-template-columns: 210px minmax(0, 1fr); gap: 1rem 1.5rem; }

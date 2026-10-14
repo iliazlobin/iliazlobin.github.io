@@ -12,11 +12,12 @@ class Node {
   removeEventListener(name) { this.events.delete(name); }
   emit(name, event = {}) { return this.events.get(name)?.({ target: this, ...event }); }
   setAttribute(name, value) { this.attributes[name] = value; }
+  removeAttribute(name) { delete this.attributes[name]; }
   matches(selector) { return selector.split(',').some(part => { const data = part.trim().match(/^\[data-([^\]]+)\]$/)?.[1]; return data && Object.hasOwn(this.dataset, data.replace(/-([a-z])/g, (_, c) => c.toUpperCase())); }); }
   closest(selector) { return this.matches(selector) ? this : this.parent?.closest(selector) || null; }
   querySelectorAll(selector) { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
-  focus(options) { this.doc.activeElement = this; this.focusOptions = options; }
+  focus(options) { const previous = this.doc.activeElement; this.doc.activeElement = this; this.focusOptions = options; if (previous !== this) { previous?.emit('blur'); this.emit('focus'); } }
   click() { this.clicked = true; for (let parent = this.parent; parent; parent = parent.parent) parent.emit('click', { target: this }); }
   getBoundingClientRect() { return { left: 10, right: 100, top: 10, bottom: 100 }; }
   getClientRects() { return [{}]; }
@@ -30,7 +31,7 @@ function fixture({ fetcher, overflow = 'auto', otherDialog = false } = {}) {
   const dialog = new Node(doc, 'dialog'); dialog.dataset.siteSearch = ''; dialog.dataset.searchIndex = '/search-index.json?v=1';
   dialog.open = false; dialog.showModal = () => { dialog.open = true; }; dialog.close = () => { dialog.open = false; dialog.emit('close'); };
   const nodes = {};
-  for (const key of ['query', 'close', 'category', 'tag', 'reset', 'filters', 'status', 'retry', 'results']) {
+  for (const key of ['query', 'reset', 'close', 'filters', 'suggestions', 'status', 'retry', 'results']) {
     const node = new Node(doc, key === 'query' ? 'input' : 'div'); node.dataset[`search${key[0].toUpperCase() + key.slice(1)}`] = ''; nodes[key] = node; dialog.append(node);
   }
   const trigger = new Node(doc, 'button'); trigger.dataset.openSiteSearch = ''; trigger.hidden = true;
@@ -62,6 +63,8 @@ test('removing an inline chip respects aliases, casing and quoted tags', () => {
   assert.equal(removeQueryFilter('type:unknown cache', 'categories', 'tech'), 'type:unknown cache');
   assert.equal(removeQueryFilter('"before tag:caching after"', 'tags', 'caching'), '"before tag:caching after"');
   assert.equal(removeQueryFilter('foo-type:tech', 'categories', 'tech'), 'foo-type:tech');
+  assert.equal(removeQueryFilter('in:Infrastructure tag:caching', 'sections', 'infra'), 'tag:caching');
+  assert.equal(removeQueryFilter('category:"System design" red', 'categories', 'sd'), 'red');
 });
 
 test('highlighting shares word-prefix and quoted-phrase boundaries without inserting markup', () => {
@@ -105,6 +108,7 @@ test('one Escape closes search without clearing text and leaves IME composition 
 
 test('keyboard results remain native links and arrows move focus predictably', async () => {
   const dom = fixture(); setupSiteSearch(dom.doc, dom.view).open(); await settle();
+  dom.nodes.query.value = '"cache"'; dom.nodes.query.emit('input');
   const links = dom.nodes.results.querySelectorAll('[data-search-result]'); let prevented = 0;
   const key = (target, value) => dom.dialog.emit('keydown', { target, key: value, preventDefault: () => prevented++ });
   key(dom.nodes.query, 'ArrowDown'); assert.equal(dom.doc.activeElement, links[0]);
@@ -133,12 +137,61 @@ test('Enter from the query follows the best result through its ordinary link', a
 
 test('manual and inline filters are visible/removable, and Reset is scoped to search', async () => {
   const dom = fixture(); setupSiteSearch(dom.doc, dom.view).open(); await settle();
-  dom.nodes.category.value = 'tech'; dom.nodes.category.emit('change');
-  dom.nodes.tag.value = 'Caching'; dom.nodes.tag.emit('change');
+  dom.nodes.query.value = 'type:tech'; dom.nodes.query.emit('input');
+  dom.nodes.query.value = 'type:tech tag:caching'; dom.nodes.query.emit('input');
   assert.equal(dom.nodes.filters.children.length, 2); assert.equal(dom.nodes.results.children.length, 1);
-  dom.dialog.emit('click', { target: dom.nodes.filters.children[0] }); assert.equal(dom.nodes.filters.children.length, 1);
-  dom.nodes.query.value = 'type:sd'; dom.nodes.query.emit('input'); assert.equal(dom.nodes.filters.children.length, 2);
+  dom.nodes.query.value = 'type:tech tag:caching type:sd'; dom.nodes.query.emit('input'); assert.equal(dom.nodes.filters.children.length, 3);
+  dom.dialog.emit('click', { target: dom.nodes.filters.children[0] }); assert.equal(dom.nodes.filters.children.length, 2);
   dom.nodes.reset.emit('click'); assert.equal(dom.nodes.query.value, ''); assert.equal(dom.nodes.filters.hidden, true); assert.equal(dom.nodes.results.children.length, 2);
+});
+
+test('autocomplete offers grouped options, keeps input focus and commits removable filter chips', async () => {
+  const dom = fixture(); setupSiteSearch(dom.doc, dom.view).open(); await settle();
+  assert.equal(dom.nodes.query.attributes['aria-expanded'], 'true');
+  assert.ok(dom.nodes.suggestions.children.every(group => group.attributes.role === 'group'));
+  dom.nodes.query.value = 'tag:ca'; dom.nodes.query.emit('input');
+  const option = dom.nodes.suggestions.querySelector('[data-search-suggestion]');
+  assert.equal(option.attributes.role, 'option'); assert.equal(option.tabIndex, -1);
+  assert.equal(option.attributes['aria-label'], 'Tag Caching, 2 results');
+  let prevented = false;
+  dom.dialog.emit('pointerdown', { target: option, preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, true);
+  dom.dialog.emit('click', { target: option });
+  assert.equal(dom.nodes.query.value, ''); assert.equal(dom.doc.activeElement, dom.nodes.query);
+  assert.equal(dom.nodes.filters.children[0].attributes['aria-label'], 'Remove tag Caching');
+  assert.equal(dom.nodes.results.children.length, 2);
+  dom.dialog.emit('click', { target: dom.nodes.filters.children[0] });
+  assert.equal(dom.nodes.filters.hidden, true);
+});
+
+test('suggestions use active-descendant keyboard selection and leave native result navigation intact', async () => {
+  const dom = fixture(); setupSiteSearch(dom.doc, dom.view).open(); await settle();
+  dom.nodes.query.value = 'in:des'; dom.nodes.query.emit('input');
+  let prevented = 0;
+  const key = (value, extra = {}) => dom.dialog.emit('keydown', { target: dom.nodes.query, key: value, preventDefault: () => prevented++, ...extra });
+  key('ArrowDown', { isComposing: true }); assert.equal(dom.nodes.query.attributes['aria-activedescendant'], undefined);
+  key('ArrowDown'); assert.equal(dom.nodes.query.attributes['aria-activedescendant'], 'site-search-suggestion-0');
+  assert.equal(dom.nodes.suggestions.querySelector('[data-search-suggestion]').attributes['aria-selected'], 'true');
+  key('Enter'); assert.equal(dom.nodes.query.value, ''); assert.equal(dom.dialog.open, true);
+  assert.equal(dom.nodes.filters.children[0].attributes['aria-label'], 'Remove section Design'); assert.equal(dom.nodes.results.children.length, 1);
+  assert.equal(prevented, 2);
+  dom.nodes.query.value = 'type:sy'; dom.nodes.query.emit('input');
+  key('ArrowUp'); key('Enter'); assert.equal(dom.nodes.filters.children.length, 2);
+  assert.equal(dom.nodes.filters.children[1].attributes['aria-label'], 'Remove category System design');
+  dom.nodes.close.focus(); assert.equal(dom.nodes.query.attributes['aria-expanded'], 'false');
+  dom.nodes.query.focus(); assert.equal(dom.nodes.query.attributes['aria-activedescendant'], undefined);
+});
+
+test('completed inline operators and manual autocomplete chips merge without duplicate filters', async () => {
+  const dom = fixture(); setupSiteSearch(dom.doc, dom.view).open(); await settle();
+  dom.nodes.query.value = 'tag:ca'; dom.nodes.query.emit('input');
+  dom.dialog.emit('click', { target: dom.nodes.suggestions.querySelector('[data-search-suggestion]') });
+  dom.nodes.query.value = 'tag:caching in:infra'; dom.nodes.query.emit('input');
+  assert.equal(dom.nodes.filters.children.length, 2);
+  assert.equal(dom.nodes.results.children.length, 1);
+  const tag = dom.nodes.filters.children.find(item => item.dataset.filterKind === 'tags');
+  dom.dialog.emit('click', { target: tag });
+  assert.equal(dom.nodes.query.value, 'in:infra'); assert.equal(dom.nodes.filters.children.length, 1);
 });
 
 test('failed loading can retry and another open dialog keeps its shortcut/focus', async () => {
@@ -164,6 +217,8 @@ test('all layouts use the named native modal, compact header control and respons
   assert.match(read('_layouts/default.html'), /include site-search\.html/);
   assert.match(read('_includes/header.html'), /data-open-site-search aria-haspopup="dialog"/);
   assert.match(read('_includes/site-search.html'), /<dialog[^>]+aria-labelledby="site-search-title"/);
+  assert.doesNotMatch(read('_includes/site-search.html'), /<select|data-search-category|data-search-tag/);
+  assert.match(read('_includes/site-search.html'), /role="combobox" aria-autocomplete="list"/);
   assert.match(read('assets/css/site-search.css'), /@media \(max-width: 600px\)/);
   assert.match(read('assets/css/site-search.css'), /\.site-search-input-row:focus-within \{ box-shadow: inset 0 -2px var\(--accent\)/);
   assert.doesNotMatch(read('assets/js/site-search.mjs'), /innerHTML|localStorage|history\.replaceState|location\.assign/);

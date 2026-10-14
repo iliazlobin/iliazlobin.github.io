@@ -18,3 +18,14 @@ class DocumentMarkupTests(unittest.TestCase):
         page = Page()
         page.feed('<table><tr><td><code>a\\|b</code></td></tr></table>')
         self.assertEqual(page.table_rows, [["a\\|b"]])
+
+    def test_search_selects_category_ownership_and_project_anchors(self):
+        page = Page()
+        page.feed('<dialog data-site-search><select></select></dialog>'
+                  '<select></select><a data-article-category="tech" '
+                  'href="/infrastructure/?type=tech" aria-current="true">Tech</a>'
+                  '<article id="hermes" class="portfolio-item"></article>')
+        self.assertEqual(page.search_selects, 1)
+        self.assertEqual(page.article_categories, [("tech", "/infrastructure/?type=tech")])
+        self.assertEqual(page.current_categories, ["tech"])
+        self.assertEqual(page.project_ids, {"hermes"})

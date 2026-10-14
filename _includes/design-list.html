@@ -21,23 +21,27 @@
 {%- assign uniq_tags = all_tags | uniq | sort %}
 
 <section class="design-browser" data-design-browser aria-label="{{ include.label }} browser">
-<div class="blog-controls design-controls" data-blog-filter data-unified-search>
-  {%- if categories.size > 1 %}
-  <div class="type-filters" role="group" aria-label="Filter {{ include.label }} by type">
-    <button class="type-filter" type="button" data-type-filter="" aria-pressed="true">All</button>
-    {%- for category in categories %}
-    <button class="type-filter" type="button" data-type-filter="{{ category | escape }}" aria-pressed="false">{{ site.data.design_types[category] | default: category | escape }}</button>
-    {%- endfor %}
-  </div>
-  {%- endif %}
+<div class="blog-controls design-controls" data-blog-filter data-unified-search data-count-noun="article">
   <div class="tag-input unified-search" data-tag-input>
     <svg class="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path></svg>
     <span class="ti-tokens"></span>
-    <input type="search" class="ti-field" data-content-search placeholder="Search titles, descriptions or tags…" aria-label="Search {{ include.label }}" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="{{ include.label | slugify }}-search-suggestions" autocomplete="off" spellcheck="false">
+    <input type="search" class="ti-field" data-content-search placeholder="Search articles, categories or tags…" aria-label="Search {{ include.label }}" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="{{ include.label | slugify }}-search-suggestions" autocomplete="off" spellcheck="false">
     <button class="ti-clear" data-tag-clear type="button" hidden>Clear all</button>
     <div id="{{ include.label | slugify }}-search-suggestions" class="ti-suggest" hidden role="listbox" aria-label="Search suggestions"></div>
   </div>
+  <span class="result-count" data-result-count role="status" aria-live="polite"></span>
 </div>
+<script type="application/json" data-content-categories>[{%- for category in categories %}
+{%- case category %}
+{%- when 'system-design' %}{%- assign category_label = 'System design' %}
+{%- when 'system-design-ml' %}{%- assign category_label = 'Machine learning' %}
+{%- when 'low-level-design' %}{%- assign category_label = 'Low-level design' %}
+{%- when 'ai' %}{%- assign category_label = 'Agentic AI' %}
+{%- when 'infra' %}{%- assign category_label = 'Infrastructure' %}
+{%- when 'tech' %}{%- assign category_label = 'Technologies' %}
+{%- else %}{%- assign category_label = category %}
+{%- endcase %}
+{"name": {{ category | jsonify }}, "label": {{ category_label | jsonify }}, "alias": {{ site.data.design_types[category] | default: category | jsonify }}}{%- unless forloop.last %},{% endunless %}{%- endfor %}]</script>
 <script type="application/json" data-blog-tags>[{%- for t in uniq_tags %}{"name": {{ t | jsonify | replace: '</', '<\/' }}{% if t == 'System Design' %}, "label": "SD"{% endif %}}{%- unless forloop.last %},{% endunless %}{%- endfor %}]</script>
 
 <div class="portfolio-layout design-layout">

@@ -47,25 +47,18 @@ projects:
 
 <link rel="stylesheet" href="{{ '/assets/css/portfolio.css' | relative_url }}?v={{ site.time | date: '%s' }}">
 
-<p class="portfolio-intro">Selected work across AI/agentic systems, cloud platform engineering, and applied ML — with source code, architecture diagrams, and walkthrough videos.</p>
-
 <section class="design-browser portfolio-browser" data-content-browser aria-label="Portfolio browser">
 <div class="blog-controls design-controls" data-blog-filter data-unified-search data-count-noun="project" data-item-label="Project">
-  <div class="type-filters" role="group" aria-label="Filter Portfolio by category">
-    <button class="type-filter" type="button" data-type-filter="" aria-pressed="true">All</button>
-    {%- for type in site.data.project_types %}
-    <button class="type-filter" type="button" data-type-filter="{{ type[0] }}" aria-pressed="false">{{ type[1] }}</button>
-    {%- endfor %}
-  </div>
   <div class="tag-input unified-search" data-tag-input>
     <svg class="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path></svg>
     <span class="ti-tokens"></span>
-    <input type="search" class="ti-field" data-content-search placeholder="Search titles, descriptions or tags…" aria-label="Search Portfolio" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="portfolio-search-suggestions" autocomplete="off" spellcheck="false">
+    <input type="search" class="ti-field" data-content-search placeholder="Search projects, categories or tags…" aria-label="Search Portfolio" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="portfolio-search-suggestions" autocomplete="off" spellcheck="false">
     <button class="ti-clear" data-tag-clear type="button" hidden>Clear all</button>
     <div id="portfolio-search-suggestions" class="ti-suggest" hidden role="listbox" aria-label="Search suggestions"></div>
   </div>
   <span class="result-count" data-result-count role="status" aria-live="polite"></span>
 </div>
+<script type="application/json" data-content-categories>[{%- for type in site.data.project_types %}{"name": {{ type[0] | jsonify }}, "label": {{ type[1] | jsonify }}}{%- unless forloop.last %},{% endunless %}{%- endfor %}]</script>
 
 <div class="portfolio-layout design-layout">
 

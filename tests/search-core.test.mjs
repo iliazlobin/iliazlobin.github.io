@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { prepareDocuments, parseSearchQuery, searchDocuments, getSearchFacets } from '../assets/js/search-core.mjs';
+import { prepareDocuments, parseSearchQuery, searchDocuments, getSearchFacets, getSearchSuggestions } from '../assets/js/search-core.mjs';
 
 const fixture = () => prepareDocuments([
   { url: '/designs/redis/', title: 'TECH: Redis', category: 'tech', tags: ['Caching', 'Data Pipelines'],
@@ -17,15 +17,85 @@ const fixture = () => prepareDocuments([
 
 test('inline type/tag filters are case-insensitive, deduplicated and quoted', () => {
   assert.deepEqual(parseSearchQuery('redis TYPE:TECH type:tech tag:"Data Pipelines" tag:\'Caching\' tag:Caching'), {
-    text: 'redis', categories: ['tech'], tags: ['data pipelines', 'caching']
+    text: 'redis', categories: ['tech'], tags: ['data pipelines', 'caching'], sections: []
   });
   assert.deepEqual(parseSearchQuery('type:sd type:ml type:ld type:infra type:ai type:page type:blog'), {
-    text: '', categories: ['sd', 'ml', 'ld', 'infra', 'ai', 'page', 'blog'], tags: []
+    text: '', categories: ['sd', 'ml', 'ld', 'infra', 'ai', 'page', 'blog'], tags: [], sections: []
   });
   assert.deepEqual(parseSearchQuery('type:unsupported tag: "exact phrase"'), {
-    text: 'type:unsupported tag: "exact phrase"', categories: [], tags: []
+    text: 'type:unsupported tag: "exact phrase"', categories: [], tags: [], sections: []
   });
-  assert.deepEqual(parseSearchQuery('tag:\'Data Pipelines\' redis'), { text: 'redis', categories: [], tags: ['data pipelines'] });
+  assert.deepEqual(parseSearchQuery('tag:\'Data Pipelines\' redis'), { text: 'redis', categories: [], tags: ['data pipelines'], sections: [] });
+});
+
+test('prototype property names are unknown category/section values, not inherited aliases', () => {
+  for (const value of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+    for (const kind of ['type', 'category', 'in', 'section']) {
+      const query = `${kind}:${value}`;
+      assert.deepEqual(parseSearchQuery(query), { text: query, categories: [], tags: [], sections: [] });
+    }
+    assert.equal(prepareDocuments([{ url: '/unsafe-category/', title: 'Unknown', category: value }]).length, 0);
+  }
+  const documents = fixture();
+  assert.equal(searchDocuments(documents, { query: 'type:__proto__' }).total, 0);
+  assert.equal(searchDocuments(documents, { query: 'in:constructor' }).total, 0);
+});
+
+test('sections are independent of a single category and all tags remain conjunctive', () => {
+  const documents = prepareDocuments([
+    { url: '/portfolio/', title: 'Portfolio', section: 'portfolio', category: 'page', html: '' },
+    { url: '/portfolio/#worker', title: 'AI Worker', section: 'portfolio', category: 'ai-ml', tags: ['Python', 'AI Agents'], html: '<article id="worker"><h3>AI Worker</h3><p>Concurrent assistants</p></article>' },
+    { url: '/portfolio/#cloud', title: 'Cloud Platform', section: 'portfolio', category: 'infra', tags: ['Terraform'], html: '<article id="cloud"><h3>Cloud Platform</h3><p>Network setup</p></article>' },
+    { url: '/designs/cloud/', title: 'Infrastructure Cloud', section: 'infra', category: 'infra', tags: ['Python'], html: '<h2 id="network">Network</h2><p>Cloud network</p>' }
+  ]);
+  assert.deepEqual(parseSearchQuery('IN:portfolio section:Infrastructure category:"AI/ML" tag:Python'), {
+    text: '', sections: ['portfolio', 'infra'], categories: ['ai-ml'], tags: ['python']
+  });
+  assert.equal(parseSearchQuery('in:unknown section: tag:').text, 'in:unknown section: tag:');
+  assert.deepEqual(searchDocuments(documents, { query: 'in:portfolio tag:Python' }).results.map(item => item.url), ['/portfolio/#worker']);
+  assert.equal(searchDocuments(documents, { query: 'in:portfolio type:infra' }).results[0].url, '/portfolio/#cloud');
+  assert.equal(searchDocuments(documents, { sections: ['infra', 'portfolio'], categories: ['infra', 'ai-ml'] }).total, 3);
+  assert.equal(searchDocuments(documents, { query: 'in:portfolio tag:Python tag:Terraform' }).total, 0);
+  const result = searchDocuments(documents, { query: 'in:portfolio concurrent' }).results[0];
+  assert.equal(result.url, '/portfolio/#worker'); assert.equal(result.sectionLabel, 'Portfolio'); assert.equal(result.categoryLabel, 'AI/ML');
+  assert.equal(getSearchFacets(documents, { query: 'type:infra' }).sections.find(item => item.value === 'portfolio').count, 1);
+});
+
+test('autocomplete completes only the trailing token, with grouped accurate filter counts', () => {
+  const documents = fixture();
+  assert.deepEqual(getSearchSuggestions(documents, { query: 'port' }), [
+    { kind: 'sections', value: 'portfolio', label: 'Portfolio', count: 1, query: '' }
+  ]);
+  const caching = getSearchSuggestions(documents, { query: 'snapshots tag:Ca' }).find(item => item.value === 'caching');
+  assert.deepEqual(caching, { kind: 'tags', value: 'caching', label: 'Caching', count: 1, query: 'snapshots' });
+  assert.ok(getSearchSuggestions(documents, { query: 'type:sys' }).every(item => item.kind === 'categories'));
+  assert.equal(getSearchSuggestions(documents, { query: 'category:tech' })[0], undefined, 'already active inline category is not suggested twice');
+  assert.equal(getSearchSuggestions(documents, { query: 'tag:"Data P"' })[0].value, 'data pipelines');
+  assert.equal(getSearchSuggestions(documents, { query: 'tag:ca', tags: ['caching'] }).some(item => item.value === 'caching'), false);
+  assert.equal(getSearchSuggestions(documents, { query: 'no-matching-facet' }).length, 0);
+  assert.equal(getSearchSuggestions(documents, { query: '"before tag:caching after"' }).length, 0);
+  assert.ok(getSearchSuggestions(documents, {}).length <= 9);
+});
+
+test('autocomplete completes open single/double quoted operators without consuming preceding query text', () => {
+  const documents = prepareDocuments([
+    { url: '/designs/fraud/', title: 'ML: Fraud', category: 'ml', section: 'design', tags: ['Machine Learning', 'Data Pipelines'], html: '<p>Payment scoring models.</p>' },
+    { url: '/designs/redis/', title: 'TECH: Redis', category: 'tech', section: 'infra', tags: ['Data Pipelines'], html: '<p>Payment events.</p>' }
+  ]);
+  for (const quote of ['"', "'"]) {
+    const tag = getSearchSuggestions(documents, { query: `payment in:design tag:${quote}Data P` });
+    assert.deepEqual(tag, [{ kind: 'tags', value: 'data pipelines', label: 'Data Pipelines', count: 1, query: 'payment in:design' }]);
+    assert.equal(getSearchSuggestions(documents, { query: `category:${quote}Machine L` })[0].value, 'ml');
+    assert.equal(getSearchSuggestions(documents, { query: `category:${quote}Machine L${quote}` })[0].value, 'ml');
+    assert.equal(getSearchSuggestions(documents, { query: `in:${quote}Des` })[0].value, 'design');
+    assert.equal(getSearchSuggestions(documents, { query: `payment tag:${quote}Data ` })[0].count, 2, 'open quote keeps trailing spaces in the typed token');
+    assert.equal(getSearchSuggestions(documents, { query: `${quote}prose tag:Data P` }).length, 0, 'operator-like text inside a quoted phrase is ordinary text');
+    assert.equal(getSearchSuggestions(documents, { query: `${quote}prose tag:Data P${quote}` }).length, 0);
+  }
+  assert.equal(getSearchSuggestions(documents, { query: 'payment unknown:"Data P' }).length, 0);
+  assert.equal(getSearchSuggestions(documents, { query: 'no-match tag:"Data P' }).length, 0, 'counts retain preceding free-text constraints');
+  assert.equal(getSearchSuggestions(documents, { query: 'payment tag:"Data P', tags: ['data pipelines'] }).length, 0, 'selected tags do not reappear');
+  assert.equal(parseSearchQuery('payment tag:"Data P').tags.length, 0, 'completion does not change committed filter parsing');
 });
 
 test('titles and exact tags outrank body mentions while the body remains searchable', () => {
@@ -157,6 +227,8 @@ test('static index covers public collections and configured header pages without
   assert.match(source, /for entry in site.posts/);
   assert.match(source, /entry.search_disabled != true and entry.redirect_to == nil/);
   assert.match(source, /entry.content \| markdownify \| jsonify/);
-  assert.match(source, /search_tags \| concat: project\[1\].tags/);
+  assert.match(source, /search_project.tags \| jsonify/);
+  assert.match(source, /search_project_url \| relative_url \| jsonify/);
+  assert.match(source, /"section":"portfolio"/);
   assert.doesNotMatch(source, /https?:\/\//);
 });

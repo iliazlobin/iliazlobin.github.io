@@ -2,15 +2,16 @@
 export function setupDocumentNav(root, view = window) {
   if (!root) return null;
   const panel = root.querySelector('details'), summary = panel?.querySelector('summary');
-  const nav = root.querySelector('nav'), current = nav?.querySelector('[aria-current="page"]');
-  if (!panel || !summary || !nav) return null;
+  const articles = root.querySelector('[data-document-nav-articles]');
+  const current = articles?.querySelector('[data-article-link][aria-current="page"]');
+  if (!panel || !summary || !articles) return null;
   const desktop = view.matchMedia('(min-width: 960px)');
   let destroyed = false;
   function revealCurrent() {
     if (destroyed || !desktop.matches || !current) return;
-    const link = current.getBoundingClientRect(), bounds = nav.getBoundingClientRect();
-    if (link.top < bounds.top) nav.scrollTop -= bounds.top - link.top;
-    else if (link.bottom > bounds.bottom) nav.scrollTop += link.bottom - bounds.bottom;
+    const link = current.getBoundingClientRect(), bounds = articles.getBoundingClientRect();
+    if (link.top < bounds.top) articles.scrollTop -= bounds.top - link.top;
+    else if (link.bottom > bounds.bottom) articles.scrollTop += link.bottom - bounds.bottom;
   }
   function sync() {
     panel.open = desktop.matches;

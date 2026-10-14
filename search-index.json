@@ -16,25 +16,42 @@ search_disabled: true
   {%- if entry and entry.search_disabled != true and entry.redirect_to == nil and entry.published != false -%}
     {%- unless search_first -%},{%- endunless -%}{%- assign search_first = false -%}
     {%- assign search_tags = entry.tags | default: search_empty_tags -%}
+    {%- assign search_section = entry.title | downcase -%}
+    {%- if header_path == 'designs.md' -%}{%- assign search_section = 'design' -%}{%- endif -%}
+    {%- if header_path == 'infrastructure.md' -%}{%- assign search_section = 'infra' -%}{%- endif -%}
+    {"url":{{ entry.url | relative_url | jsonify }},"title":{{ entry.title | jsonify }},"description":{{ entry.description | default: '' | jsonify }},"category":"page","categoryLabel":"Pages","section":{{ search_section | jsonify }},"tags":{{ search_tags | uniq | jsonify }},"html":{% if entry.projects %}""{% else %}{{ entry.content | markdownify | jsonify }}{% endif %}}
     {%- if entry.projects -%}
+      {%- assign search_articles = entry.content | split: '<article id="' -%}
       {%- for project in entry.projects -%}
-        {%- assign search_tags = search_tags | concat: project[1].tags -%}
+        {%- assign search_project_id = project[0] -%}
+        {%- assign search_project = project[1] -%}
+        {%- for search_article in search_articles offset:1 -%}
+          {%- assign search_article_id = search_article | split: '"' | first -%}
+          {%- if search_article_id == search_project_id -%}
+            {%- assign search_project_html = search_article | split: '</article>' | first | prepend: '<article id="' | append: '</article>' -%}
+            {%- assign search_project_title = search_project_html | split: '<h3>' | last | split: '</h3>' | first | strip_html -%}
+            {%- assign search_project_description = search_project_html | split: '<p>' | last | split: '</p>' | first | strip_html -%}
+            {%- assign search_project_url = entry.url | append: '#' | append: search_project_id -%}
+            ,{"url":{{ search_project_url | relative_url | jsonify }},"title":{{ search_project_title | jsonify }},"description":{{ search_project_description | jsonify }},"category":{{ search_project.type | jsonify }},"categoryLabel":{{ site.data.project_types[search_project.type] | jsonify }},"section":"portfolio","tags":{{ search_project.tags | jsonify }},"html":{{ search_project_html | markdownify | jsonify }}}
+          {%- endif -%}
+        {%- endfor -%}
       {%- endfor -%}
     {%- endif -%}
-    {"url":{{ entry.url | relative_url | jsonify }},"title":{{ entry.title | jsonify }},"description":{{ entry.description | default: '' | jsonify }},"category":"page","categoryLabel":"Pages","tags":{{ search_tags | uniq | jsonify }},"html":{{ entry.content | markdownify | jsonify }}}
   {%- endif -%}
 {%- endfor -%}
 {%- for entry in site.designs -%}
   {%- if entry.search_disabled != true and entry.redirect_to == nil and entry.published != false -%}
     {%- unless search_first -%},{%- endunless -%}{%- assign search_first = false -%}
     {%- assign search_group = site.data.document_navigation | where: 'category', entry.category | first -%}
-    {"url":{{ entry.url | relative_url | jsonify }},"title":{{ entry.title | jsonify }},"description":{{ entry.description | default: '' | jsonify }},"category":{{ entry.category | jsonify }},"categoryLabel":{{ search_group.label | default: entry.category | jsonify }},"tags":{{ entry.tags | default: search_empty_tags | jsonify }},"html":{{ entry.content | markdownify | jsonify }}}
+    {%- assign search_section = 'design' -%}
+    {%- if entry.category == 'infra' or entry.category == 'tech' -%}{%- assign search_section = 'infra' -%}{%- endif -%}
+    {"url":{{ entry.url | relative_url | jsonify }},"title":{{ entry.title | jsonify }},"description":{{ entry.description | default: '' | jsonify }},"category":{{ entry.category | jsonify }},"categoryLabel":{{ search_group.label | default: entry.category | jsonify }},"section":{{ search_section | jsonify }},"tags":{{ entry.tags | default: search_empty_tags | jsonify }},"html":{{ entry.content | markdownify | jsonify }}}
   {%- endif -%}
 {%- endfor -%}
 {%- for entry in site.posts -%}
   {%- if entry.search_disabled != true and entry.redirect_to == nil and entry.published != false -%}
     {%- unless search_first -%},{%- endunless -%}{%- assign search_first = false -%}
-    {"url":{{ entry.url | relative_url | jsonify }},"title":{{ entry.title | jsonify }},"description":{{ entry.description | default: '' | jsonify }},"category":"blog","categoryLabel":"Blog","tags":{{ entry.tags | default: search_empty_tags | jsonify }},"html":{{ entry.content | markdownify | jsonify }}}
+    {"url":{{ entry.url | relative_url | jsonify }},"title":{{ entry.title | jsonify }},"description":{{ entry.description | default: '' | jsonify }},"category":"blog","categoryLabel":"Blog","section":"blog","tags":{{ entry.tags | default: search_empty_tags | jsonify }},"html":{{ entry.content | markdownify | jsonify }}}
   {%- endif -%}
 {%- endfor -%}
 ]
