@@ -178,8 +178,32 @@ test('suggestions use active-descendant keyboard selection and leave native resu
   dom.nodes.query.value = 'type:sy'; dom.nodes.query.emit('input');
   key('ArrowUp'); key('Enter'); assert.equal(dom.nodes.filters.children.length, 2);
   assert.equal(dom.nodes.filters.children[1].attributes['aria-label'], 'Remove category System design');
-  dom.nodes.close.focus(); assert.equal(dom.nodes.query.attributes['aria-expanded'], 'false');
+  dom.nodes.close.focus(); assert.equal(dom.nodes.query.attributes['aria-expanded'], 'true');
   dom.nodes.query.focus(); assert.equal(dom.nodes.query.attributes['aria-activedescendant'], undefined);
+});
+
+test('moving focus inside the modal keeps suggestions stable until a control click completes', async () => {
+  const dom = fixture(); setupSiteSearch(dom.doc, dom.view).open(); await settle();
+  dom.nodes.query.value = 'tag:caching type:sy'; dom.nodes.query.emit('input');
+  assert.equal(dom.nodes.suggestions.hidden, false);
+  const chip = dom.nodes.filters.children[0], chipGroups = [...dom.nodes.suggestions.children];
+  chip.focus();
+  assert.equal(dom.nodes.suggestions.hidden, false, 'chip pointerdown focus must leave its click target in place');
+  assert.deepEqual(dom.nodes.suggestions.children, chipGroups);
+  chip.click(); assert.equal(dom.dialog.open, true); assert.equal(dom.nodes.query.value, 'type:sy');
+  const groups = [...dom.nodes.suggestions.children];
+  dom.nodes.reset.focus();
+  assert.equal(dom.nodes.suggestions.hidden, false, 'Reset pointerdown focus must not shrink/recenter the dialog');
+  assert.deepEqual(dom.nodes.suggestions.children, groups);
+  dom.nodes.reset.emit('click');
+  assert.equal(dom.dialog.open, true); assert.equal(dom.nodes.query.value, '');
+  const first = dom.nodes.results.querySelector('[data-search-result]');
+  const resultGroups = [...dom.nodes.suggestions.children];
+  first.focus();
+  assert.equal(dom.nodes.suggestions.hidden, false, 'result pointerdown focus must leave its click target in place');
+  assert.deepEqual(dom.nodes.suggestions.children, resultGroups);
+  first.click(); assert.equal(dom.dialog.open, false);
+  assert.equal(dom.nodes.suggestions.hidden, true, 'closing the modal clears the suggestion disclosure state');
 });
 
 test('completed inline operators and manual autocomplete chips merge without duplicate filters', async () => {

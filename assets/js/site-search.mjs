@@ -269,7 +269,8 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
   view.addEventListener('keydown', onShortcut);
   query.addEventListener('input', onInput);
   query.addEventListener('focus', onQueryFocus);
-  query.addEventListener('blur', hideSuggestions);
+  // Keep suggestion geometry stable when pointerdown moves focus to a control:
+  // shrinking/recentering here would move its target before the click arrives.
   reset.addEventListener('click', onReset);
   retry.addEventListener('click', load);
   dialog.addEventListener('click', onClick);
@@ -284,7 +285,6 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
     view.removeEventListener('keydown', onShortcut);
     query.removeEventListener('input', onInput);
     query.removeEventListener('focus', onQueryFocus);
-    query.removeEventListener('blur', hideSuggestions);
     reset.removeEventListener('click', onReset);
     retry.removeEventListener('click', load);
     dialog.removeEventListener('click', onClick);
