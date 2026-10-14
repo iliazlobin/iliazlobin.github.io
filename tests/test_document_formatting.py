@@ -4,6 +4,23 @@ from check_built_site import Page
 
 
 class DocumentMarkupTests(unittest.TestCase):
+    def test_article_section_label_is_not_a_second_heading_or_current_page(self):
+        page = Page()
+        page.feed('<header><span class="site-page-title">Infrastructure</span>'
+                  '<a class="page-link" href="/infrastructure/" aria-current="location">Infra</a>'
+                  '</header><article><a class="post-category" data-type-filter="infra">INFRA</a>'
+                  '<h1>News Feed</h1></article>')
+        self.assertEqual(page.section_titles, [("span", "Infrastructure")])
+        self.assertEqual(page.current_navigation, [("/infrastructure/", "location")])
+        self.assertEqual(page.post_categories, ["infra"])
+        self.assertEqual(page.headings, ["News Feed"])
+        listing = Page()
+        listing.feed('<h1 class="site-page-title">Design</h1>'
+                     '<a class="page-link" href="/designs/" aria-current="page">Design</a>')
+        self.assertEqual(listing.section_titles, [("h1", "Design")])
+        self.assertEqual(listing.current_navigation, [("/designs/", "page")])
+        self.assertEqual(listing.headings, ["Design"])
+
     def test_header_order_distinguishes_category_metadata_from_topic_tags(self):
         page = Page()
         page.feed('<header class="post-header"><div class="meta"><time>July 17</time>'

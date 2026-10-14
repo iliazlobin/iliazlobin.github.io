@@ -268,6 +268,10 @@ uses the native Articles disclosure. Topic tags sit below the title; the owning
 category badge stays with the date and reading time above it. Category filters
 remain available through the header search and listing pages.
 
+Article mastheads retain their parent section: Infrastructure for Infra/Tech,
+Design for the other design categories. The section label is plain text, not a
+second H1 or a filter link; the primary navigation marks the parent section.
+
 Technical article headings are unnumbered; preserve existing section IDs when
 renaming them. Deep dives label alternatives **Options** and explain the chosen
 approach in ordinary prose, without a Choice and rationale label. Keep the

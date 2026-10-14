@@ -35,6 +35,10 @@ class Page(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.resources = []
         self.navigation = []
+        self.current_navigation = []
+        self.section_titles = []
+        self._section_text = None
+        self._section_tag = None
         self.headings = []
         self.articles = []
         self.table_rows = []
@@ -49,6 +53,7 @@ class Page(HTMLParser):
         self.category_shortcuts = 0
         self.article_groups = []
         self.post_headers = []
+        self.post_categories = []
         self._post_header = None
         self.project_ids = set()
         self._in_search = False
@@ -61,6 +66,11 @@ class Page(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         classes = attrs.get("class", "").split()
+        if "site-page-title" in classes:
+            self._section_tag = tag
+            self._section_text = []
+        if "post-category" in classes:
+            self.post_categories.append(attrs.get("data-type-filter"))
         if tag == "header" and "post-header" in classes:
             self._post_header = []
             self.post_headers.append(self._post_header)
@@ -99,6 +109,8 @@ class Page(HTMLParser):
                 self.resources.append(attrs[attribute])
         if tag == "a" and "page-link" in attrs.get("class", "").split():
             self._navigation_text = []
+            if attrs.get("aria-current"):
+                self.current_navigation.append((attrs.get("href"), attrs["aria-current"]))
         if tag == "h1":
             self._heading_text = []
         if tag == "article":
@@ -111,6 +123,8 @@ class Page(HTMLParser):
             self._cell_text = []
 
     def handle_data(self, data):
+        if self._section_text is not None:
+            self._section_text.append(data)
         if self._navigation_text is not None:
             self._navigation_text.append(data)
         if self._heading_text is not None:
@@ -119,6 +133,10 @@ class Page(HTMLParser):
             self._cell_text.append(data)
 
     def handle_endtag(self, tag):
+        if self._section_text is not None and tag == self._section_tag:
+            self.section_titles.append((tag, "".join(self._section_text).strip()))
+            self._section_text = None
+            self._section_tag = None
         if tag == "header":
             self._post_header = None
         if tag == "dialog":
@@ -161,6 +179,15 @@ def check_document_layout(root, errors):
             continue
         document_count += 1
         route = "/" + source.parent.relative_to(root).as_posix() + "/"
+        if len(page.post_categories) != 1 or page.post_categories[0] not in ARTICLE_CATEGORIES:
+            errors.append(f"{source}: expected exactly one known owning article category")
+        infrastructure = page.post_categories == ["infra"] or page.post_categories == ["tech"]
+        section_title = "Infrastructure" if infrastructure else "Design"
+        section_url = "/infrastructure/" if infrastructure else "/designs/"
+        if page.section_titles != [("span", section_title)] or len(page.headings) != 1:
+            errors.append(f"{source}: article masthead must name its section without adding another H1")
+        if page.current_navigation != [(section_url, "location")]:
+            errors.append(f"{source}: article must mark its owning primary navigation section")
         if page.search_dialogs != 1 or page.search_triggers != 1 or page.search_selects:
             errors.append(f"{route}: missing or duplicate universal search UI")
         if page.document_shells != 1 or page.article_navigations != 1:

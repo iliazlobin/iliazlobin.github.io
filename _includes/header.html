@@ -3,13 +3,31 @@
   <div class="wrapper">
     {%- assign default_paths = site.pages | map: "path" -%}
     {%- assign page_paths = site.header_pages | default: default_paths -%}
+    {%- assign section_title = nil -%}
+    {%- assign section_url = nil -%}
+    {%- if site.header_pages contains page.path -%}
+      {%- assign section_title = page.title -%}
+      {%- assign section_url = page.url -%}
+    {%- elsif page.collection == 'designs' -%}
+      {%- if page.category == 'infra' or page.category == 'tech' -%}
+        {%- assign section_title = 'Infrastructure' -%}
+        {%- assign section_url = '/infrastructure/' -%}
+      {%- else -%}
+        {%- assign section_title = 'Design' -%}
+        {%- assign section_url = '/designs/' -%}
+      {%- endif -%}
+    {%- endif -%}
     <div class="site-identity">
       <div class="site-heading">
         <span class="site-title">{{ site.title | escape }}</span>
-        {%- if site.header_pages contains page.path -%}
+        {%- if section_title -%}
         <div class="site-page-heading">
           <span class="site-heading-separator" aria-hidden="true">/</span>
-          <h1 class="site-page-title">{{ page.title | escape }}</h1>
+          {%- if page.collection == 'designs' -%}
+          <span class="site-page-title">{{ section_title | escape }}</span>
+          {%- else -%}
+          <h1 class="site-page-title">{{ section_title | escape }}</h1>
+          {%- endif -%}
         </div>
         {%- endif -%}
       </div>
@@ -35,7 +53,7 @@
             {%- assign my_page = site.pages | where: "path", path | first -%}
             {%- if my_page.title -%}
             {%- comment -%}Nav shows a short `nav_title` when set (e.g. "Design", "ML"); the page keeps its full `title` for the H1 + SEO.{%- endcomment -%}
-            <a class="page-link" href="{{ my_page.url | relative_url }}"{% if my_page.url == page.url %} aria-current="page"{% endif %}>{{ my_page.nav_title | default: my_page.title | escape }}</a>
+            <a class="page-link" href="{{ my_page.url | relative_url }}"{% if my_page.url == page.url %} aria-current="page"{% elsif page.collection == 'designs' and my_page.url == section_url %} aria-current="location"{% endif %}>{{ my_page.nav_title | default: my_page.title | escape }}</a>
             {%- endif -%}
           {%- endfor -%}
         </div>
