@@ -1,5 +1,5 @@
-// One native-scroll library: categories at the top, then articles. Keep the
-// reader's scroll position; do not jump past categories to the current article.
+// One native-scroll library of grouped articles. Keep the reader's scroll
+// position instead of jumping automatically to the current article.
 export function setupDocumentNav(root, view = window) {
   if (!root) return null;
   const panel = root.querySelector('details'), summary = panel?.querySelector('summary');

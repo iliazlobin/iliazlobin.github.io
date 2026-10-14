@@ -31,23 +31,26 @@ class DocumentMarkupTests(unittest.TestCase):
         page.feed('<table><tr><td><code>a\\|b</code></td></tr></table>')
         self.assertEqual(page.table_rows, [["a\\|b"]])
 
-    def test_search_selects_category_ownership_and_project_anchors(self):
+    def test_search_selects_and_project_anchors(self):
         page = Page()
         page.feed('<dialog data-site-search><select></select></dialog>'
-                  '<select></select><a data-article-category="tech" '
-                  'href="/infrastructure/?type=tech" aria-current="true">Tech</a>'
+                  '<select></select>'
                   '<article id="hermes" class="portfolio-item"></article>')
         self.assertEqual(page.search_selects, 1)
-        self.assertEqual(page.article_categories, [("tech", "/infrastructure/?type=tech")])
-        self.assertEqual(page.current_categories, ["tech"])
         self.assertEqual(page.project_ids, {"hermes"})
 
-    def test_category_list_preserves_semantics_and_accessible_name(self):
+    def test_build_check_detects_removed_category_shortcuts(self):
         page = Page()
         page.feed('<ul data-document-nav-categories aria-label="Article categories">'
                   '<li><a data-article-category="tech" href="/infrastructure/?type=tech">'
                   'Technologies</a></li></ul>')
-        self.assertEqual(page.category_lists, [("ul", "Article categories")])
-        invalid = Page()
-        invalid.feed('<div data-document-nav-categories role="group"></div>')
-        self.assertEqual(invalid.category_lists, [("div", None)])
+        self.assertEqual(page.category_shortcuts, 2)
+        article_only = Page()
+        article_only.feed('<nav aria-label="Article navigation"><div data-document-nav-articles>'
+                          '<span id="document-nav-tech">Technologies</span>'
+                          '<ul aria-labelledby="document-nav-tech"><li><a data-article-link href="/designs/tech-memcached/">'
+                          'Memcached</a></li></ul></div></nav>')
+        self.assertEqual(article_only.category_shortcuts, 0)
+        self.assertEqual(article_only.library_links, ["/designs/tech-memcached/"])
+        self.assertEqual(article_only.article_groups, ["document-nav-tech"])
+        self.assertIn("document-nav-tech", article_only.ids)

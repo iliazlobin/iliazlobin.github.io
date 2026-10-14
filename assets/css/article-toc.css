@@ -26,7 +26,7 @@
 }
 .document-shell .article-toc .article-toc-list > li > a { font-weight: 600; }
 .document-shell :is(.article-toc, .document-nav) a:hover { color: #174ea6; background: #e8f0fe; }
-.document-shell .article-toc a[aria-current="location"], .document-shell .document-nav a[aria-current="page"], .document-shell .document-nav a[data-article-category][aria-current="true"] {
+.document-shell .article-toc a[aria-current="location"], .document-shell .document-nav a[aria-current="page"] {
   color: #174ea6; background: #e8f0fe; border-left-color: #4285f4;
 }
 .document-shell :is(.article-toc, .document-nav) :is(a, summary):focus-visible {
@@ -44,19 +44,15 @@
 .document-nav li { margin: 0; }
 .document-nav a { display: block; border-left: 2px solid transparent; border-radius: 0 4px 4px 0; padding: .32rem .5rem; font-size: .78rem; line-height: 1.4; color: var(--ink-soft); overflow-wrap: anywhere; text-decoration: none; }
 .document-nav-group { margin-top: .85rem; }
+.document-nav-group:first-child { margin-top: 0; }
 .document-nav-group-title { display: block; margin: .3rem .5rem; font-size: .78rem; font-weight: 700; color: var(--ink); }
-/* Categories start the library's single scrollable rail, followed by articles. */
+/* Grouped article links occupy one scrollable library rail. */
 .document-shell .document-nav nav {
   --document-nav-height: min(55vh, 28rem);
   --document-nav-height: min(55dvh, 28rem);
   display: block; overflow-y: auto; overscroll-behavior: contain;
   max-height: var(--document-nav-height);
 }
-.document-nav .document-nav-categories {
-  display: block;
-  padding-bottom: .45rem; border-bottom: 1px solid #dadce0;
-}
-.document-nav-categories a { padding: .24rem .5rem; }
 
 @media (min-width: 960px) {
   .document-shell { grid-template-columns: 210px minmax(0, 1fr); gap: 1rem 1.5rem; }

@@ -27,14 +27,7 @@ REDIRECTS = {
     "/machine-learning/": "/designs/",
     "/tech/": "/infrastructure/",
 }
-ARTICLE_CATEGORIES = {
-    "system-design": "/designs/?type=system-design",
-    "system-design-ml": "/designs/?type=system-design-ml",
-    "low-level-design": "/designs/?type=low-level-design",
-    "ai": "/designs/?type=ai",
-    "infra": "/infrastructure/?type=infra",
-    "tech": "/infrastructure/?type=tech",
-}
+ARTICLE_CATEGORIES = ("system-design", "system-design-ml", "low-level-design", "ai", "infra", "tech")
 
 
 class Page(HTMLParser):
@@ -53,11 +46,10 @@ class Page(HTMLParser):
         self.search_dialogs = 0
         self.search_triggers = 0
         self.search_selects = 0
-        self.article_categories = []
-        self.category_lists = []
+        self.category_shortcuts = 0
+        self.article_groups = []
         self.post_headers = []
         self._post_header = None
-        self.current_categories = []
         self.project_ids = set()
         self._in_search = False
         self.ids = set()
@@ -96,12 +88,10 @@ class Page(HTMLParser):
             self.library_links.append(attrs.get("href"))
             if attrs.get("aria-current") == "page":
                 self.current_articles.append(attrs.get("href"))
-        if tag == "a" and "data-article-category" in attrs:
-            self.article_categories.append((attrs["data-article-category"], attrs.get("href")))
-            if attrs.get("aria-current") == "true":
-                self.current_categories.append(attrs["data-article-category"])
-        if "data-document-nav-categories" in attrs:
-            self.category_lists.append((tag, attrs.get("aria-label")))
+        if "data-article-category" in attrs or "data-document-nav-categories" in attrs:
+            self.category_shortcuts += 1
+        if tag == "ul" and attrs.get("aria-labelledby", "").startswith("document-nav-"):
+            self.article_groups.append(attrs["aria-labelledby"])
         if tag == "a" and "document-skip" in attrs.get("class", "").split():
             self.article_skip_links.append(attrs.get("href"))
         for attribute in ("href", "src", "poster"):
@@ -179,10 +169,11 @@ def check_document_layout(root, errors):
             errors.append(f"{source}: article navigation must preserve every distinct article URL")
         if page.current_articles != [route]:
             errors.append(f"{source}: expected exactly one current article, got {page.current_articles!r}")
-        if page.article_categories != list(ARTICLE_CATEGORIES.items()) or len(page.current_categories) != 1:
-            errors.append(f"{source}: expected six distinct category links and one current category")
-        if page.category_lists != [("ul", "Article categories")]:
-            errors.append(f"{source}: categories must be one named semantic list")
+        if page.category_shortcuts:
+            errors.append(f"{source}: sidebar must contain article groups without category shortcuts")
+        expected_groups = [f"document-nav-{category}" for category in ARTICLE_CATEGORIES]
+        if page.article_groups != expected_groups or any(group not in page.ids for group in expected_groups):
+            errors.append(f"{source}: sidebar must preserve all six accessible article groups")
         if page.post_headers not in ([["metadata", "category", "title", "tags"]],
                                     [["metadata", "category", "title"]]):
             errors.append(f"{source}: header must put category metadata above title and topic tags below it")

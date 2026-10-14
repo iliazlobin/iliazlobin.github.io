@@ -13,7 +13,7 @@ function fixture({ desktop = true, navPresent = true, summaryPresent = true, scr
   const media = { matches: desktop,
     addEventListener: (name, callback) => mediaEvents.set(name, callback), removeEventListener: name => mediaEvents.delete(name) };
   const root = { querySelector(selector) {
-    assert.ok(['details', 'nav'].includes(selector), 'no category/article auto-reveal');
+    assert.ok(['details', 'nav'].includes(selector), 'no article auto-reveal');
     return selector === 'details' ? panel : navPresent ? nav : null;
   } };
   const view = { matchMedia: () => media,
@@ -21,7 +21,7 @@ function fixture({ desktop = true, navPresent = true, summaryPresent = true, scr
   return { root, view, media, panel, summary, nav, events, mediaEvents, clicks };
 }
 
-test('desktop library stays open at the top without skipping categories', () => {
+test('desktop library stays open without jumping past the first article group', () => {
   const dom = fixture(); setupDocumentNav(dom.root, dom.view);
   assert.equal(dom.panel.open, true);
   assert.equal(dom.summary.tabIndex, -1);
@@ -103,19 +103,19 @@ test('only documents gain three native-scroll regions, complete canonical links 
   assert.doesNotMatch(css, /position: fixed|overflow: hidden[^}]*\.document-shell/);
 });
 
-test('category links have one distinct owner per article and point to their scoped canonical listing', () => {
+test('article groups retain distinct category ownership without category shortcuts', () => {
   const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
   const groups = read('_data/document_navigation.yml').split(/(?=^- category: )/m).filter(Boolean).map(record => ({
     category: record.match(/^- category: (.+)$/m)?.[1],
-    index: record.match(/^  index: (.+)$/m)?.[1],
+    label: record.match(/^  label: (.+)$/m)?.[1],
   }));
   assert.deepEqual(groups, [
-    { category: 'system-design', index: '/designs/' },
-    { category: 'system-design-ml', index: '/designs/' },
-    { category: 'low-level-design', index: '/designs/' },
-    { category: 'ai', index: '/designs/' },
-    { category: 'infra', index: '/infrastructure/' },
-    { category: 'tech', index: '/infrastructure/' },
+    { category: 'system-design', label: 'System design' },
+    { category: 'system-design-ml', label: 'Machine learning' },
+    { category: 'low-level-design', label: 'Low-level design' },
+    { category: 'ai', label: 'Agentic AI' },
+    { category: 'infra', label: 'Infrastructure' },
+    { category: 'tech', label: 'Technologies' },
   ]);
   assert.equal(new Set(groups.map(group => group.category)).size, groups.length);
   const categories = new Set(groups.map(group => group.category));
@@ -126,21 +126,19 @@ test('category links have one distinct owner per article and point to their scop
     assert.ok(categories.has(owners[0][1].trim()), `${name} must have a known category`);
   }
   const include = read('_includes/document-nav.html');
-  assert.match(include, /<ul class="document-nav-categories" data-document-nav-categories aria-label="Article categories">/);
-  assert.match(include, /group.index \| relative_url }}\?type={{ group.category \| url_encode/);
-  assert.match(include, /group.category == page.category %} aria-current="true"/);
-  assert.doesNotMatch(include, /All designs|Infrastructure &amp; tech|document-nav-indexes|page.tags/);
+  assert.match(include, /id="document-nav-{{ group.category }}" class="document-nav-group-title">{{ group.label \| escape }}/);
+  assert.match(include, /<ul aria-labelledby="document-nav-{{ group.category }}">/);
+  assert.doesNotMatch(include, /data-article-category|document-nav-categories|group.index|All designs|Infrastructure &amp; tech|document-nav-indexes|page.tags/);
+  assert.doesNotMatch(read('_data/document_navigation.yml'), /^  index:/m);
 });
 
-test('categories start one bounded sidebar scroll region shared with all articles', () => {
+test('sidebar starts directly with article groups in one bounded scroll region', () => {
   const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
   const include = read('_includes/document-nav.html'), css = read('assets/css/article-toc.css');
-  assert.match(include, /class="document-nav-categories"[\s\S]*?<\/ul>\s*<div class="document-nav-articles" data-document-nav-articles>/);
-  assert.match(include, /<li><a href="{{ group.index/);
+  assert.match(include, /<nav aria-label="Article navigation">\s*<div class="document-nav-articles" data-document-nav-articles>/);
   assert.match(css, /\.document-shell \.document-nav nav\s*\{[^}]*display: block; overflow-y: auto;/);
-  assert.match(css, /\.document-nav \.document-nav-categories\s*\{[^}]*display: block;/);
-  assert.doesNotMatch(css, /\.document-nav-categories\s*\{[^}]*display: grid|grid-template-columns: repeat\(2/);
-  assert.doesNotMatch(css, /\.document-nav-(?:categories|articles)\s*\{[^}]*(?:overflow|max-height|position:\s*(?:sticky|fixed))/);
+  assert.doesNotMatch(css, /document-nav-categories|data-article-category|\.document-nav-articles\s*\{[^}]*(?:overflow|max-height|position:\s*(?:sticky|fixed))/);
+  assert.match(css, /\.document-nav-group:first-child \{ margin-top: 0; \}/);
   assert.match(css, /max-height: min\(55vh, 28rem\)/);
   assert.match(css, /--document-nav-height: max\(0px, calc\(100dvh - var\(--site-header-height\) - 3rem\)\)/);
   assert.match(css, /\.document-shell \.document-nav summary \{ display: none; \}/);
