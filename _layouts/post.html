@@ -24,7 +24,6 @@ layout: default
       </time>
       <span class="reading-time">{{ minutes }} min read</span>
       {%- assign type_label = site.data.design_types[page.category] %}
-      {%- if type_label or page.tags.size > 0 %}
       {%- comment %} A design's tags route to ITS OWN category page (with ?tag= filter), not the blog. {%- endcomment %}
       {%- case page.category %}
         {%- when 'tech' %}{%- assign tag_base = '/infrastructure/' %}
@@ -36,13 +35,16 @@ layout: default
         {%- when 'system-design' %}{%- assign tag_base = '/designs/' %}
         {%- else %}{%- assign tag_base = '/blog/' %}
       {%- endcase %}
-      <span class="post-tags">
-        {%- if type_label %}<a class="tag" href="{{ tag_base | relative_url }}?type={{ page.category | url_encode }}">{{ type_label | escape }}</a>{% endif -%}
-        {%- for tag in page.tags %}<a class="tag" href="{{ tag_base | relative_url }}?tag={{ tag | url_encode }}">{% if tag == 'System Design' %}SD{% else %}{{ tag | escape }}{% endif %}</a>{% endfor -%}
-      </span>
+      {%- if type_label %}
+      <a class="type-label post-category" data-type-filter="{{ page.category | escape }}" href="{{ tag_base | relative_url }}?type={{ page.category | url_encode }}">{{ type_label | escape }}</a>
       {%- endif %}
     </div>
     <h1 class="post-title" itemprop="name headline">{{ page.title | escape }}</h1>
+    {%- if page.tags.size > 0 %}
+    <div class="post-tags">
+      {%- for tag in page.tags %}<a class="tag" href="{{ tag_base | relative_url }}?tag={{ tag | url_encode }}">{% if tag == 'System Design' %}SD{% else %}{{ tag | escape }}{% endif %}</a>{% endfor -%}
+    </div>
+    {%- endif %}
     {%- if page.mvp_repo %}
     <div class="post-actions">
       <a class="mvp-btn" href="{{ page.mvp_repo }}" target="_blank" rel="noopener" aria-label="Open the MVP repository for this design on GitHub">
