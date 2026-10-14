@@ -1,13 +1,17 @@
 /** Static, local-only search. Indexed HTML is parsed as text, never executed. */
 const CATEGORY_LABELS = {
   page: 'Pages', sd: 'System design', ml: 'Machine learning', ld: 'Low-level design',
-  ai: 'Agentic AI', infra: 'Infrastructure', tech: 'Technologies', blog: 'Blog'
+  ai: 'Agentic AI', infra: 'Infrastructure', tech: 'Technologies', blog: 'Blog',
+  'full-stack': 'Full Stack', 'ai-ml': 'AI/ML', research: 'Research'
 };
 const CATEGORY_ALIASES = {
   'system-design': 'sd', 'system-design-ml': 'ml', 'low-level-design': 'ld',
   technology: 'tech', technologies: 'tech', pages: 'page', posts: 'blog',
-  ...Object.fromEntries(Object.keys(CATEGORY_LABELS).map(value => [value, value]))
+  ...Object.fromEntries(Object.keys(CATEGORY_LABELS).map(value => [value, value])),
+  ...Object.fromEntries(Object.entries(CATEGORY_LABELS).map(([value, label]) => [label.toLowerCase(), value]))
 };
+const SECTION_LABELS = { portfolio: 'Portfolio', design: 'Design', infra: 'Infra', resume: 'Resume', advisory: 'Advisory', about: 'About', blog: 'Blog' };
+const SECTION_ALIASES = { designs: 'design', infrastructure: 'infra', home: 'about', ...Object.fromEntries(Object.keys(SECTION_LABELS).map(value => [value, value])) };
 const ENTITY_NAMES = {
   amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
   ndash: '–', mdash: '—', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”',
@@ -18,6 +22,11 @@ const collapse = value => String(value ?? '').replace(/\s+/g, ' ').trim();
 const normalize = value => collapse(value).normalize('NFKC').toLocaleLowerCase('en');
 const unique = values => [...new Set(values)];
 const categoryValue = value => CATEGORY_ALIASES[normalize(value)] ?? null;
+const sectionValue = value => SECTION_ALIASES[normalize(value)] ?? null;
+const inferredSection = entry => sectionValue(entry.section) || (entry.url?.startsWith('/portfolio/') ? 'portfolio' :
+  ['sd', 'ml', 'ld', 'ai'].includes(categoryValue(entry.category)) ? 'design' :
+    ['infra', 'tech'].includes(categoryValue(entry.category)) ? 'infra' :
+      entry.url?.startsWith('/resume/') ? 'resume' : entry.url?.startsWith('/advisory/') ? 'advisory' : entry.url === '/' ? 'about' : 'blog');
 
 function decodeEntities(value) {
   return String(value).replace(/&(#x[\da-f]+|#\d+|[a-z][\da-z]+);/gi, (entity, name) => {
@@ -133,6 +142,7 @@ export function prepareDocuments(rawEntries) {
     const extracted = extractHtml(entry.html ?? entry.content ?? '');
     prepared.push({
       url, title, description, category, categoryLabel: CATEGORY_LABELS[category], tags,
+      section: inferredSection(entry), sectionLabel: SECTION_LABELS[inferredSection(entry)],
       text: extracted.text, sections: extracted.sections.map(section => ({ ...section, normalized: normalize(section.text), normalizedTitle: normalize(section.title) })),
       normalizedTitle: normalize(title), normalizedDescription: normalize(description),
       normalizedTags: unique(tags.map(normalize)), normalizedText: normalize(extracted.text), order: prepared.length
@@ -143,18 +153,21 @@ export function prepareDocuments(rawEntries) {
 
 /** Inline filters supplement UI chips; unknown/malformed filters remain text. */
 export function parseSearchQuery(query) {
-  const categories = [], tags = [], text = [];
+  const categories = [], tags = [], sections = [], text = [];
   for (const token of String(query ?? '').slice(0, MAX_QUERY).match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []) {
-    const match = token.match(/^(type|tag):(.+)$/i);
+    const match = token.match(/^(type|category|tag|in|section):(.+)$/i);
     if (!match) { text.push(token); continue; }
     const raw = match[2], value = /^(["']).*\1$/.test(raw) ? raw.slice(1, -1) : raw;
-    if (match[1].toLowerCase() === 'type') {
+    if (['type', 'category'].includes(match[1].toLowerCase())) {
       const category = categoryValue(value);
       if (category) { categories.push(category); continue; }
+    } else if (['in', 'section'].includes(match[1].toLowerCase())) {
+      const section = sectionValue(value);
+      if (section) { sections.push(section); continue; }
     } else if (value && !/["']/.test(value)) { tags.push(normalize(value)); continue; }
     text.push(token);
   }
-  return { text: collapse(text.join(' ')), categories: unique(categories), tags: unique(tags) };
+  return { text: collapse(text.join(' ')), categories: unique(categories), tags: unique(tags), sections: unique(sections) };
 }
 
 function searchState(state = {}) {
@@ -175,7 +188,8 @@ function searchState(state = {}) {
   return {
     tokens,
     categories: unique([...(Array.isArray(state.categories) ? state.categories : []).map(categoryValue).filter(Boolean), ...parsed.categories]),
-    tags: unique([...(Array.isArray(state.tags) ? state.tags : []).map(normalize).filter(Boolean), ...parsed.tags])
+    tags: unique([...(Array.isArray(state.tags) ? state.tags : []).map(normalize).filter(Boolean), ...parsed.tags]),
+    sections: unique([...(Array.isArray(state.sections) ? state.sections : []).map(sectionValue).filter(Boolean), ...parsed.sections])
   };
 }
 
@@ -187,6 +201,7 @@ function matchPosition(text, token) {
 
 function matches(document, state) {
   return (!state.categories.length || state.categories.includes(document.category))
+    && (!state.sections.length || state.sections.includes(document.section))
     && state.tags.every(tag => document.normalizedTags.includes(tag))
     && state.tokens.every(token => matchPosition(document.normalizedTitle, token) >= 0 || matchPosition(document.normalizedDescription, token) >= 0
       || document.normalizedTags.some(tag => matchPosition(tag, token) >= 0) || matchPosition(document.normalizedText, token) >= 0);
@@ -245,7 +260,7 @@ export function searchDocuments(prepared, state = {}, limit = 20) {
     results: matched.slice(0, cap).map(({ document, score, section }) => ({
       url: section?.id ? `${document.url.split('#')[0]}#${encodeURIComponent(section.id)}` : document.url,
       title: document.title, description: document.description, category: document.category,
-      categoryLabel: document.categoryLabel, tags: [...document.tags],
+      categoryLabel: document.categoryLabel, tags: [...document.tags], section: document.section, sectionLabel: document.sectionLabel,
       snippet: snippet(section?.text || document.description || document.text, selected.tokens),
       sectionTitle: section?.title || '', score
     }))
@@ -255,9 +270,10 @@ export function searchDocuments(prepared, state = {}, limit = 20) {
 /** Facet counts respect text and the other dimension, not their own category. */
 export function getSearchFacets(prepared, state = {}) {
   const selected = searchState(state), documents = Array.isArray(prepared) ? prepared : [];
-  const categoryCounts = new Map(), tagLabels = new Map(), tagCounts = new Map();
+  const categoryCounts = new Map(), tagLabels = new Map(), tagCounts = new Map(), sectionCounts = new Map();
   for (const document of documents) {
     if (matches(document, { ...selected, categories: [] })) categoryCounts.set(document.category, (categoryCounts.get(document.category) || 0) + 1);
+    if (matches(document, { ...selected, sections: [] })) sectionCounts.set(document.section, (sectionCounts.get(document.section) || 0) + 1);
     for (const label of document.tags) if (!tagLabels.has(normalize(label))) tagLabels.set(normalize(label), label);
     // The selected tag's own checkbox stays removable even when another filter
     // yields zero matches. Additional tags count the AND intersection.
@@ -265,6 +281,8 @@ export function getSearchFacets(prepared, state = {}) {
     for (const value of document.normalizedTags) tagCounts.set(value, (tagCounts.get(value) || 0) + 1);
   }
   return {
+    sections: Object.entries(SECTION_LABELS).filter(([value]) => sectionCounts.has(value) || selected.sections.includes(value))
+      .map(([value, label]) => ({ value, label, count: sectionCounts.get(value) || 0 })),
     categories: Object.entries(CATEGORY_LABELS)
       .filter(([value]) => categoryCounts.has(value) || selected.categories.includes(value))
       .map(([value, label]) => ({ value, label, count: categoryCounts.get(value) || 0 })),
@@ -273,4 +291,25 @@ export function getSearchFacets(prepared, state = {}) {
       .sort((a, b) => Number(selected.tags.includes(b.value)) - Number(selected.tags.includes(a.value))
         || b.count - a.count || a.label.localeCompare(b.label, 'en'))
   };
+}
+
+/** A trailing query token can be completed into a filter; previous free text is retained. */
+export function getSearchSuggestions(prepared, state = {}, limit = 9) {
+  const query = String(state.query || '').slice(0, MAX_QUERY), tokens = query.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+  const cap = Number.isFinite(Number(limit)) ? Math.max(0, Math.min(24, Math.floor(Number(limit)))) : 9;
+  const tail = /\s$/.test(query) ? '' : tokens.at(-1) || '';
+  const match = tail.match(/^(type|category|tag|in|section):(.*)$/i);
+  const kind = match ? ['type', 'category'].includes(match[1].toLowerCase()) ? 'categories' : match[1].toLowerCase() === 'tag' ? 'tags' : 'sections' : null;
+  const needle = normalize((match ? match[2] : tail).replace(/^["']|["']$/g, '')).replace(/[-/]/g, ' ');
+  const prefix = tail ? query.slice(0, query.lastIndexOf(tail)).trimEnd() : query.trimEnd();
+  const base = { ...state, query: prefix }, facets = getSearchFacets(prepared, base), selected = searchState(state);
+  const result = [];
+  for (const group of ['sections', 'categories', 'tags']) {
+    if (kind && kind !== group) continue;
+    const candidates = facets[group].filter(item => item.count > 0 && !selected[group].includes(item.value) &&
+      (!needle || normalize(`${item.label} ${item.value}`).replace(/[-/]/g, ' ').split(' ').some(word => word.startsWith(needle)) ||
+        normalize(item.label).replace(/[-/]/g, ' ').startsWith(needle)));
+    for (const item of candidates.slice(0, kind ? cap : 3)) result.push({ ...item, kind: group, query: prefix });
+  }
+  return result.slice(0, cap);
 }

@@ -1,4 +1,4 @@
-import { prepareDocuments, parseSearchQuery, searchDocuments, getSearchFacets } from './search-core.mjs';
+import { prepareDocuments, parseSearchQuery, searchDocuments, getSearchFacets, getSearchSuggestions } from './search-core.mjs';
 
 const controllers = new WeakMap();
 const same = (a, b) => String(a).toLocaleLowerCase('en') === String(b).toLocaleLowerCase('en');
@@ -42,16 +42,16 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
   const triggers = Array.from(doc.querySelectorAll('[data-open-site-search]'));
   if (!dialog?.showModal || !triggers.length) return null;
   const query = dialog.querySelector('[data-search-query]');
-  const category = dialog.querySelector('[data-search-category]');
-  const tag = dialog.querySelector('[data-search-tag]');
+  const suggestionList = dialog.querySelector('[data-search-suggestions]');
   const filters = dialog.querySelector('[data-search-filters]');
   const list = dialog.querySelector('[data-search-results]');
   const status = dialog.querySelector('[data-search-status]');
   const retry = dialog.querySelector('[data-search-retry]');
   const reset = dialog.querySelector('[data-search-reset]');
-  if (![query, category, tag, filters, list, status, retry, reset].every(Boolean)) return null;
-  const state = { query: '', categories: [], tags: [] };
+  if (![query, suggestionList, filters, list, status, retry, reset].every(Boolean)) return null;
+  const state = { query: '', categories: [], tags: [], sections: [] };
   let documents = null, pending = null, destroyed = false, opener = null, previousOverflow = null;
+  let suggestions = [], activeSuggestion = -1;
 
   function element(name, className, text) {
     const node = doc.createElement(name);
@@ -62,42 +62,77 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
   function highlight(node, text) {
     for (const part of highlightSegments(text, state.query)) node.append(part.match ? element('mark', '', part.text) : doc.createTextNode(part.text));
   }
-  function options(select, facets, placeholder, selected = '') {
-    select.replaceChildren(element('option', '', placeholder));
-    select.firstChild.value = '';
-    for (const facet of facets) {
-      const option = element('option', '', `${facet.label} (${facet.count})`);
-      option.value = facet.value;
-      select.append(option);
+  function selectSuggestion(index) {
+    const item = suggestions[index];
+    if (!item) return;
+    if (!state[item.kind].some(value => same(value, item.value))) state[item.kind].push(item.value);
+    state.query = item.query; query.value = state.query;
+    render(); query.focus();
+  }
+  function updateSuggestionSelection() {
+    const choices = Array.from(suggestionList.querySelectorAll('[data-search-suggestion]'));
+    choices.forEach((node, index) => node.setAttribute('aria-selected', String(index === activeSuggestion)));
+    if (choices[activeSuggestion]) {
+      query.setAttribute('aria-activedescendant', choices[activeSuggestion].id);
+      choices[activeSuggestion].scrollIntoView?.({ block: 'nearest' });
+    } else query.removeAttribute('aria-activedescendant');
+  }
+  function hideSuggestions() {
+    suggestionList.hidden = true; activeSuggestion = -1;
+    query.setAttribute('aria-expanded', 'false'); query.removeAttribute('aria-activedescendant');
+  }
+  function renderSuggestions() {
+    suggestions = documents ? getSearchSuggestions(documents, state) : [];
+    activeSuggestion = -1; suggestionList.replaceChildren();
+    const labels = { sections: 'Sections', categories: 'Categories', tags: 'Tags' };
+    for (const kind of Object.keys(labels)) {
+      const items = suggestions.map((item, index) => ({ item, index })).filter(({ item }) => item.kind === kind);
+      if (!items.length) continue;
+      const group = element('div', 'site-search-suggestion-group');
+      group.setAttribute('role', 'group'); group.setAttribute('aria-label', labels[kind]);
+      const heading = element('span', 'site-search-suggestion-label', labels[kind]); heading.setAttribute('aria-hidden', 'true');
+      group.append(heading);
+      for (const { item, index } of items) {
+        const option = element('button', 'site-search-suggestion');
+        option.type = 'button'; option.tabIndex = -1; option.id = `site-search-suggestion-${index}`;
+        option.dataset.searchSuggestion = String(index);
+        option.setAttribute('role', 'option'); option.setAttribute('aria-selected', 'false');
+        option.setAttribute('aria-label', `${kind === 'categories' ? 'Category' : kind === 'tags' ? 'Tag' : 'Section'} ${item.label}, ${item.count} results`);
+        option.append(element('span', '', item.label), element('span', 'site-search-suggestion-count', String(item.count)));
+        group.append(option);
+      }
+      suggestionList.append(group);
     }
-    select.value = selected;
+    suggestionList.hidden = !suggestions.length || doc.activeElement !== query;
+    query.setAttribute('aria-expanded', String(!suggestionList.hidden)); query.removeAttribute('aria-activedescendant');
   }
   function renderFilters(facets) {
     const parsed = parseSearchQuery(state.query);
     const active = {
       categories: [...new Set([...state.categories, ...parsed.categories])],
       tags: [...new Set([...state.tags, ...parsed.tags])],
+      sections: [...new Set([...state.sections, ...parsed.sections])],
     };
     filters.replaceChildren();
-    for (const kind of ['categories', 'tags']) for (const value of active[kind]) {
+    for (const kind of ['sections', 'categories', 'tags']) for (const value of active[kind]) {
       const label = facets[kind].find(item => same(item.value, value))?.label || value;
-      const chip = element('button', 'site-search-filter', `${kind === 'tags' ? 'Tag' : 'Category'}: ${label} ×`);
+      const name = kind === 'tags' ? 'Tag' : kind === 'sections' ? 'Section' : 'Category';
+      const chip = element('button', 'site-search-filter', `${name}: ${label} ×`);
       chip.type = 'button';
-      chip.setAttribute('aria-label', `Remove ${kind === 'tags' ? 'tag' : 'category'} ${label}`);
+      chip.setAttribute('aria-label', `Remove ${name.toLowerCase()} ${label}`);
       chip.dataset.filterKind = kind;
       chip.dataset.filterValue = value;
       filters.append(chip);
     }
     filters.hidden = !filters.children.length;
-    reset.disabled = !state.query && !active.categories.length && !active.tags.length;
+    reset.disabled = !state.query && !active.categories.length && !active.tags.length && !active.sections.length;
     return active;
   }
   function render() {
     if (destroyed || !dialog.open || !documents) return;
     const facets = getSearchFacets(documents, state);
-    const active = renderFilters(facets);
-    options(category, facets.categories, 'All', state.categories[0] || '');
-    options(tag, facets.tags.filter(item => !active.tags.some(value => same(value, item.value))), 'Add a tag');
+    renderFilters(facets);
+    renderSuggestions();
     const found = searchDocuments(documents, state, 20);
     list.replaceChildren();
     for (const result of found.results) {
@@ -108,7 +143,7 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
       const title = element('span', 'site-search-result-title');
       highlight(title, result.title);
       const meta = element('span', 'site-search-result-meta');
-      meta.append(element('span', 'site-search-category', result.categoryLabel));
+      meta.append(element('span', 'site-search-category', result.categoryLabel), element('span', '', result.sectionLabel));
       if (result.sectionTitle) meta.append(element('span', '', `› ${result.sectionTitle}`));
       for (const value of result.tags.slice(0, 3)) meta.append(element('span', 'site-search-result-tag', value));
       const snippet = element('span', 'site-search-result-snippet');
@@ -158,6 +193,7 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
     load();
   }
   function restore() {
+    hideSuggestions();
     if (previousOverflow) {
       if (previousOverflow.value) doc.body.style.setProperty('overflow', previousOverflow.value, previousOverflow.priority);
       else doc.body.style.removeProperty('overflow');
@@ -172,17 +208,19 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
     open();
   }
   function onInput() { state.query = query.value; render(); }
-  function onCategory() { state.categories = category.value ? [category.value] : []; render(); }
-  function onTag() { if (tag.value && !state.tags.some(value => same(value, tag.value))) state.tags.push(tag.value); render(); }
-  function onReset() { state.query = ''; state.categories = []; state.tags = []; query.value = ''; render(); query.focus(); }
+  function onQueryFocus() { if (dialog.open) renderSuggestions(); }
+  function onReset() { state.query = ''; state.categories = []; state.tags = []; state.sections = []; query.value = ''; query.focus(); render(); }
+  function onPointerDown(event) { if (event.target.closest('[data-search-suggestion]')) event.preventDefault(); }
   function onClick(event) {
+    const suggestion = event.target.closest('[data-search-suggestion]');
+    if (suggestion) { selectSuggestion(Number(suggestion.dataset.searchSuggestion)); return; }
     const chip = event.target.closest('[data-filter-kind]');
     if (chip) {
       const { filterKind: kind, filterValue: value } = chip.dataset;
       state[kind] = state[kind].filter(item => !same(item, value));
       state.query = removeQueryFilter(state.query, kind, value);
       query.value = state.query;
-      render(); query.focus();
+      query.focus(); render();
     } else if (event.target.closest('[data-search-close], [data-search-result]')) dialog.close();
     else if (event.target === dialog) {
       const box = dialog.getBoundingClientRect();
@@ -195,7 +233,7 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
       event.preventDefault(); dialog.close(); return;
     }
     if (event.key === 'Tab' && !event.isComposing) {
-      const focusable = Array.from(dialog.querySelectorAll('[data-search-query], [data-search-close], [data-search-category], [data-search-tag], [data-search-reset], [data-search-retry], [data-filter-kind], [data-search-result]'))
+      const focusable = Array.from(dialog.querySelectorAll('[data-search-query], [data-search-close], [data-search-reset], [data-search-retry], [data-filter-kind], [data-search-result]'))
         .filter(node => !node.disabled && !node.hidden && !node.closest('[hidden]') && node.tabIndex >= 0 && node.getClientRects().length);
       const destination = event.shiftKey && event.target === focusable[0] ? focusable.at(-1) :
         !event.shiftKey && event.target === focusable.at(-1) ? focusable[0] : null;
@@ -205,7 +243,14 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
     if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
     const links = Array.from(list.querySelectorAll('[data-search-result]'));
     const index = links.indexOf(event.target.closest('[data-search-result]'));
-    if (event.target === query && links.length && event.key === 'Enter') { event.preventDefault(); links[0].click(); }
+    if (event.target === query && !suggestionList.hidden && suggestions.length && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
+      event.preventDefault();
+      const next = activeSuggestion + (event.key === 'ArrowDown' ? 1 : -1);
+      if (next >= suggestions.length && links.length) { hideSuggestions(); links[0].focus(); }
+      else { activeSuggestion = next < 0 ? suggestions.length - 1 : Math.min(next, suggestions.length - 1); updateSuggestionSelection(); }
+    }
+    else if (event.target === query && activeSuggestion >= 0 && !suggestionList.hidden && event.key === 'Enter') { event.preventDefault(); selectSuggestion(activeSuggestion); }
+    else if (event.target === query && links.length && event.key === 'Enter') { event.preventDefault(); links[0].click(); }
     else if (event.target === query && links.length && event.key === 'ArrowDown') { event.preventDefault(); links[0].focus(); }
     else if (index >= 0 && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
       event.preventDefault();
@@ -223,11 +268,12 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
   });
   view.addEventListener('keydown', onShortcut);
   query.addEventListener('input', onInput);
-  category.addEventListener('change', onCategory);
-  tag.addEventListener('change', onTag);
+  query.addEventListener('focus', onQueryFocus);
+  query.addEventListener('blur', hideSuggestions);
   reset.addEventListener('click', onReset);
   retry.addEventListener('click', load);
   dialog.addEventListener('click', onClick);
+  dialog.addEventListener('pointerdown', onPointerDown);
   dialog.addEventListener('keydown', onDialogKeydown);
   dialog.addEventListener('close', restore);
   const controller = { open, destroy() {
@@ -237,11 +283,12 @@ export function setupSiteSearch(doc = document, view = doc.defaultView) {
     triggers.forEach(trigger => { trigger.hidden = true; trigger.removeEventListener('click', open); });
     view.removeEventListener('keydown', onShortcut);
     query.removeEventListener('input', onInput);
-    category.removeEventListener('change', onCategory);
-    tag.removeEventListener('change', onTag);
+    query.removeEventListener('focus', onQueryFocus);
+    query.removeEventListener('blur', hideSuggestions);
     reset.removeEventListener('click', onReset);
     retry.removeEventListener('click', load);
     dialog.removeEventListener('click', onClick);
+    dialog.removeEventListener('pointerdown', onPointerDown);
     dialog.removeEventListener('keydown', onDialogKeydown);
     dialog.removeEventListener('close', restore);
     controllers.delete(doc);
