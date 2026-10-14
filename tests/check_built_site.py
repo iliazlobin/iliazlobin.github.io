@@ -55,6 +55,8 @@ class Page(HTMLParser):
         self.search_selects = 0
         self.article_categories = []
         self.category_lists = []
+        self.post_headers = []
+        self._post_header = None
         self.current_categories = []
         self.project_ids = set()
         self._in_search = False
@@ -66,6 +68,17 @@ class Page(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        classes = attrs.get("class", "").split()
+        if tag == "header" and "post-header" in classes:
+            self._post_header = []
+            self.post_headers.append(self._post_header)
+        if self._post_header is not None:
+            for name, present in (("metadata", "meta" in classes),
+                                  ("category", "post-category" in classes),
+                                  ("title", tag == "h1"),
+                                  ("tags", "post-tags" in classes)):
+                if present:
+                    self._post_header.append(name)
         if attrs.get("id"):
             self.ids.add(attrs["id"])
         if "data-site-search" in attrs:
@@ -116,6 +129,8 @@ class Page(HTMLParser):
             self._cell_text.append(data)
 
     def handle_endtag(self, tag):
+        if tag == "header":
+            self._post_header = None
         if tag == "dialog":
             self._in_search = False
         if tag == "a" and self._navigation_text is not None:
@@ -168,6 +183,9 @@ def check_document_layout(root, errors):
             errors.append(f"{source}: expected six distinct category links and one current category")
         if page.category_lists != [("ul", "Article categories")]:
             errors.append(f"{source}: categories must be one named semantic list")
+        if page.post_headers not in ([["metadata", "category", "title", "tags"]],
+                                    [["metadata", "category", "title"]]):
+            errors.append(f"{source}: header must put category metadata above title and topic tags below it")
         if page.article_skip_links != ["#document-article"]:
             errors.append(f"{source}: missing skip-to-article link")
         if any("post--document" not in classes for classes in posts):

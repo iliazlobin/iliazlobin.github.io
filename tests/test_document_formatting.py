@@ -4,6 +4,18 @@ from check_built_site import Page
 
 
 class DocumentMarkupTests(unittest.TestCase):
+    def test_header_order_distinguishes_category_metadata_from_topic_tags(self):
+        page = Page()
+        page.feed('<header class="post-header"><div class="meta"><time>July 17</time>'
+                  '<a class="type-label post-category">INFRA</a></div>'
+                  '<h1>News Feed</h1><div class="post-tags"><a class="tag">Redis</a>'
+                  '</div></header><h1>Unrelated title</h1>')
+        self.assertEqual(page.post_headers, [["metadata", "category", "title", "tags"]])
+        old = Page()
+        old.feed('<header class="post-header"><div class="meta">'
+                 '<span class="post-tags">Redis</span></div><h1>News Feed</h1></header>')
+        self.assertEqual(old.post_headers, [["metadata", "tags", "title"]])
+
     def test_article_scope_and_nested_cell_text_are_preserved(self):
         page = Page()
         page.feed('<article class="post post--document"><table><tr>'
