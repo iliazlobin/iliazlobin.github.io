@@ -277,13 +277,13 @@ Full courier scans and repeated customer polling add unnecessary work. Geographi
 
 **Problem.** The closest courier may have a slow road route, and multiple orders can compete for the same courier.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Nearest-distance assignment:** choose the closest geographic candidate. Lookup is fast, but road travel, workload and food readiness can make that courier a poor choice.
 - **Scored candidates with limited offers:** shortlist fresh couriers, estimate route/workload cost and send a bounded number of expiring offers. Decisions stay timely and explainable; prediction errors and offer expiry require retries, and the database must resolve simultaneous acceptances.
 - **Market-wide optimizer:** jointly assign many orders and couriers. Scarce capacity can be used more efficiently, but batch waiting and solver/runtime complexity need a deadline and feasible fallback.
 
-**Choice and rationale.** Retrieve a bounded geographic candidate set, score travel time and workload, and send a small number of offers. Commit assignment through a transaction covering both order ownership and courier capacity. Redis availability narrows candidates; it is advisory. Bounded scored offers fit the proposed dispatch path without delaying every order for a market-wide solve. We accept locally suboptimal assignments and offer retries; dense markets can add bounded optimization after measuring that cost.
+Retrieve a bounded geographic candidate set, score travel time and workload, and send a small number of offers. Commit assignment through a transaction covering both order ownership and courier capacity. Redis availability narrows candidates; it is advisory. Bounded scored offers fit the proposed dispatch path without delaying every order for a market-wide solve. We accept locally suboptimal assignments and offer retries; dense markets can add bounded optimization after measuring that cost.
 
 Dense markets can add batched optimization, as described in [DoorDash's dispatch architecture](https://careersatdoordash.com/blog/using-ml-and-optimization-to-solve-doordashs-dispatch-problem/). Use a time-bounded solver and a feasible fallback. Measure assignment time, acceptance rate, lateness and courier utilization; a 30-second offer window makes a universal three-second completed assignment unrealistic.
 
@@ -310,13 +310,13 @@ flowchart TB
 
 **Problem.** Old or reordered GPS events can move a courier backwards or leave a disconnected courier eligible.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Direct database writes:** persist every GPS event in the order store. History is durable, but location traffic competes with checkout and stale/reordered writes still require sequence checks.
 - **Redis-only positions:** update live cache state directly. Dispatch reads are fast, but cache loss removes the current view and replay/audit depend on later heartbeats.
 - **Replayable stream to geographic projection:** retain courier-keyed events and apply only newer session/sequence records to caches. Consumers recover independently; backlog and cross-region membership require freshness checks so durable old events are not treated as current positions.
 
-**Choice and rationale.** Consume a courier-keyed stream and conditionally apply events newer than the stored sequence. Record server receipt time and bound acceptable device clock skew. Separate consumers update caches and tracking; replayed events are safe. A replayable projection fits high-rate GPS updates and independent tracking consumers. We accept projection lag and prioritize current snapshots during backlog; courier eligibility is checked again when assignment commits.
+Consume a courier-keyed stream and conditionally apply events newer than the stored sequence. Record server receipt time and bound acceptable device clock skew. Separate consumers update caches and tracking; replayed events are safe. A replayable projection fits high-rate GPS updates and independent tracking consumers. We accept projection lag and prioritize current snapshots during backlog; courier eligibility is checked again when assignment commits.
 
 Reject stale couriers during candidate validation and at acceptance. During backlog, prioritize current snapshots and avoid dispatch from unverified old positions. Track ingestion-to-visibility delay and position age, rather than consumer offsets alone.
 
@@ -330,13 +330,13 @@ Update the position record and geographic membership through a coordinated cache
 
 **Problem.** Food preparation and courier travel to the restaurant happen concurrently.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Single total-duration model:** learn order-to-delivery time directly. The serving interface is small, but the model obscures which stage changed and may adapt poorly when the order progresses.
 - **Separate stage estimates:** model preparation, courier arrival, handoff and travel, combining concurrent stages with an explicit timeline. Stage updates are interpretable and reusable; dependency error means adding stage quantiles does not yield a calibrated total interval.
 - **Multi-task probabilistic model:** learn related stage and end-to-end distributions together. Shared signals may improve sparse cases and uncertainty, but training, calibration and serving are more complex.
 
-**Choice and rationale.** Combine stage estimates on a timeline that accounts for overlapping work. Stage-level updates support dispatch decisions and user progress updates. We accept stage-level prediction error and measure an end-to-end arrival interval separately; a shared probabilistic model must demonstrate improved coverage before replacing this baseline.
+Combine stage estimates on a timeline that accounts for overlapping work. Stage-level updates support dispatch decisions and user progress updates. We accept stage-level prediction error and measure an end-to-end arrival interval separately; a shared probabilistic model must demonstrate improved coverage before replacing this baseline.
 
 ```text
 remaining time =
@@ -360,13 +360,13 @@ After pickup, those first two stages are complete; recompute from the current ro
 
 **Problem.** Database commits and external payment calls can succeed independently.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Synchronous calls with compensation:** call each dependency inline and undo confirmed partial progress after failure. The normal path is direct, but timeout ambiguity and client disconnects require durable recovery anyway.
 - **Event choreography:** services react to each other's committed events. Components remain loosely coupled, but the overall order state and compensation path become harder to inspect across missing or delayed events.
 - **Durable orchestrator with outbox:** persist step identity, state and next intent, then call external services outside the database transaction. Recovery can resume or compensate each known operation; the workflow authority and stuck-step monitoring add operating cost.
 
-**Choice and rationale.** Use persisted order transitions, an outbox and a durable workflow with explicit authorization, capture, void and refund operations. A database transaction finishes before the external call. A durable workflow fits orders that combine payment, restaurant acceptance and courier reservation. We accept a recoverable pending state after uncertain external calls and the orchestrator's complexity to preserve one explainable transition history.
+Use persisted order transitions, an outbox and a durable workflow with explicit authorization, capture, void and refund operations. A database transaction finishes before the external call. A durable workflow fits orders that combine payment, restaurant acceptance and courier reservation. We accept a recoverable pending state after uncertain external calls and the orchestrator's complexity to preserve one explainable transition history.
 
 Retries use the same [provider idempotency key](https://docs.stripe.com/api/idempotent_requests); reconciliation uses the recorded operation/provider ID. Amount and time alone cannot identify a payment reliably. An unknown provider outcome remains pending until resolved, while overdue workflows alert operators. Preserve the order and transition history through compensation.
 

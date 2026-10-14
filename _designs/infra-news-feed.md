@@ -12,7 +12,8 @@ A News Feed serves personalized, ranked streams of posts from friends, followed 
 
 <!--more-->
 
-## 1. Context
+## Context
+{: id="1-context"}
 
 A News Feed serves personalized, ranked streams of posts from friends, followed Pages, and Groups to over 2 billion registered users, with 1.5 billion daily active users generating roughly 1 billion posts per day. The core tension is the fan-out amplification: every post creation triggers timeline insertion for every follower. At an average of 200 followers, 12K posts/sec become 2.4 million feed inserts/sec sustained  -  and a single celebrity post to 100 million followers creates 100 million write operations that would saturate any single storage node. Reads are equally demanding: 1.7 million peak queries per second against a 24 TB Redis feed cache, each returning a ranked page of 20-30 posts within a 200 ms P99 latency budget.
 
@@ -20,7 +21,8 @@ The system runs across multiple AWS regions (us-east-1 primary, eu-west-1 and ap
 
 This design covers the core feed serving and fan-out data plane: post creation and storage, the social graph used for follower resolution, the feed cache that holds pre-ranked timelines, the asynchronous fan-out pipeline, the ML ranking serving infrastructure, and media storage. The operational stack assumes a team of 8-12 platform engineers operating the data plane, with a separate ML infrastructure team managing the GPU serving fleet.
 
-## 2. Goals
+## Goals
+{: id="2-goals"}
 
 - Feed read P99 latency under 200 ms for the first ranked page of 20 posts
 - New post visibility in follower feeds within 1 second (P99 fan-out propagation)
@@ -31,7 +33,8 @@ This design covers the core feed serving and fan-out data plane: post creation a
 - Total infrastructure cost under $2.5M/month for the core data plane (feed cache, post store, fan-out workers, graph)
 - **Out of scope:** Ad serving and sponsored content ranking, Messenger and chat infrastructure, live video streaming, Stories delivery, push notification delivery
 
-## 3. Architecture
+## Architecture
+{: id="3-architecture"}
 
 ```mermaid
 graph TB
@@ -120,7 +123,8 @@ A user in the us-east-1 region opens the mobile app and requests their feed.
   - Insert the top 200 into Redis: `ZADD feed:bob <score1> <post_id1> <score2> <post_id2> ...` (pipelined, ~3 ms).
   - Return the top 20 to the client. Total rebuild latency: ~45 ms  -  within the 200 ms P99 budget even with a cache miss.
 
-## 4. Reliability
+## Reliability
+{: id="4-reliability"}
 
 The News Feed is a tier-0 service: a stale or empty feed is a degraded user experience, but a completely unavailable feed means the core product is down. The reliability design targets 99.95% monthly availability (21.9 minutes of downtime per month) with a multi-region active-active topology.
 
@@ -153,7 +157,8 @@ The News Feed is a tier-0 service: a stale or empty feed is a degraded user expe
 
 > ⚠ **Correlated failure blind spot**  -  The cache-miss rebuild path shares the Post Store and GPU workers with the normal write path. During a large-scale Redis failure, the sudden flood of rebuild requests can overload these shared resources, creating a cascading failure where read retries amplify the load further. The circuit breaker must open early (at 50% Redis connection failure rate, not 80%) and shed load aggressively. A future hardening item is a dedicated "cold read" GPU pool that is isolated from the write-time scoring pool.
 
-## 5. Security
+## Security
+{: id="5-security"}
 
 ### Identity and access (IAM / RBAC)
 
@@ -185,7 +190,8 @@ Kubernetes NetworkPolicy resources mirror the security group rules at the pod le
 
 Container images are built from a minimal distroless base (Google Distroless `gcr.io/distroless/static-debian12`), scanned with Trivy 0.50 in CI, and signed with Cosign 2.2. Only signed images are admitted to the cluster via Kyverno 1.11 admission policies. The Kubernetes control plane runs CIS Benchmark v1.8 hardened configuration, enforced via kube-bench 0.8 scans in the deployment pipeline. The infrastructure inherits AWS's SOC 2 and ISO 27001 certifications for the physical and hypervisor layers; application-level compliance is maintained through the access logging and encryption controls above.
 
-## 6. Scalability & Performance
+## Scalability & Performance
+{: id="6-scalability--performance"}
 
 The capacity model is driven by two primary workloads: the write-path fan-out (2.4M feed inserts/sec sustained) and the read-path feed serving (1.7M QPS peak). The system scales horizontally at every tier, with the Redis feed cache as the primary scale bottleneck.
 
@@ -257,7 +263,8 @@ All throughput and latency figures in this section were derived from load testin
 - **Benchmark date:** July 2026, us-east-1 region, on-demand instances (not spot).
 - **Data validated against:** Internal production dashboards for a comparable-scale feed system; absolute figures are specific to this architecture and instance types.
 
-## 7. Cost
+## Cost
+{: id="7-cost"}
 
 > [!TIP]
 > **Verdict**  -  Total estimated monthly cost is $2.35M for the core data plane. This hits the $2.5M/month target with 6% headroom. The three largest line items are the Redis feed cache ($1.08M, 46%), the GPU ranking fleet ($576K, 25%), and the Post Store MySQL shards ($336K, 14%). The Redis cost is the lever that matters  -  every 10% improvement in cache hit rate or feed depth reduction saves ~$108K/month.
@@ -316,7 +323,8 @@ The cost model below uses us-east-1 on-demand pricing as of July 2026. All figur
 - **Post Store compression.** MyRocks with LZ4 compression already achieves 5-8× space reduction vs InnoDB. Switching to ZSTD compression (available in MyRocks 8.0) could gain an additional 20% space reduction at the cost of ~15% higher CPU during reads, saving ~$67K/month in EBS costs.
 - **Cross-region traffic.** Making eu-west-1 and ap-southeast-1 read-only (writes forwarded to us-east-1) would cut MySQL replica costs by ~$60K/month. The cost: ~50 ms additional write latency for non-US users on post creation  -  likely imperceptible given the async fan-out model.
 
-## 8. Operations
+## Operations
+{: id="8-operations"}
 
 ### Observability
 
@@ -509,9 +517,10 @@ resource "aws_elasticache_parameter_group" "feed_cache" {
 
 The full Terraform configuration is in the `infra/terraform/` directory, organized as modules per component with region-specific variable files. Kubernetes manifests (Deployments, Services, HPA, NetworkPolicy) live in `infra/k8s/` and are deployed via Argo CD ApplicationSets targeting clusters by region label.
 
-## 9. Key Decisions & Trade-offs
+## Key Decisions & Trade-offs
+{: id="9-key-decisions--trade-offs"}
 
-### D1: Fan-out strategy  -  write vs read vs hybrid
+### Fan-out strategy  -  write vs read vs hybrid {#d1-fan-out-strategy-----write-vs-read-vs-hybrid}
 
 **Tension.** Fan-out-on-write makes reads fast (single Redis `ZREVRANGEBYSCORE`) but creates unbounded write amplification proportional to follower count. Fan-out-on-read bounds writes to one post insert but requires merging 200+ user timelines at read time, blowing the 200 ms latency budget. The system serves both regular users (~200 followers) and celebrities (up to 100M followers)  -  no single strategy works for both populations.
 
@@ -521,7 +530,7 @@ The full Terraform configuration is in the `infra/terraform/` directory, organiz
 
 **Consequences.** The read path has two code paths (cache hit vs cache miss + celebrity pull), complicating capacity planning. Score computation shifts to read time for celebrity posts, so GPU workers must be available on the read path (the lightweight linear fallback handles GPU degradation gracefully).
 
-### D2: Feed ranking  -  rank-at-write vs rank-at-read
+### Feed ranking  -  rank-at-write vs rank-at-read {#d2-feed-ranking-----rank-at-write-vs-rank-at-read}
 
 **Tension.** Ranking thousands of candidates per feed load (200+ followed accounts × 5 recent posts each) requires ML inference that costs ~15 ms per candidate on GPU. Performing this at read time for every feed load would require 30+ ms of GPU inference  -  too slow for the 200 ms budget when added to Redis and network latency. Ranking at write time shifts the compute to the fan-out pipeline, where latency is less constrained (P99 <1 second vs 200 ms), but means scores are stale by the time the user reads them.
 
@@ -531,7 +540,7 @@ The full Terraform configuration is in the `infra/terraform/` directory, organiz
 
 **Consequences.** A newly retrained model takes up to 3 hours to fully propagate to the cache. During major model improvements (e.g., a new engagement prediction feature), the product team may accept a one-time bulk cache refresh (increment `model_version` globally) at the cost of ~30 minutes of elevated GPU load. The lazy refresh mechanism requires the cache entry schema to carry a `model_version` field (~4 bytes per entry, negligible overhead).
 
-### D3: Cache consistency  -  eager invalidation vs lazy lease
+### Cache consistency  -  eager invalidation vs lazy lease {#d3-cache-consistency-----eager-invalidation-vs-lazy-lease}
 
 **Tension.** When a post is deleted, its entry must be removed from every follower's feed cache. Eager invalidation (fan-out `ZREM` to all followers) guarantees immediate removal but has the same write amplification problem as post fan-out (100M `ZREM` operations for a celebrity post  -  doubling the fan-out infrastructure cost). Lazy invalidation (filter deleted posts at read time) costs almost nothing at write time but adds latency to every read (checking each post against the Post Store) and leaves deleted posts in cache until natural eviction.
 
@@ -541,7 +550,7 @@ The full Terraform configuration is in the `infra/terraform/` directory, organiz
 
 **Consequences.** The Post Store becomes a hard dependency on the read path: if the Post Store is unavailable, deleted posts cannot be verified and feed reads must either serve potentially deleted content (acceptable for seconds during a failover) or fail. The emergency global-delete path must be tested monthly via a game-day exercise to ensure the fan-out pipeline can handle a full follower-set `ZREM` sweep without delaying regular post fan-out.
 
-### D4: Post Store engine  -  MyRocks vs InnoDB vs Vitess
+### Post Store engine  -  MyRocks vs InnoDB vs Vitess {#d4-post-store-engine-----myrocks-vs-innodb-vs-vitess}
 
 **Tension.** The Post Store must hold ~384 TB of compressed post data with an append-heavy workload (1B writes/day, very few updates) and serve point queries by `post_id` and range scans by `(author_id, created_at)`. At this scale, storage cost and write amplification from B-tree page splits become first-order concerns.
 
@@ -551,7 +560,8 @@ The full Terraform configuration is in the `infra/terraform/` directory, organiz
 
 **Consequences.** Manual resharding is required when a shard approaches its storage limit (~8 TB compressed per shard): the team must provision a new instance, run `mysqldump --where="hash(post_id) BETWEEN x AND y"` and `mysql < dump`, update ProxySQL's shard routing table, and decommission the split source. This operation takes ~4 hours per shard (mostly dump/load time for 8 TB) and is performed during a maintenance window. Vitess would automate this at the cost of the operational overhead of running the Vitess control plane.
 
-## 10. References
+## References
+{: id="10-references"}
 
 1. [TAO: Facebook's Distributed Data Store for the Social Graph](https://www.usenix.org/conference/atc13/technical-sessions/presentation/bronson)
 1. [MyRocks: LSM-Tree Database Storage Engine](http://myrocks.io/docs/getting-started/)

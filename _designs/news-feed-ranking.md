@@ -238,13 +238,13 @@ If the deep ranker times out, return eligible light-ranked candidates. If person
 
 **Problem.** A richer model can capture user–item interactions that a retrieval vector misses, but its cost grows with candidates per request.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **One cheap ranker:** Apply an inexpensive model to the full retrieved set. Latency and operation are simple, but limited user–item interactions can miss strong personalized candidates.
 - **One deep ranker:** Score every retrieved item using rich cross-features and history attention. There is no intermediate scoring loss, but GPU work and feature reads grow with every candidate and can exceed the page deadline.
 - **Staged ranking funnel — recommended:** Use cheap shortlisting before bounded deep inference. This controls peak work; useful items removed early cannot be recovered, so each stage needs retention and recall measurements.
 
-**Choice and rationale.** **Use a staged funnel with explicit candidate budgets.** Retrieval uses a two-tower encoder; item vectors are precomputed, while the user vector is computed from recent history. The light model learns to preserve candidates favored by the deep ranker. The deep model adds user–item cross-features and history attention. The 2,000-to-25 funnel spends deep-model capacity on 100 candidates per request. We accept early-stage recall loss, but measure it against a deeper reference scorer and tune budgets rather than treating shortlist size as a free efficiency gain.
+**Use a staged funnel with explicit candidate budgets.** Retrieval uses a two-tower encoder; item vectors are precomputed, while the user vector is computed from recent history. The light model learns to preserve candidates favored by the deep ranker. The deep model adds user–item cross-features and history attention. The 2,000-to-25 funnel spends deep-model capacity on 100 candidates per request. We accept early-stage recall loss, but measure it against a deeper reference scorer and tune budgets rather than treating shortlist size as a free efficiency gain.
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -275,13 +275,13 @@ Measure recall at each ranking stage alongside end-to-end latency.
 
 **Problem.** Click probability favors attractive items, while dwell and meaningful interactions often reflect a different outcome.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Click-only model:** Learn from fast click feedback. Labels arrive readily, but clicks can reward attractive previews that lead to short dwell or negative feedback.
 - **Independent outcome models:** Train and deploy separate predictors for engagement and negative signals. Objectives are isolated, but features and inference are duplicated and independently calibrated scores still need a product policy.
 - **Shared multi-task ranker — recommended:** Share a representation with separate click, dwell and negative-feedback heads. Serving work is reused; conflicting gradients and sparse targets can degrade one task, so loss weights and per-head quality are evaluated explicitly.
 
-**Choice and rationale.** **Use a shared model with explicit product weights.** Predict click, dwell, like, share, hide and report separately. Positive feedback increases the score; hide/report probabilities reduce it or trigger an eligibility rule. Feed quality combines positive engagement with hides and reports. We accept multi-task interference and product-weight tuning in exchange for shared serving work; a strong aggregate score cannot excuse regression in a safety or negative-feedback head.
+**Use a shared model with explicit product weights.** Predict click, dwell, like, share, hide and report separately. Positive feedback increases the score; hide/report probabilities reduce it or trigger an eligibility rule. Feed quality combines positive engagement with hides and reports. We accept multi-task interference and product-weight tuning in exchange for shared serving work; a strong aggregate score cannot excuse regression in a safety or negative-feedback head.
 
 ```python
 score = (
@@ -327,13 +327,13 @@ Calibrate the heads used as probabilities on representative held-out traffic. Th
 
 **Problem.** High positions receive more exposure, and items excluded by the old policy have no observed outcome.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Raw clicks:** Treat observed clicks as relevance. Collection is cheap, but exposure and position favor the previous ranking and unshown items have no outcomes.
 - **Position-bias model:** Model position and relevance separately using ordinary impression logs. More traffic is usable, but the separation relies on assumptions and can remain poorly identified where positions rarely change.
 - **Bounded controlled exploration — recommended:** Randomize a small approved exposure set and record actual assignment probabilities. Comparisons are better supported; experimentation can temporarily reduce relevance and propensity estimates need adequate support.
 
-**Choice and rationale.** The design needs outcome evidence beyond what the old ranker chose to show. We accept a bounded experience cost and keep delayed labels mature before evaluation; clipped weighting cannot repair items that had zero exposure probability.
+The design needs outcome evidence beyond what the old ranker chose to show. We accept a bounded experience cost and keep delayed labels mature before evaluation; clipped weighting cannot repair items that had zero exposure probability.
 
 **Retain a small, policy-approved exploration sample and log the assignment probabilities.** Use position-aware training where justified; apply clipped propensity weighting only when the logged probabilities support it. [PAL](https://doi.org/10.1145/3298689.3347033) provides a position-aware modeling approach.
 
@@ -351,13 +351,13 @@ Suppose an exploration item has assignment probability 0.02. Its inverse-propens
 
 **Problem.** New content has text, media and creator context before it has engagement history. New users have session context before a reliable long-term profile.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Popularity-only fallback:** Serve items with established engagement. Reliability is good with little user history, but popular creators keep receiving exposure and new content has little chance to accumulate evidence.
 - **Content-based retrieval:** Encode new posts from their content and creator context. They become eligible before interactions arrive; semantic similarity alone gives weaker preference evidence than established behavior.
 - **Content vectors with bounded exploration — recommended:** Retrieve by content and allocate limited approved slots for uncertain items. This collects learning signals without replacing the whole feed; exploration consumes relevance budget and requires creator-exposure monitoring.
 
-**Choice and rationale.** **Combine content-based vectors with a bounded exploration budget.** Start with a 5% slot budget, gated by eligibility and quality checks. Tune it using session outcomes and creator exposure; this is an allocation policy, not a promise that every item receives traffic. Fresh content matters to a feed, so waiting for popularity creates a self-reinforcing cold start. We accept a tunable slot budget with eligibility gates and measure session outcomes as well as exposure distribution.
+**Combine content-based vectors with a bounded exploration budget.** Start with a 5% slot budget, gated by eligibility and quality checks. Tune it using session outcomes and creator exposure; this is an allocation policy, not a promise that every item receives traffic. Fresh content matters to a feed, so waiting for popularity creates a self-reinforcing cold start. We accept a tunable slot budget with eligibility gates and measure session outcomes as well as exposure distribution.
 
 Use recent-item retrieval and an age feature alongside measured engagement velocity. Express any decay using an explicit half-life:
 
@@ -396,12 +396,12 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Problem.** Updating an item encoder changes the vector space; combining it with an older query/user encoder or index can reduce retrieval quality.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Independent component releases:** Update encoders, indexes and rankers separately. Individual rollout is quick, but mixed vector spaces or feature definitions can silently lower candidate recall.
 - **Complete compatible bundle — recommended:** Warm and switch encoders, index watermark, features and rankers as one serving version. Recovery is reproducible; rebuilding vectors and retaining the previous warm bundle increase release time and storage.
 
-**Choice and rationale.** **Release complete bundles.** Pin user/item encoders, index watermark, feature schema, rankers and policy version. Shadow traffic checks mechanics and latency; mature held-out labels establish offline quality, and a canary measures user impact. The ranking funnel depends on compatible retrieval vectors and features. We accept slower coordinated model releases and duplicated warm artifacts, while compatible live data updates continue through their own versioned interface.
+**Release complete bundles.** Pin user/item encoders, index watermark, feature schema, rankers and policy version. Shadow traffic checks mechanics and latency; mature held-out labels establish offline quality, and a canary measures user impact. The ranking funnel depends on compatible retrieval vectors and features. We accept slower coordinated model releases and duplicated warm artifacts, while compatible live data updates continue through their own versioned interface.
 
 Stream processing continues during training and rollback. New sessions use the promoted bundle; an existing cursor stays on its original snapshot where possible. Alert on feature age, retrieval misses, fallback rate, per-stage queueing and negative feedback. Retraining creates a checkpointed candidate rather than mutating the live model invisibly.
 

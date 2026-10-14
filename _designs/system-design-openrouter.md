@@ -267,13 +267,13 @@ The durable writes add admission and settlement latency. Token-by-token budget t
 
 **Problem.** Always selecting the cheapest endpoint can overload it, while round-robin ignores different costs, model capabilities and latency.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Round-robin:** rotate through compatible providers, giving each a similar request share. Routing is cheap and easy to inspect, but equal request counts ignore token volume, price and provider capacity; a slower endpoint can accumulate a queue while another has spare capacity.
 - **Cheapest eligible provider:** send each request to the lowest-priced compatible endpoint. This minimizes quoted unit cost while capacity is available, but concentrates traffic there; throttling and fallback can increase completion time and actual total cost.
 - **Health- and capacity-aware weighted selection:** sample among eligible providers using policy weights, then cap each provider's admitted concurrency. This spreads load while favoring cost or latency, but requires fresh telemetry, conservative capacity estimates and stable weight updates. Spare capacity at a higher price is sometimes the appropriate fallback.
 
-**Choice and rationale.** Use weighted selection after eligibility filtering. At the proposed 50K-request/s peak, providers have different limits and tenants have different routing goals. Weighted selection can honor those policies without sending the entire fleet to one cheap endpoint. We accept telemetry and tuning overhead, and occasional higher-priced routing, to preserve usable capacity. Keep model choice separate from provider choice. A price-focused policy can use inverse-square price weights, while a latency-focused policy ranks providers against first-token and throughput targets. [OpenRouter's routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection) describes price-weighted routing and provider overrides.
+Use weighted selection after eligibility filtering. At the proposed 50K-request/s peak, providers have different limits and tenants have different routing goals. Weighted selection can honor those policies without sending the entire fleet to one cheap endpoint. We accept telemetry and tuning overhead, and occasional higher-priced routing, to preserve usable capacity. Keep model choice separate from provider choice. A price-focused policy can use inverse-square price weights, while a latency-focused policy ranks providers against first-token and throughput targets. [OpenRouter's routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection) describes price-weighted routing and provider overrides.
 
 A circuit breaker removes repeatedly failing endpoints, then allows bounded half-open probes. A provider-specific `429` respects its retry interval and capacity limits; invalid provider credentials disable that adapter until repaired. New providers receive limited trial traffic instead of an unrestricted optimistic share.
 
@@ -301,13 +301,13 @@ release_unused_capacity_reservations(available, except_provider=chosen)
 
 **Problem.** A fallback is straightforward before the user receives output. Once part of an answer is visible, starting another model creates a second generation with a potentially different answer.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Buffer the entire answer:** keep output at the gateway until generation finishes, replacing a failed attempt before exposing it. This makes fallback invisible to the client, but removes incremental delivery and retains the entire answer in memory while the user waits.
 - **Fallback before output begins:** retry a definitely rejected attempt before forwarding the first token. The client receives one coherent generation with low first-token latency; after output begins, failure ends that stream rather than transparently recovering it.
 - **Restart after partial output:** start another generation and identify it explicitly in the client protocol. This can recover usable output, but the application must discard or distinguish the partial answer; another attempt adds latency and can incur another provider charge.
 
-**Choice and rationale.** Allow bounded fallback before output, then report a stream error after partial delivery. Streaming is a core API capability here, so waiting for complete answers would defeat the user experience. The accepted limitation is that a partially delivered generation can fail visibly; an explicit terminal error is preferable to mixing two providers' answers. [OpenRouter's streaming contract](https://openrouter.ai/docs/api_reference/streaming) distinguishes errors before and during a stream. The proposed gateway uses the same clear boundary.
+Allow bounded fallback before output, then report a stream error after partial delivery. Streaming is a core API capability here, so waiting for complete answers would defeat the user experience. The accepted limitation is that a partially delivered generation can fail visibly; an explicit terminal error is preferable to mixing two providers' answers. [OpenRouter's streaming contract](https://openrouter.ai/docs/api_reference/streaming) distinguishes errors before and during a stream. The proposed gateway uses the same clear boundary.
 
 ```mermaid
 sequenceDiagram
@@ -353,13 +353,13 @@ Client retries same key     → return the existing request's state
 
 **Problem.** Reading a balance and updating it later lets concurrent requests spend the same remaining amount. Regional counters can also diverge during failover.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Reconcile after inference:** start work immediately and deduct its charge when usage arrives. Admission is cheap, but several concurrent requests can spend the same remaining balance, leaving a debt that reconciliation cannot prevent.
 - **Redis atomic counters:** check and deduct allowance in one server-side operation. This gives fast coordination within that Redis authority, but acknowledged state can be lost during failover and parent/child accounts must share an atomic scope; hard durable budgets require an additional persistence protocol.
 - **Durable reservations:** lock related budget rows and commit a maximum charge hold before dispatch. Competing requests observe committed exposure, including uncertain attempts. The cost is transaction latency, contention on busy accounts and unavailable balance tied up by conservative or unresolved holds.
 
-**Choice and rationale.** Commit durable reservations on the organization's account shard. This gateway promises tenant and organization spending limits while admitting requests concurrently. Colocating those accounts makes one transaction the admission authority. We accept lock contention and temporarily reduced concurrency to keep provider exposure within the committed allowance. The request's maximum output length, provider pricing and retry policy determine its charge bound. Unsupported or unbounded charging models require a stricter limit or separate policy.
+Commit durable reservations on the organization's account shard. This gateway promises tenant and organization spending limits while admitting requests concurrently. Colocating those accounts makes one transaction the admission authority. We accept lock contention and temporarily reduced concurrency to keep provider exposure within the committed allowance. The request's maximum output length, provider pricing and retry policy determine its charge bound. Unsupported or unbounded charging models require a stricter limit or separate policy.
 
 ```python
 # One budget transaction; accounts locked in a stable order.
@@ -403,13 +403,13 @@ RETURNING reserved_charge;
 
 **Problem.** A gateway crash can lose its in-memory token count and an unflushed completion event. A short batch interval limits exposure but cannot reconstruct the lost usage.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Memory-only batching:** accumulate usage in gateway memory and publish completed batches. This minimizes durable writes, but a crash loses unacknowledged observations and may leave a billable attempt without recovery evidence.
 - **Persist every frame:** store each delivered frame before advancing the stream. Recovery can replay output precisely, but storage and write traffic scale with streaming chunks; frame counts still cannot establish billable token usage.
 - **Durable attempt records and checkpoints:** save provider identity before dispatch, publish cumulative usage versions and obtain final provider evidence during recovery. This bounds write volume while retaining reconciliation handles, but reports can remain pending and provider APIs may not expose the final usage needed to resolve every attempt.
 
-**Choice and rationale.** Persist attempt identity before dispatch, checkpoint bounded usage and settle from finalized evidence. The estimated 1.73B requests/day already produces substantial accounting traffic; durable writes per token would multiply it. Attempt-level recovery keeps token delivery independent of that traffic. We accept delayed settlement and a documented unresolved-usage policy where a provider supplies insufficient evidence. Provider-reported token counts are preferred over counting text fragments. A worker queries supported provider usage endpoints for unknown attempts; providers without recoverable records require a conservative documented billing policy.
+Persist attempt identity before dispatch, checkpoint bounded usage and settle from finalized evidence. The estimated 1.73B requests/day already produces substantial accounting traffic; durable writes per token would multiply it. Attempt-level recovery keeps token delivery independent of that traffic. We accept delayed settlement and a documented unresolved-usage policy where a provider supplies insufficient evidence. Provider-reported token counts are preferred over counting text fragments. A worker queries supported provider usage endpoints for unknown attempts; providers without recoverable records require a conservative documented billing policy.
 
 Settlement and the corresponding outbox event commit together. Consumers use request, attempt and settlement versions to prevent double application. Reporting can lag behind the authoritative ledger and labels pending amounts separately.
 
@@ -441,13 +441,13 @@ If the gateway crashes after the provider finishes but before settlement, recove
 
 **Problem.** Repeated prompts can reuse inference work, but request parameters, model changes and private context affect whether an old answer is eligible.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Provider prompt caching:** ask the provider to reuse supported prefix computation while still generating a response for the current request. This can reduce prefill work without reusing a completed answer, but support, retention and pricing vary by provider; decoding and output charges can remain.
 - **Gateway exact-response caching:** key a completed answer by the complete eligible request and tenant. A hit avoids a new inference call, but exact equality limits reuse and model/policy changes require invalidation. Retaining private output also adds access and retention obligations.
 - **Semantic response caching:** search for a sufficiently similar previous prompt and reuse its answer. This increases potential hits, but similarity is not equivalent intent: a changed number, negation or tool contract can make the cached answer wrong, requiring quality gates beyond exact-key checks.
 
-**Choice and rationale.** Use provider prompt caching and opt-in exact-response caching. Applications depend on correct tool contracts and tenant isolation, so a high cache-hit rate is secondary to eligible reuse. Prefix caching saves repeated setup; exact completed answers are reused only under explicit policy. We accept a narrower hit rate and provider-specific behavior instead of semantic answer substitution. Send the complete request unless the provider explicitly offers a stored-prefix handle. A gateway prefix hash alone cannot substitute for provider-side cache support.
+Use provider prompt caching and opt-in exact-response caching. Applications depend on correct tool contracts and tenant isolation, so a high cache-hit rate is secondary to eligible reuse. Prefix caching saves repeated setup; exact completed answers are reused only under explicit policy. We accept a narrower hit rate and provider-specific behavior instead of semantic answer substitution. Send the complete request unless the provider explicitly offers a stored-prefix handle. A gateway prefix hash alone cannot substitute for provider-side cache support.
 
 The exact key includes tenant, model version, messages, tool definitions, generation settings and relevant policy versions. Cache completed eligible responses with bounded retention; tool-executing, time-sensitive or private requests require explicit rules.
 

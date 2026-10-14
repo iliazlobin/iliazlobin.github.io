@@ -266,14 +266,14 @@ The close worker rereads and locks the auction. If an extension moved the deadli
 
 **Problem.** Updating a cache and then persisting a bid leaves a failure window. A cache-side deduplication marker can survive even when the durable outcome was never written.
 
-**Options and tradeoffs.**
+**Options.**
 
 
 - **Database transaction per command:** lock the auction row, evaluate one bid and commit its outcome with the auction state. This gives a clear durable decision and safe retry identity; a busy auction serializes many small transactions, increasing lock waits and commit overhead.
 - **Cache decision followed by database write:** update the high bid in memory before persisting it. The normal decision is quick, but a crash between those writes leaves the cache and durable bid history disagreeing; recovery needs a protocol that can prove which bids were accepted.
 - **Ordered durable log with deterministic state machine:** append commands to an auction-keyed log and replay them in order. Batching and replay suit hot auctions, but ownership, acknowledged offsets and materialized results must be coordinated; a log acknowledgment alone is not a committed winning bid.
 
-**Choice and rationale.** Use ordered auction writers with PostgreSQL transactions. Batch a bounded set of commands for a hot auction, evaluate them sequentially and commit all associated outcomes and the final auction state together. Keep batches short enough to meet the latency budget. Ordered writers with bounded PostgreSQL transactions fit auctions because bid acceptance and closing must share one durable order. Batching amortizes commits on hot auctions while retaining that decision boundary; the accepted cost is per-auction serialization, so batch size and lock wait stay within the bid deadline.
+Use ordered auction writers with PostgreSQL transactions. Batch a bounded set of commands for a hot auction, evaluate them sequentially and commit all associated outcomes and the final auction state together. Keep batches short enough to meet the latency budget. Ordered writers with bounded PostgreSQL transactions fit auctions because bid acceptance and closing must share one durable order. Batching amortizes commits on hot auctions while retaining that decision boundary; the accepted cost is per-auction serialization, so batch size and lock wait stay within the bid deadline.
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -310,13 +310,13 @@ Load the current auction and relevant maxima while holding the auction lock. App
 
 **Problem.** Polling each second creates millions of repeated requests, while broadcasting every intermediate bid can overwhelm users watching a popular auction.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Polling:** clients repeatedly fetch the latest version. It is easy to recover after disconnects, but a short interval spends requests on unchanged auctions and a long interval delays updates.
 - **Global event broadcast:** send each accepted bid to every gateway and filter there. Publishing is simple, but unrelated auctions consume network and gateway work, and a hot auction can overwhelm slow clients.
 - **Interest-based WebSocket delivery:** gateways subscribe only to auctions their clients watch and coalesce successive public versions. This reduces unnecessary delivery and sends current state promptly; subscriptions, bounded buffers and reconnect catch-up add operational state.
 
-**Choice and rationale.** Subscribe each gateway only to auctions watched by its local users. Use [sharded Pub/Sub](https://valkey.io/topics/pubsub/#sharded-pubsub) to reduce cluster-wide traffic and coalesce updates within a measured portion of the 200ms budget. Interest-based delivery fits a read-heavy auction because watchers need the latest public state, while the bid ledger retains every accepted command. Coalescing therefore saves fan-out without changing bid order; clients may skip intermediate display updates and must recover from a committed version after reconnecting.
+Subscribe each gateway only to auctions watched by its local users. Use [sharded Pub/Sub](https://valkey.io/topics/pubsub/#sharded-pubsub) to reduce cluster-wide traffic and coalesce updates within a measured portion of the 200ms budget. Interest-based delivery fits a read-heavy auction because watchers need the latest public state, while the bid ledger retains every accepted command. Coalescing therefore saves fan-out without changing bid order; clients may skip intermediate display updates and must recover from a committed version after reconnecting.
 
 ```mermaid
 flowchart TB
@@ -344,13 +344,13 @@ Coalescing versions 41, 42 and 43 into state 43 saves bandwidth when intermediat
 
 **Problem.** Cached timers can be lost, workers can retry, and an accepted bid can extend a deadline just as a close attempt starts.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Continuous database scans:** repeatedly find every due auction in durable storage. Recovery is straightforward, but scanning the full active set wastes reads and scan intervals add closing delay.
 - **Per-auction timers only:** schedule one in-memory callback for each deadline. Normal closing is inexpensive, but process loss drops timers and extensions can leave stale callbacks racing with the new deadline.
 - **Sharded hints with durable recovery scans:** dispatch near-term deadlines from partitioned schedule hints and repair missed entries from an indexed database scan. This bounds normal work and survives hint loss; duplicate checks and recovery-scan capacity remain part of the design.
 
-**Choice and rationale.** Shard schedule hints by auction ID and periodically scan the database's active/deadline index to repair missed work. The close transaction decides whether the auction is due; a hint is only a reason to check. Hints plus recovery scans fit extendable auctions: scheduling can retry freely because the locked auction transaction checks the current deadline and decides closing. We accept duplicate close checks and small recovery delay in exchange for a scheduler that can be rebuilt from durable auction state.
+Shard schedule hints by auction ID and periodically scan the database's active/deadline index to repair missed work. The close transaction decides whether the auction is due; a hint is only a reason to check. Hints plus recovery scans fit extendable auctions: scheduling can retry freely because the locked auction transaction checks the current deadline and decides closing. We accept duplicate close checks and small recovery delay in exchange for a scheduler that can be rebuilt from durable auction state.
 
 Bid acceptance and closing take the same auction lock. An accepted extension commits before a waiting close sees the new deadline. If closing commits first, later commands receive the ended-auction outcome. The final result and its outbox event commit together, so duplicate close attempts cannot select another winner.
 

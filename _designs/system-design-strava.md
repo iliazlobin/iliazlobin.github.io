@@ -284,7 +284,7 @@ Feed and leaderboard reads enforce current eligibility while their caches catch 
 
 **Problem.** Metadata, object storage and background jobs do not share one transaction.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Synchronous upload processing:** Validate and calculate everything before returning. Completion is easy to understand, but long mobile waits and interrupted responses repeat expensive work.
 
@@ -292,7 +292,7 @@ Feed and leaderboard reads enforce current eligibility while their caches catch 
 
 - **Durable staged acceptance — recommended:** Verify the uploaded object, then commit acceptance and its processing event together. Retries find a stable activity state; pending uploads and outbox recovery require explicit lifecycle management.
 
-**Choice and rationale.** Use staged acceptance with exact database uniqueness. A Bloom filter may help avoid unnecessary checks but must not reject an upload by itself. Keep the pending/accepted/processed states explicit and let the app query them after an ambiguous response. Mobile connectivity makes interrupted upload responses normal. We accept a visible pending/processing state and recovery workflow so an accepted activity has both a verified trace and a durable path to processing.
+Use staged acceptance with exact database uniqueness. A Bloom filter may help avoid unnecessary checks but must not reject an upload by itself. Keep the pending/accepted/processed states explicit and let the app query them after an ambiguous response. Mobile connectivity makes interrupted upload responses normal. We accept a visible pending/processing state and recovery workflow so an accepted activity has both a verified trace and a durable path to processing.
 
 Workers use stage/output versions and persistent deduplication. A corrupted file produces a clear recoverable failure; an unavailable processor leaves a durable queued activity. Monitor pending-upload age, accepted-to-processed latency and orphan objects.
 
@@ -323,7 +323,7 @@ sequenceDiagram
 
 **Problem.** GPS noise, repeated laps and parallel roads make spatial overlap insufficient.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Brute-force alignment:** Compare every catalog segment with the full recorded trace. Coverage is straightforward, but catalog size and trace length make matching expensive.
 
@@ -331,7 +331,7 @@ sequenceDiagram
 
 - **Spatial cells with ordered subtrace verification — recommended:** Cover the route and GPS-accuracy corridor with cells, then verify direction and ordered start/end crossings on a bounded subtrace. Alignment work falls; cell coverage and noisy sample quality still need validation.
 
-**Choice and rationale.** Cover paths with cells and neighboring/corridor cells appropriate to reported GPS accuracy. Use spatial overlap to find candidates, then locate start/end crossings in order and align the bounded subtrace. Apply direction and path coverage before more expensive banded alignment. A long activity may contain several laps and nearby unrelated roads. We accept two-stage spatial and trajectory checks so matching work is bounded without turning geographic overlap into an effort claim.
+Cover paths with cells and neighboring/corridor cells appropriate to reported GPS accuracy. Use spatial overlap to find candidates, then locate start/end crossings in order and align the bounded subtrace. Apply direction and path coverage before more expensive banded alignment. A long activity may contain several laps and nearby unrelated roads. We accept two-stage spatial and trajectory checks so matching work is bounded without turning geographic overlap into an effort claim.
 
 Keep ambiguous matches out of competitive leaderboards and provide correction/appeal handling. Thresholds are calibrated by sport, sample quality and terrain; neither cell overlap nor a fixed distance threshold guarantees a correct traversal. Backfills for new segment versions run at lower priority.
 
@@ -345,7 +345,7 @@ Repeated laps can produce several valid start/end pairs. Evaluate each pair sepa
 
 **Problem.** Ranking every historical effort repeatedly is costly and can show the same athlete several times.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Aggregate historical efforts on read:** Select each athlete's best eligible effort for every request. The source model is simple, but popular segments repeatedly scan many historical records.
 
@@ -353,7 +353,7 @@ Repeated laps can produce several valid start/end pairs. Evaluate each pair sepa
 
 - **Durable personal-best views with hot caching — recommended:** Maintain one eligible best per athlete and supported view transactionally, then cache top pages. Reads are bounded; workers must recompute a replacement after deletion or disqualification and control the number of filter combinations.
 
-**Choice and rationale.** Use segment-owned transactional best materializations and cache frequently read top pages. Workers serialize updates by segment and carry fencing/version checks during ownership changes. Kafka ordering helps processing, but database constraints still protect concurrent retries. Leaderboards repeat the same popular reads while effort corrections must remain recoverable. We accept materialization and replacement work to preserve one ranked best per athlete, rather than paying historical aggregation on every page.
+Use segment-owned transactional best materializations and cache frequently read top pages. Workers serialize updates by segment and carry fencing/version checks during ownership changes. Kafka ordering helps processing, but database constraints still protect concurrent retries. Leaderboards repeat the same popular reads while effort corrections must remain recoverable. We accept materialization and replacement work to preserve one ranked best per athlete, rather than paying historical aggregation on every page.
 
 Deletion of a best effort selects the next eligible result. Attribute/filter policy changes create a new view generation and replay affected history. Exact personal rank over huge populations requires additional rank/count structures or a bounded offline computation; top-100 lookup alone does not make deep rank a constant-time query.
 
@@ -367,7 +367,7 @@ Use an ordered index such as `(segment_id, view_generation, elapsed_ms, athlete_
 
 **Problem.** Large follower counts increase writes, and group inference can reveal hidden activity.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Push every activity:** Fan out new activity IDs to all followers. Reads are cheap, but large authors and inactive followers create substantial write work.
 
@@ -375,7 +375,7 @@ Use an ordered index such as `(segment_id, view_generation, elapsed_ms, athlete_
 
 - **Hybrid delivery with current visibility checks — recommended:** Push ordinary active-follower work and merge high-fan-out authors on read. Costs are balanced; materialized views still require fresh privacy checks and group-card verification over only visible activity.
 
-**Choice and rationale.** Tune hybrid thresholds from measured fan-out and merge cost. Precompute group candidates by time and route similarity, then verify spatial/temporal overlap. Similarity signatures are candidate features, not proof that athletes exercised together. Fan-out varies widely, while group inference can reveal hidden participation. We accept read-time eligibility and merge work so caching and similarity candidates never bypass current sharing policy.
+Tune hybrid thresholds from measured fan-out and merge cost. Precompute group candidates by time and route similarity, then verify spatial/temporal overlap. Similarity signatures are candidate features, not proof that athletes exercised together. Fan-out varies widely, while group inference can reveal hidden participation. We accept read-time eligibility and merge work so caching and similarity candidates never bypass current sharing policy.
 
 Apply the requesting user's visibility filters before assembling a group card. On privacy changes, invalidate feed entries, grouping and heatmap generations together. Monitor propagation lag, cache recovery and hidden-content audit checks alongside feed latency.
 

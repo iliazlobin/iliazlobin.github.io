@@ -412,7 +412,7 @@ An external check on every redirect would add scanner latency and availability t
 
 **Problem.** Forty billion retained mappings need distributed storage, while each domain-and-code pair has one owner and becomes readable immediately after creation. A cache or asynchronously replicated index alone cannot decide who owns an alias.
 
-**Options and tradeoffs.**
+**Options.**
 
 | Option | Mechanism and benefit | Cost and failure mode |
 | --- | --- | --- |
@@ -420,7 +420,7 @@ An external check on every redirect would add scanner latency and availability t
 | Hash-sharded PostgreSQL | Route each complete link key to one logical shard; the shard's primary enforces uniqueness locally. | Routing, resharding and a separate organization listing index become application responsibilities. Two writable owners for one shard would break the claim invariant. |
 | Cassandra | Partitioned key lookups scale independently; conditional `IF NOT EXISTS` uses a lightweight transaction to serialize a claim. | Conditional writes add consensus work, and consistency/failover choices must preserve claims and immediate reads. Ordinary eventually consistent writes are insufficient. |
 
-**Choice and rationale.** Use hash-sharded [PostgreSQL](/designs/tech-postgresql/). The cached workload reduces the illustrative storage load to about 2.9K reads/s and 580 creates/s; retained data size, rather than an extreme mutation rate, motivates sharding. Familiar transaction semantics simplify permanent code reservation and saved scan jobs. [Cassandra](/designs/tech-apache-cassandra/) remains credible when its distributed operations justify the [conditional-write cost](https://cassandra.apache.org/doc/latest/cassandra/developing/cql/dml.html#insert).
+Use hash-sharded [PostgreSQL](/designs/tech-postgresql/). The cached workload reduces the illustrative storage load to about 2.9K reads/s and 580 creates/s; retained data size, rather than an extreme mutation rate, motivates sharding. Familiar transaction semantics simplify permanent code reservation and saved scan jobs. [Cassandra](/designs/tech-apache-cassandra/) remains credible when its distributed operations justify the [conditional-write cost](https://cassandra.apache.org/doc/latest/cassandra/developing/cql/dml.html#insert).
 
 **How it works.** Hash `(domain, short_code)` to a fixed logical bucket, then consult a versioned bucket-to-shard map. All claims and uncached redirect reads for that bucket reach its current PostgreSQL primary. A `PRIMARY KEY (domain, short_code)` rejects duplicate claims; cleanup retains a compact row containing the key and expiration state. Organizations and the range allocator use their own relational authority. A committed link event maintains a derived `(org_id, created_at, domain, short_code)` listing index; listing can lag while direct redirects work immediately.
 
@@ -449,13 +449,13 @@ The map identifies one writer; PostgreSQL's unique index is local to that writer
 
 **Problem.** Several creation-service instances can generate links at the same time. Their IDs must remain distinct through crashes and database failover. A generated code can also match an alias chosen by a user, so the Link write must enforce uniqueness even when ID allocation is correct.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **A central sequence:** increment one durable counter and encode the result in base62. Each creation request makes a database call to obtain its ID. This is the simplest option when that call's latency and availability are acceptable.
 - **Random codes or a truncated URL hash:** each instance generates a candidate independently and attempts a uniqueness-checked insert. Collisions require a retry with another candidate. A URL-hash strategy also needs a way to assign distinct codes to separate campaign links that share the same destination. At 40B assignments in a seven-character base62 space, random generation would require roughly 200M collision retries.
 - **Allocated ID ranges:** the allocator durably reserves a distinct range for each instance, which generates codes locally from that range. One reservation supports many creations. Durable, non-overlapping reservations preserve uniqueness across crashes.
 
-**Choice and rationale.** Reserve ID ranges so an instance can create links from its remaining allocation during a short allocator outage. At 580 creates/s a central sequence is still credible; ranges trade refill coordination and wasted IDs after crashes for fewer allocation dependencies. Every final Link insert still checks custom-alias collisions.
+Reserve ID ranges so an instance can create links from its remaining allocation during a short allocator outage. At 580 creates/s a central sequence is still credible; ranges trade refill coordination and wasted IDs after crashes for fewer allocation dependencies. Every final Link insert still checks custom-alias collisions.
 
 **How it works.**
 
@@ -510,13 +510,13 @@ Associate a stable allocation request ID with the reserved interval. If the resp
 
 **Problem.** When a link is shared with a large audience, many users request the same destination at once. Caching avoids repeated database reads; the difficult case is the first burst, when several requests arrive before the record has been cached.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Indexed database reads:** the simplest path, with one authoritative record. Every redirect still reaches storage, including repeated requests for a hot link.
 - **A shared Redis cache:** all instances reuse the same cached record, reducing database reads even when requests land on different instances. Each cache lookup still crosses the network, and the shared cache needs enough capacity and availability to serve the redirect traffic.
 - **A local LRU cache with shared in-flight lookups:** each instance serves cached records from its own memory and combines simultaneous misses for the same code into one database lookup. Hits avoid a network call, but every instance has its own cache to warm and must remove stale entries when links change.
 
-**Choice and rationale.** Use a local record cache because repeated reads of a small popular-link set can hit without a network hop. Accept independent warm-up and invalidation per instance. LRU eviction removes the least recently used records when memory fills up.
+Use a local record cache because repeated reads of a small popular-link set can hit without a network hop. Accept independent warm-up and invalidation per instance. LRU eviction removes the least recently used records when memory fills up.
 
 **How it works.** On a miss, one request starts the database lookup; other requests for that key on the same instance await its result. This coordination is called singleflight. It bounds per-instance duplicate work, while a fleet-wide cold burst can still cause one lookup per instance.
 
@@ -542,7 +542,7 @@ Store record version and expiry with each cached value. A lookup begun for versi
 
 **Problem.** Caching a Link record keeps expiration and safety checks on the request path. Caching an HTTP redirect lets a browser or edge reuse an earlier navigation instruction, bypassing the service's current checks and click collection.
 
-**Options and tradeoffs.**
+**Options.**
 
 | Cache | What it stores | Control and limits |
 | --- | --- | --- |
@@ -550,7 +550,7 @@ Store record version and expiry with each cached value. A lookup begun for versi
 | Edge | HTTP redirect | Saves service traffic, but requires purge propagation and edge click collection; neither exists in the selected request path. |
 | Browser | HTTP redirect | Saves repeat network requests; the service cannot revoke an issued response before its cache deadline or observe reused visits. |
 
-**Choice and rationale.** Use service-side record caching and private browser reuse for safe links, with shared redirect caching disabled. This keeps most database work off the read-heavy path while every non-browser-cached request checks policy and collects a click. Accept up to 90 seconds of browser reuse and its unobserved visits; a strict immediate-revocation product would instead use `no-store` for all redirects.
+Use service-side record caching and private browser reuse for safe links, with shared redirect caching disabled. This keeps most database work off the read-heavy path while every non-browser-cached request checks policy and collects a click. Accept up to 90 seconds of browser reuse and its unobserved visits; a strict immediate-revocation product would instead use `no-store` for all redirects.
 
 **How it works.** An authoritative lookup establishes a record-validation deadline at `fetched_at + 90s`. Cache hits preserve that deadline. Set browser `max-age` to the remaining whole seconds before the earliest of that deadline, link expiration and `last_scanned_at + 24h`, capped at 90 seconds. Thus an old record near the end of its TTL cannot start another full browser TTL. The `private` directive limits storage to private caches ([HTTP cache rules](https://www.rfc-editor.org/rfc/rfc9111.html#name-private)). With less than one second remaining, use `no-store`, as for warning/block pages and explicit warning continuation. The 95% hit-rate sizing value is an assumption, not guaranteed effectiveness.
 
@@ -566,13 +566,13 @@ A later blocked verdict invalidates service records, but an issued private brows
 
 **Problem.** Waiting for an analytics write adds redirect latency and couples navigation to analytics availability. Returning first leaves a crash window before the click becomes durable.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Update a counter synchronously:** commit the click-counter update before returning the redirect. This keeps counting simple, but adds write latency to each request and makes navigation depend on the analytics store.
 - **Buffer events and publish asynchronously:** return the redirect promptly, then batch click events into a durable queue. Analytics processing runs independently of the response. Events awaiting queue acknowledgment remain vulnerable to a process crash.
 - **Wait for durable recording before responding:** the service waits for the queue to confirm that it has saved the event before returning the redirect. This removes the pre-acknowledgment loss window for successful responses, but adds queue latency to every visit and makes navigation depend on the queue's availability.
 
-**Choice and rationale.** Buffer clicks and publish asynchronously to Kafka; workers save events in ClickHouse and rebuild hourly totals. Best-effort campaign analytics and the redirect latency target justify pre-acknowledgment loss. Billing-grade collection would instead wait for a durable acknowledgment before returning success.
+Buffer clicks and publish asynchronously to Kafka; workers save events in ClickHouse and rebuild hourly totals. Best-effort campaign analytics and the redirect latency target justify pre-acknowledgment loss. Billing-grade collection would instead wait for a durable acknowledgment before returning success.
 
 **How it works.**
 
@@ -628,13 +628,13 @@ If an insert succeeded before the worker crashed, replay preserves each event's 
 
 **Problem.** A destination can change after creation. Detecting that change needs another scan; scanning every redirect adds external latency and an availability dependency.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Scan only at creation:** cheap and simple, but a later change can go undetected indefinitely.
 - **Check externally on every redirect:** request the freshest available verdict before returning a redirect. Navigation then depends on the scanner's latency and availability. Detection is limited to threats already known to the provider.
 - **Rescan in the background and cache results:** check destinations periodically and update cached records when a verdict changes. Each redirect uses the saved verdict, keeping external scanner latency off the request path. Visits between scans may use an older verdict after a destination changes.
 
-**Choice and rationale.** Scan in the background and store a versioned verdict, scan time and intelligence version. This preserves redirect responsiveness despite variable scanner latency. New and stale-unverified destinations display a warning; known blocked destinations remain blocked until a successful recheck changes them. Accept the gap between checks and the detection limits of available intelligence.
+Scan in the background and store a versioned verdict, scan time and intelligence version. This preserves redirect responsiveness despite variable scanner latency. New and stale-unverified destinations display a warning; known blocked destinations remain blocked until a successful recheck changes them. Accept the gap between checks and the detection limits of available intelligence.
 
 **How it works.**
 

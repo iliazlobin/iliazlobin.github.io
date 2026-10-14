@@ -235,13 +235,13 @@ For a permitted download, it selects device-compatible encrypted files and issue
 
 **Problem.** The same title may be watched millions of times, while long-tail titles have sparse regional demand.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Origin only:** serve every media segment from central storage. Placement is simple and long-tail misses are natural, but popular titles concentrate egress and distant users pay network latency.
 - **Commercial CDN:** distribute cache fills through managed regional edges. Deployment and coverage are easier, but cache misses and high sustained volume incur contract-dependent cost and less placement control.
 - **Owned or ISP-embedded delivery:** place verified title files close to measured demand. Inventory steering and sustained traffic can justify placement control; hardware, peering, fills and fleet operations require significant investment and fallback capacity.
 
-**Choice and rationale.** Use inventory-aware CDN steering and pre-position high-demand regional titles. Repeated regional playback benefits from serving segments near viewers; the choice between owned edge caches and rented CDN capacity follows measured coverage, fill traffic and total cost. We accept cache-fill misses and alternate endpoints rather than relying on a universal traffic-share threshold for owning the delivery fleet.
+Use inventory-aware CDN steering and pre-position high-demand regional titles. Repeated regional playback benefits from serving segments near viewers; the choice between owned edge caches and rented CDN capacity follows measured coverage, fill traffic and total cost. We accept cache-fill misses and alternate endpoints rather than relying on a universal traffic-share threshold for owning the delivery fleet.
 
 Steering considers health, file availability, network path and load. Keep alternate endpoints and origin capacity for misses; rollout of new encodes publishes a complete generation atomically. Monitor startup time, rebuffering, cache misses, fill traffic and cost per delivered hour.
 
@@ -269,13 +269,13 @@ flowchart TB
 
 **Problem.** Codec/resolution variants consume compute and must be consistent before a title is playable.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Synchronous full encoding:** finish every variant before returning from ingestion. Completion is easy to reason about, but long videos and uncommon codecs hold the whole ingest path open.
 - **Uncoordinated parallel jobs:** encode each rendition independently. Compute scales out, but a partially written manifest can expose missing or misaligned segments.
 - **Versioned dependency workflow:** use deterministic task keys, validate aligned outputs and publish one complete generation. Retries reuse verified work and old media stays usable; workflow state and publication checks add coordination and retain overlapping generations.
 
-**Choice and rationale.** Use a versioned workflow: inspect source → choose ladder → encode chunks → validate → package/encrypt → publish. Tasks use deterministic output keys and retry safely. Validate codec compatibility, audio/caption alignment and representative perceptual quality. A versioned publication gate fits adaptive playback, where the manifest is a promise that compatible aligned segments exist. We accept staged ingestion and retained old generations to make retries safe and failed re-encodes invisible to players.
+Use a versioned workflow: inspect source → choose ladder → encode chunks → validate → package/encrypt → publish. Tasks use deterministic output keys and retry safely. Validate codec compatibility, audio/caption alignment and representative perceptual quality. A versioned publication gate fits adaptive playback, where the manifest is a promise that compatible aligned segments exist. We accept staged ingestion and retained old generations to make retries safe and failed re-encodes invisible to players.
 
 Release manifests only when all referenced segments exist and required checks pass. Preserve the previous good generation during a failed update. Measure source-hour compute, queue age, failure rate and rendition utilization; remove little-used formats only after checking device coverage.
 
@@ -289,13 +289,13 @@ Chunking creates parallelism, but boundaries must align with independently decod
 
 **Problem.** Full model inference on every page is expensive, while cached rows can contain stale progress or unavailable titles.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Regional popularity:** serve prepared popular titles for each region. Reads are cheap and cold profiles get a fallback, but individual interests and new progress are weakly represented.
 - **Full online ranking:** retrieve features and run heavy personalization on every request. Inputs are fresh, but model/dependency cost and tail latency grow with candidate count.
 - **Prepared candidates plus online assembly:** cache expensive retrieval and apply current progress, rights and bounded reranking at request time. Heavy work is amortized while eligibility stays current; candidates can age and need refresh/degraded fallback.
 
-**Choice and rationale.** Prepare profile/cohort candidates on a bounded refresh schedule and assemble rows online. Overlay progress, deduplicate titles, maintain row diversity and apply live rights/maturity policy. Prepared candidates with live overlays fit repeated homepage reads and rapidly changing progress/rights. We accept a bounded candidate age while ensuring cached recommendations remain inputs to current authorization, not authority themselves.
+Prepare profile/cohort candidates on a bounded refresh schedule and assemble rows online. Overlay progress, deduplicate titles, maintain row diversity and apply live rights/maturity policy. Prepared candidates with live overlays fit repeated homepage reads and rapidly changing progress/rights. We accept a bounded candidate age while ensuring cached recommendations remain inputs to current authorization, not authority themselves.
 
 If recommendations are unavailable, use authorized regional/popularity rows. Evaluate engagement and discovery quality alongside P99 latency, stale-candidate age and filter-removal rate. A cache hit is an input to assembly, not permission to show every cached title.
 
@@ -309,13 +309,13 @@ A user finishing episode four should see episode five even if the recommendation
 
 **Problem.** Heartbeat retries arrive out of order, and two devices can start concurrently.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Arrival-time last-write-wins:** accept the most recently received heartbeat. Storage is simple, but a delayed old packet can move progress backward or replace another device's newer session.
 - **Maximum watched position:** keep the greatest offset. Reordered forward progress is harmless, but an intentional backward seek cannot become the canonical resume position.
 - **Session epochs and sequences:** select an authorized session epoch and accept only newer sequence values within it. Intentional seeks and retries remain ordered; session handoff policy, lease expiry and failover fencing require explicit state.
 
-**Choice and rationale.** Assign an epoch on session creation and apply sequence-conditioned progress writes in the account's PostgreSQL shard. [Row locking and conditional updates](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS) protect session handoffs and progress; the account transaction also owns stream-slot admission. Epochs and sequences fit intentional seeking and concurrent starts. We accept shard management, durable-write cost and lease recovery delay; asynchronous heartbeats are never proof that a new stream slot is free.
+Assign an epoch on session creation and apply sequence-conditioned progress writes in the account's PostgreSQL shard. [Row locking and conditional updates](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS) protect session handoffs and progress; the account transaction also owns stream-slot admission. Epochs and sequences fit intentional seeking and concurrent starts. We accept shard management, durable-write cost and lease recovery delay; asynchronous heartbeats are never proof that a new stream slot is free.
 
 Concurrent-stream admission uses a transactional account lease registry; heartbeats renew leases and expired sessions release slots. Fence old epochs and make start retries idempotent. Test pause/end delivery, delayed packets, clock skew and region failover; avoid promising uninterrupted playback beyond token/license validity.
 

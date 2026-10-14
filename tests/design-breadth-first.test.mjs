@@ -38,9 +38,20 @@ test("deep dives expose problems, alternatives, workload choices and recovery", 
     const deep = text.split("\n## Deep dives\n")[1];
     for (const section of deep.split(/^### /m).slice(1)) {
       const title = section.split("\n")[0];
-      for (const marker of ["Problem", "Options and tradeoffs", "Choice and rationale", "Tradeoffs and recovery"]) {
+      for (const marker of ["Problem", "Options", "Tradeoffs and recovery"]) {
         assert.match(section, new RegExp(`\\*\\*${marker}\\.`), `${name}: ${title}: ${marker}`);
       }
+      const optionsAndRecommendation = section.split("**Options.**")[1]
+        .split(/\*\*(?:How it works|Tradeoffs and recovery)\.\*\*/)[0]
+        .replace(/```[\s\S]*?```/g, "");
+      const blocks = optionsAndRecommendation.trim().split(/\n\s*\n/);
+      assert.ok(blocks.some(block => /^(?:\|[^\n]+\n\|[- :|]+\||- )/.test(block)),
+        `${name}: ${title}: alternatives retain their mechanisms and costs`);
+      assert.ok(blocks.some(block => !/^(?:\||-|#|\*\*[^*]+\.\*\*)/.test(block)
+          && /^(?:\*\*)?[\p{L}]/u.test(block)),
+        `${name}: ${title}: explain the chosen approach in an ordinary paragraph`);
+      assert.doesNotMatch(section, /\*\*(?:Options and tradeoffs|Choice and rationale)\.\*\*/,
+        `${name}: ${title}: avoid redundant editorial labels`);
       assert.doesNotMatch(section, /\*\*Problem\.\*\*\s+\*\*Problem:/, `${name}: duplicate cue`);
     }
   }

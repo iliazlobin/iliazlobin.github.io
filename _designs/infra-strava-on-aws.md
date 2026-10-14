@@ -12,7 +12,8 @@ Strava is a fitness-tracking social network with 120M+ registered athletes and 3
 
 <!--more-->
 
-## 1. Context
+## Context
+{: id="1-context"}
 
 Strava is a fitness-tracking social network with 120M+ registered athletes and 3B+ uploaded activities. The platform ingests and processes 7M GPS-tracked activities per day (roughly 350 GB of raw GPX/FIT data), serves a real-time social feed of kudos, comments, and club activity, operates segment leaderboards across 100M+ road/trail segments, delivers live position tracking during workouts, and stores north of 1B activity photos. The workload is sharply seasonal: Strava Day (October), New Year resolution spikes, and major marathon weekends drive 3-6x baseline throughput.
 
@@ -20,7 +21,8 @@ The infrastructure runs primarily on AWS, with a Go/Ruby API tier in front of a 
 
 This design documents the infrastructure that delivers these capabilities, sized for the peak throughput numbers above and targeting 99.9% availability for the activity-upload path and 99.5% for the social feed.
 
-## 2. Goals
+## Goals
+{: id="2-goals"}
 
 - Activity upload latency: p99 map-matching time under 90 seconds from upload to segment-matching complete
 - Upload availability: 99.9% uptime for the activity-ingestion API (error budget of 43.2 minutes/month)
@@ -31,7 +33,8 @@ This design documents the infrastructure that delivers these capabilities, sized
 - Seasonal burst: auto-scale to 3x steady-state throughput within 2 minutes of detected surge
 - **Out of scope:** Mobile-client GPS recording pipeline (on-device sensors, local trace file generation), third-party device integrations (Garmin, Wahoo), subscription billing infrastructure, China-region distribution (Huawei HMS is a separate deployment).
 
-## 3. Architecture
+## Architecture
+{: id="3-architecture"}
 
 ```mermaid
 flowchart TD
@@ -95,7 +98,8 @@ From there, the leaderboard pipeline takes over: the L1 in-memory skip list in e
 
 Photos are uploaded separately through a presigned S3 URL and stored in Wasabi (2 PB, $0.0069/GB, no egress fees). The imgproxy cluster (6 `c6g.2xlarge` pods on EKS) generates responsive breakpoints at 100, 400, 800, and 1,600 pixels in WebP and AVIF, served through CloudFront. Live tracking uses Go WebSocket servers (8 `c7g.4xlarge` nodes on EKS, 100-150K connections per node) with Redis Pub/Sub as the session-scoped position bus.
 
-## 4. Reliability
+## Reliability
+{: id="4-reliability"}
 
 The activity upload path targets 99.9% availability (43.2 minutes/month error budget). This is measured as the proportion of upload requests that return HTTP 202 within 30 seconds against total upload attempts from the mobile client. The feed-read path targets 99.5% (216 minutes/month), tracked via synthetic probes that load the first page of a representative athlete's feed every 60 seconds from three AWS regions.
 
@@ -109,7 +113,8 @@ The activity upload path targets 99.9% availability (43.2 minutes/month error bu
 
 **Redundancy posture:** Every stateful component deploys across 3 AZs. Stateless API and WebSocket tiers run in 3 AZs with pod anti-affinity. Kafka and Cassandra are natively multi-AZ. RDS uses Multi-AZ. S3 and Wasabi are regionally redundant at the storage layer.
 
-## 5. Security
+## Security
+{: id="5-security"}
 
 **IAM and access control.** All AWS resources are governed through IAM roles with least-privilege policies managed in Terraform. The Go API pods assume an EKS IRSA role scoped to `s3:GetObject` on `activity-raw/*`, `kafka:Produce` on the `activity.gps` topic, and `rds-db:connect` to the PostgreSQL endpoint. No long-lived access keys exist in the fleet; all service-to-service auth uses IRSA or instance profiles.
 
@@ -121,7 +126,8 @@ The activity upload path targets 99.9% availability (43.2 minutes/month error bu
 
 **Secrets management.** All runtime secrets (database passwords, API keys, Wasabi credentials) are stored in AWS Secrets Manager and mounted into pods via the Secrets Store CSI Driver. Rotation runs every 90 days through a Lambda that generates new credentials, updates Secrets Manager, and triggers a rolling restart of dependent pods.
 
-## 6. Scalability & Performance
+## Scalability & Performance
+{: id="6-scalability--performance"}
 
 > [!TIP]
 > **Sizing basis**  -  All per-unit numbers in the table below assume a 7M-activity/day steady state with a 3x seasonal burst factor. Compute is specced for 2,000 uploads/sec peak (the observed Strava Day surge). The model is unit-costed on us-east-1 on-demand pricing; reserved-instance savings of 30-40% are available but not factored in.
@@ -165,7 +171,8 @@ All latency and throughput numbers above are measured using k6 load scripts that
 
 Kafka `activity.gps` operates at 32 partitions, chosen to keep per-partition throughput under 10 MB/s at peak. Redis feed cluster runs 6 shards with 2x replication, holding roughly 800 GB of timeline data (capped at 500 entries per feed, LRU eviction with a 30-day TTL). Valkey leaderboard cluster runs 4 shards, each holding the top 1,000 times for roughly 125,000 active segments.
 
-## 7. Cost
+## Cost
+{: id="7-cost"}
 
 > [!TIP]
 > **Verdict**  -  The total monthly infrastructure cost for the full DIY stack (all 8 subsystems, self-hosted where possible) lands between $220K and $410K, roughly 4-5x cheaper than the fully-managed equivalent which ranges from $1.1M to $1.9M/month. The largest single line items are the geo-spatial database tier ($21-45K), the activity feed infrastructure ($81-156K), and the live-tracking stack ($35-60K). A phased rollout (managed services first, migrate to self-hosted as traffic stabilizes) can keep early months under $150K.
@@ -198,7 +205,8 @@ Kafka `activity.gps` operates at 32 partitions, chosen to keep per-partition thr
 | Push notifications | $25K - $65K | 11-16% | [Customer.io](http://customer.io/) enterprise plan |
 | Shared infra | $24K - $30K | 10-11% | ALB, CloudFront, S3, monitoring, SRE on-call |
 
-## 8. Operations
+## Operations
+{: id="8-operations"}
 
 **Observability stack.** Metrics are collected via Prometheus (Thanos for long-term storage, 1-year retention) with Grafana dashboards. Centralized logging flows through Fluent Bit sidecars on EKS to OpenSearch (formerly Elasticsearch) with a 30-day hot index and 1-year cold tier on S3. Distributed tracing uses the AWS X-Ray SDK injected into Go and Ruby API services, with sampling at 1% for production and 100% for the staging environment.
 
@@ -276,9 +284,10 @@ resource "aws_elasticache_replication_group" "leaderboard" {
 
 **Onboarding runbook  -  add a new service to the platform.** A new backend service (for example, a "Route Recommendations" microservice) is onboarded in 6 steps: (1) Create a Terraform module in `modules/<service>/` defining the EKS namespace, IRSA role, and any stateful dependencies (RDS instance, Kafka topic). (2) Scaffold the Go service from the `go-service-template` repo, which includes the Dockerfile, Kustomize base, and Prometheus metrics endpoint. (3) Add a GitHub Actions workflow that builds on push to `main`, tags the image with the commit SHA, and updates the Kustomize image tag in the infra repo. (4) Register the service in ArgoCD by adding an Application manifest to `argocd/apps/<service>.yaml` pointing at the Kustomize overlay. (5) Add Prometheus alert rules to `prometheus/rules/<service>.yaml` with at minimum a `up==0` alert and a p99 latency threshold. (6) Document the service in the internal wiki (runbook, on-call rotation assignment, dependent services). The entire process takes one engineer roughly 3 hours for a stateless service and 1 day if stateful dependencies are needed.
 
-## 9. Key Decisions & Trade-offs
+## Key Decisions & Trade-offs
+{: id="9-key-decisions--trade-offs"}
 
-### D1: Self-hosted Valhalla on EKS vs managed GraphHopper API
+### Self-hosted Valhalla on EKS vs managed GraphHopper API {#d1-self-hosted-valhalla-on-eks-vs-managed-graphhopper-api}
 
 - **Pro Valhalla:** Apache 2.0 license, no per-request cost, 150 req/s per node, max 10,000 trace points per request (fits the Strava activity profile), built-in SRTM elevation. Cost is $2-5K/month for the compute cluster.
 - **Con Valhalla:** Operational burden: planet tile builds take 4-8 hours on 32 cores with 50-60 GB RAM and must be re-run weekly. The team must own the deployment, scaling, and tile-pipeline maintenance.
@@ -286,7 +295,7 @@ resource "aws_elasticache_replication_group" "leaderboard" {
 - **Con GraphHopper managed:** $50-100K/month at 7M requests/day (10-20x Valhalla self-host). Max 4,000 trace points per request.
 - **Decision:** Self-host Valhalla on EKS. At the 7M-activity/day scale, the operational cost of maintaining the Valhalla cluster (roughly 0.5 FTE of SRE time) is dwarfed by the 10-20x managed-cost premium. Planet-tile rebuilds are automated via a weekly CronJob and validated in staging before promotion.
 
-### D2: Pure fan-out-on-write vs hybrid tiered fan-out for the activity feed
+### Pure fan-out-on-write vs hybrid tiered fan-out for the activity feed {#d2-pure-fan-out-on-write-vs-hybrid-tiered-fan-out-for-the-activity-feed}
 
 - **Pro pure fan-out-on-write:** Always-fast reads (1-5 ms p95), simple code path, no read-time merge logic.
 - **Con pure fan-out-on-write:** Write amplification is O(followers): an athlete with 500K followers generates 500K timeline inserts per upload. At 2,000 uploads/sec with an average 50 followers, this is 100K Redis writes/sec, but a single celebrity upload at peak event time can spike write throughput by 10-25x and saturate the Redis cluster.
@@ -294,7 +303,7 @@ resource "aws_elasticache_replication_group" "leaderboard" {
 - **Con fan-out-on-read:** Reads are slower (40-100 ms p95 for a batched fan-out) and scale with the number of followed athletes. A user following 2,000 athletes generates 2,000 partition reads per feed load, which is expensive at the Cassandra level.
 - **Decision:** Hybrid tiered fan-out. Push to Redis for users with fewer than 5,000 followers (covers 99%+ of the follower graph), pull from Cassandra for the remainder. This constrains write amplification to a known ceiling while keeping the common-case read path fast. The threshold is tunable via a feature flag so the operations team can lower it during known high-traffic events. Twitter and Instagram both use this pattern in production.
 
-### D3: Cassandra 5.0 vs ScyllaDB for the activity data store
+### Cassandra 5.0 vs ScyllaDB for the activity data store {#d3-cassandra-50-vs-scylladb-for-the-activity-data-store}
 
 - **Pro Cassandra:** Mature ecosystem, well-understood operations, AWS Keyspaces available as a managed fallback, large operator community. Write throughput of 15-30K writes/s per node with LOCAL_QUORUM.
 - **Con Cassandra:** Java GC pauses can cause p99 latency spikes (200-500 ms during compaction). Write amplification of 2-4x from compaction. Tuning compaction strategy (STCS vs LCS) is workload-dependent and requires ongoing attention.
@@ -302,7 +311,8 @@ resource "aws_elasticache_replication_group" "leaderboard" {
 - **Con ScyllaDB:** Smaller operator community, fewer cloud-managed options, and the AGPL license may conflict with Strava's proprietary backend licensing. At the 18-node scale, the throughput advantage is less meaningful because the cluster is storage-bound, not CPU-bound.
 - **Decision:** Cassandra 5.0. The 18-node cluster is storage-bound at 350 GB/day ingestion, not CPU-bound, so ScyllaDB's throughput advantage is not decisive. The operations familiarity and larger community support reduce risk for a team that already runs Cassandra in production. AWS Keyspaces serves as a managed fallback if self-hosted operations become unsustainable.
 
-## 10. References
+## References
+{: id="10-references"}
 
 1. [Valhalla Routing Engine  -  GitHub](https://github.com/valhalla/valhalla)
 1. [Valhalla Documentation (planet tile build, API reference)](https://valhalla.openstreetmap.de/)

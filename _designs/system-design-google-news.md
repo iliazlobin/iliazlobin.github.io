@@ -254,13 +254,13 @@ Sorting every recent article during each request is wasteful. Prebuilt candidate
 
 **Problem.** Reprinted wire copy and independently written coverage of one event are different grouping problems.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Exact hashes:** normalize permitted text and compare its digest. Identical copies are cheap to group; small edits and independently written reports of the same event remain unmatched.
 - **Lexical fingerprints:** use SimHash/MinHash-style signatures to shortlist near-duplicates, then verify retained text features. Syndicated variations can be found without all-pairs comparison; threshold choice trades missed matches against verification load and oversized buckets.
 - **Semantic event clustering:** compare embeddings with entities, event time and location. Differently worded coverage can share a story; ambiguous events and cross-language representations require quality evaluation and recoverable merge/split decisions.
 
-**Choice and rationale.** Use exact hashes and lexical fingerprints for duplicated content, then event-aware clustering for related reporting. Named entities, event time, location and embeddings provide candidate signals; verify before merging. Two grouping stages fit news because duplicated content and independent reporting have different meaning. We accept separate signatures and clustering state to avoid collapsing useful perspectives merely because they discuss the same topic.
+Use exact hashes and lexical fingerprints for duplicated content, then event-aware clustering for related reporting. Named entities, event time, location and embeddings provide candidate signals; verify before merging. Two grouping stages fit news because duplicated content and independent reporting have different meaning. We accept separate signatures and clustering state to avoid collapsing useful perspectives merely because they discuss the same topic.
 
 MinHash with locality-sensitive hashing narrows candidate comparisons. For band count b and rows per band r, candidate probability is `1 - (1 - similarity^r)^b`; thresholds affect both missed matches and verification load. They require evaluation on real articles.
 
@@ -290,13 +290,13 @@ flowchart TB
 
 **Problem.** Ranking scores change while a user scrolls.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Live offset pages:** skip a count in the current ranking. Implementation is simple, but new articles and changed scores shift offsets, causing repeats or omissions.
 - **Live score cursors:** continue after the previous score/ID pair. Insertions ahead are less disruptive, but score changes can move articles across the cursor boundary.
 - **Immutable session snapshots:** retain a short-lived feed generation and page its fixed ordering. Scrolling is stable; snapshot storage and expiry are required, and newly ranked stories appear only after refresh.
 
-**Choice and rationale.** Publish feed generations and retain a short-lived immutable ordering for each feed session. Update shared candidate feeds incrementally and periodically refresh time-sensitive ranking. Generation-bound sessions fit a continuously reranked feed where scrolling should remain coherent. We accept short-lived retained orderings and explicit refresh/expiry instead of promising both live reordering and stable pagination.
+Publish feed generations and retain a short-lived immutable ordering for each feed session. Update shared candidate feeds incrementally and periodically refresh time-sensitive ranking. Generation-bound sessions fit a continuously reranked feed where scrolling should remain coherent. We accept short-lived retained orderings and explicit refresh/expiry instead of promising both live reordering and stable pagination.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryTextColor":"#202124","primaryBorderColor":"#9aa0a6","lineColor":"#5f6368","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteTextColor":"#202124","noteBorderColor":"#9aa0a6","signalColor":"#5f6368","signalTextColor":"#202124","labelBoxBkgColor":"#fef7e0","labelBoxBorderColor":"#9aa0a6"}}}%%
@@ -328,13 +328,13 @@ The server rechecks current retractions and visibility while hydrating each page
 
 **Problem.** Early coverage can be brief, while original reporting and analysis arrive later.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Chronological order:** rank by publication time. Freshness is transparent and cheap, but frequent publishers and minor updates can crowd out important reporting.
 - **Engagement-only scores:** promote articles with observed clicks or reactions. Popular content is easy to identify, but feedback loops favor sensational or already exposed stories and cold stories have little evidence.
 - **Multi-signal ranking:** combine recency, topic authority, originality, interests and diversity after story grouping. It supports useful varied coverage; feature freshness, training bias and policy weights require ongoing evaluation.
 
-**Choice and rationale.** Rank with recency, topic-specific source quality, original reporting, user interests and diversity constraints. [Google's topic-authority explanation](https://developers.google.com/search/blog/2023/05/understanding-news-topic-authority) provides background for authority and original-reporting signals. Multi-signal story ranking fits a feed that should surface meaningful developments as well as recent articles. We accept model/policy complexity and evaluate source diversity and relevance alongside engagement so volume alone does not determine visibility.
+Rank with recency, topic-specific source quality, original reporting, user interests and diversity constraints. [Google's topic-authority explanation](https://developers.google.com/search/blog/2023/05/understanding-news-topic-authority) provides background for authority and original-reporting signals. Multi-signal story ranking fits a feed that should surface meaningful developments as well as recent articles. We accept model/policy complexity and evaluate source diversity and relevance alongside engagement so volume alone does not determine visibility.
 
 A time-decay half-life is a tunable feature, rather than a universal expiry rule. Measure source diversity, relevance and repeated-story rate alongside engagement. Assign one story slot before selecting representative coverage, and preserve access to other perspectives.
 
@@ -348,13 +348,13 @@ For a decay feature with a six-hour half-life, an otherwise equal story retains 
 
 **Problem.** Article volume can spike because of an important event, duplicated syndication or a widely repeated rumour.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Fixed count threshold:** alert when article volume passes a constant. It is easy to operate, but busy topics trigger routinely while small important topics may never reach the threshold.
 - **Baseline-relative anomaly:** compare topic/region volume with its expected recent pattern. Unusual surges stand out; sparse baselines, syndication and rumours can still produce false alarms.
 - **Anomaly candidate with quality checks:** count independent source groups, detect a surge, then verify eligible coverage and new development before notification. Precision improves, at the cost of verification delay, retained evidence and cooldown state.
 
-**Choice and rationale.** Use source-deduplicated volume relative to topic/region baselines, then verify independent coverage and eligibility before promoting a story or sending notifications. Cold topics need minimum evidence; sustained events need development-aware updates. Verified anomaly candidates fit user notifications, where an incorrect breaking alert has a high trust cost. We accept a short confirmation delay and avoid automatic credibility claims based on raw publication volume.
+Use source-deduplicated volume relative to topic/region baselines, then verify independent coverage and eligibility before promoting a story or sending notifications. Cold topics need minimum evidence; sustained events need development-aware updates. Verified anomaly candidates fit user notifications, where an incorrect breaking alert has a high trust cost. We accept a short confirmation delay and avoid automatic credibility claims based on raw publication volume.
 
 Separate processing-time alerts from event-time windows, handle late data and checkpoint stream state with input positions. Use story-level cooldowns and user notification budgets. Track alert precision and detection delay; volume alone does not establish credibility.
 

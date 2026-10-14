@@ -254,13 +254,13 @@ A shared namespace gives all members one authoritative tree and journal. Grantin
 
 **Problem.** A small edit should transfer fewer bytes, while each block adds metadata and request overhead.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Whole-file transfer:** hash and upload one object whenever content changes. The protocol and reconstruction are simple, but a small edit can resend the whole file.
 - **Fixed-size blocks:** split at known offsets and upload only changed block hashes. Metadata and parallel transfer are predictable; an insertion near the beginning can shift later boundaries and make many blocks appear changed.
 - **Content-defined chunking:** derive boundaries from local content so unchanged regions can retain their hashes after insertions. This reduces transfer for insertion-heavy edits, but rolling-boundary computation, variable block sizes and larger manifests add CPU and operational cost.
 
-**Choice and rationale.** Use roughly 4-MiB fixed blocks, batched manifest checks and bounded parallel transfers. Their predictable sizes keep manifests and resumable uploads manageable. We accept reduced reuse after insertions; add content-defined chunking only when measured transfer savings justify its CPU and metadata costs.
+Use roughly 4-MiB fixed blocks, batched manifest checks and bounded parallel transfers. Their predictable sizes keep manifests and resumable uploads manageable. We accept reduced reuse after insertions; add content-defined chunking only when measured transfer savings justify its CPU and metadata costs.
 
 Hash canonical uncompressed bytes, record the compression format, and verify reconstructed bytes. Skip compression when it increases size. Delta transfer is useful when both sides have an authorized base block; fall back to full-block transfer when the base is unavailable.
 
@@ -288,13 +288,13 @@ flowchart TB
 
 **Problem.** Two devices can edit or move the same file while disconnected.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Last-write-wins:** accept the latest revision according to the server's order. Convergence is simple, but an offline user's valid edits can be silently replaced.
 - **Application-specific merge:** combine changes using a format-aware editor. Compatible text or structured edits may merge well, but arbitrary binary formats need separate semantics and an invalid merge can corrupt content.
 - **Common-base reconciliation:** compare each device's local and remote state with the last synced tree. Independent moves/edits can be combined and conflicting contents preserved; clients retain base state and users may need to resolve conflict copies.
 
-**Choice and rationale.** Compare the local tree and remote tree with the last-synced tree. Apply independent changes; preserve both contents when edits conflict. Stable file IDs distinguish moves from unrelated deletes and additions. Common-base reconciliation fits arbitrary files and long offline periods without assuming every format has a safe merge algorithm. We accept conflict copies and extra client state to preserve both users' data; stable file IDs separate a rename from deletion/recreation.
+Compare the local tree and remote tree with the last-synced tree. Apply independent changes; preserve both contents when edits conflict. Stable file IDs distinguish moves from unrelated deletes and additions. Common-base reconciliation fits arbitrary files and long offline periods without assuming every format has a safe merge algorithm. We accept conflict copies and extra client state to preserve both users' data; stable file IDs separate a rename from deletion/recreation.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryTextColor":"#202124","primaryBorderColor":"#9aa0a6","lineColor":"#5f6368","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteTextColor":"#202124","noteBorderColor":"#9aa0a6","signalColor":"#5f6368","signalTextColor":"#202124","labelBoxBkgColor":"#fef7e0","labelBoxBorderColor":"#9aa0a6"}}}%%
@@ -327,13 +327,13 @@ If A and B both change the contents from V10, the base identifies a concurrent e
 
 **Problem.** Shared folders create high read fan-out and occasional concurrent writes.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **One database:** keep all trees and journals in one transactional authority. Cross-folder operations are easy to express, but one write/metadata capacity ceiling limits growth and hot folders compete with unrelated users.
 - **Namespace-sharded transactions:** colocate a namespace's tree and journal and commit its mutations locally. Most sync work scales by namespace; hot namespaces still serialize and cross-namespace moves need a recoverable coordinator.
 - **Globally transactional store:** transact across namespace boundaries through distributed coordination. Atomic multi-namespace changes are easier for callers, but network/quorum work adds latency, availability coupling and operating cost to ordinary mutations.
 
-**Choice and rationale.** Keep one namespace's tree and journal on the same shard. Serve read-after-write requests from the leader or a replica proven to have reached the returned sequence; use immutable version-keyed caches for older revisions. Namespace sharding fits sync operations whose normal consistency boundary is one shared tree. We accept explicit coordination for cross-namespace moves and a hot-namespace limit rather than charging every small metadata edit for global coordination.
+Keep one namespace's tree and journal on the same shard. Serve read-after-write requests from the leader or a replica proven to have reached the returned sequence; use immutable version-keyed caches for older revisions. Namespace sharding fits sync operations whose normal consistency boundary is one shared tree. We accept explicit coordination for cross-namespace moves and a hot-namespace limit rather than charging every small metadata edit for global coordination.
 
 A user's joined namespaces can reside on different shards. Cross-namespace moves need a durable coordinator or distributed transaction with a persisted decision and recovery; prepare acknowledgements alone do not make all shards visible simultaneously. Bound hot-namespace writes and cache journal pages by sequence.
 
@@ -347,13 +347,13 @@ Read-after-write clients carry sequence 250, and a replica serves them only afte
 
 **Problem.** Uploaded or old blocks may appear unreferenced while a revision commit or reference update is still in flight.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Immediate reference-count deletion:** delete a block when its count reaches zero. Space returns quickly, but a delayed reference update or concurrent revision can make a still-needed block appear unused.
 - **Delayed counters:** wait before acting on zero counts. A grace period absorbs some lag, but lost or misordered updates can still make the count wrong, so delay alone is not a proof of safety.
 - **Mark-and-sweep with pins:** mark references from a complete checkpoint and protect active uploads with durable pins before reclaiming candidates. This handles retained revisions and in-flight commits; scans, grace periods and pin recovery keep more storage live and require a coordinated deletion state.
 
-**Choice and rationale.** Use upload pins, durable revision references and a reclamation grace period. A block-service state transition coordinates new pins with pending deletion. Sweep only from a complete reference snapshot/checkpoint, and preserve references from retained revisions. Pins plus complete reference snapshots fit immutable blocks shared by uploads and retained revisions. We accept delayed reclamation and scan cost to protect acknowledged data; the final deletion transition rechecks references and pins.
+Use upload pins, durable revision references and a reclamation grace period. A block-service state transition coordinates new pins with pending deletion. Sweep only from a complete reference snapshot/checkpoint, and preserve references from retained revisions. Pins plus complete reference snapshots fit immutable blocks shared by uploads and retained revisions. We accept delayed reclamation and scan cost to protect acknowledged data; the final deletion transition rechecks references and pins.
 
 Replay reference updates idempotently, audit missing blocks and test interrupted commits, restore-versus-GC races and concurrent uploads. Expired uploads can release pins; an acknowledged revision must keep its blocks reachable.
 

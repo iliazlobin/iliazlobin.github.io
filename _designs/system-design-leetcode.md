@@ -259,13 +259,13 @@ History queries are limited to the authenticated user and use cursor pagination 
 **Problem.** Submitted programs can exhaust resources, probe the environment or exploit runtime vulnerabilities. Compilers are also processing untrusted input.
 
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Ordinary containers:** isolate processes/files while sharing the host kernel. Startup and tooling are familiar, but a kernel exploit from untrusted code threatens other executions and host state.
 - **User-space kernel sandbox:** intercept guest system calls through a restricted implementation. Host-kernel exposure is reduced; compiler/runtime compatibility and syscall-heavy performance depend on the selected sandbox.
 - **MicroVMs:** execute inside a separate guest kernel using hardware virtualization. The boundary suits hostile submissions, but clean images, patched KVM/hosts, pool startup and bounded result channels require dedicated operations.
 
-**Choice and rationale.** Compile and execute in disposable Firecracker microVMs on dedicated judge hosts. Follow the project's [production host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md), use the jailer and keep the host, KVM, guest kernel and language images patched. Disposable Firecracker microVMs fit intentionally untrusted code better than a convenience container boundary. We accept dedicated host/image operations and prewarm cost; host-enforced resource and network limits remain necessary even with virtualization.
+Compile and execute in disposable Firecracker microVMs on dedicated judge hosts. Follow the project's [production host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md), use the jailer and keep the host, KVM, guest kernel and language images patched. Disposable Firecracker microVMs fit intentionally untrusted code better than a convenience container boundary. We accept dedicated host/image operations and prewarm cost; host-enforced resource and network limits remain necessary even with virtualization.
 
 The trusted host controls VM resources, egress and deadlines. Guest-side restrictions are additional defense, not the enforcement boundary after a guest compromise. Give the guest only its input and required files; compare output with hidden expected results in the trusted judge control plane. Authenticate result channels and cap output bytes.
 
@@ -310,13 +310,13 @@ Transfer only required inputs to the guest. Capture output through bounded chann
 
 **Problem.** A slow early submission can finish after a fast later one. Scoring in completion order could select the wrong solve time or penalty.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Serialize judging per user:** finish one submission before running the next. Completion order follows acceptance, but one slow program delays all later feedback for that user.
 - **Increment counters on completion:** update solves/penalties as verdicts arrive. Processing is cheap, but an earlier failed submission arriving later can change the correct first-solve penalty and duplicate deliveries can drift totals.
 - **Versioned projection from ordered submissions:** recompute a user's score from durable acceptance order and result versions. Rejudges and late verdicts produce reproducible standings; reads are provisional while judging remains incomplete and projection work must be bounded.
 
-**Choice and rationale.** Derive the score from durable acceptance order. Judge executions can run independently, while each user's contest projection is recomputed when relevant results change. Publish solved count, penalty and projection version together. Versioned projections fit parallel judging and rejudges while preserving contest rules based on submission order. We accept brief standings lag and provisional labels rather than serializing execution or treating completion order as contest order.
+Derive the score from durable acceptance order. Judge executions can run independently, while each user's contest projection is recomputed when relevant results change. Publish solved count, penalty and projection version together. Versioned projections fit parallel judging and rejudges while preserving contest rules based on submission order. We accept brief standings lag and provisional labels rather than serializing execution or treating completion order as contest order.
 
 For a bounded contest rule, an integer score such as `solved × M - penalty` fits a Redis sorted set if M exceeds maximum penalty and the largest value remains within exact integer precision of the double score. Keep tie-breaking in explicit fields or a deterministic member ordering; avoid arbitrary fractional hash adjustments.
 
@@ -346,13 +346,13 @@ flowchart TB
 
 **Problem.** Reactive scaling can arrive after the first submission wave. A queue prevents loss but cannot guarantee a short verdict time without sufficient execution capacity.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Reactive scaling:** start workers after queue age or load rises. Idle cost is low, but image startup arrives after a synchronized contest wave and early users wait.
 - **Prewarm the full peak:** reserve all expected capacity before the event. Initial latency is predictable if the estimate is right; unused slots and language-specific pools cost money.
 - **Scheduled reserve plus queue-age scaling:** prewarm the modeled baseline, retain practice capacity and scale additional slots from queued work. This balances startup and cost; forecasts can still miss the peak, so admission limits and explicit overload remain necessary.
 
-**Choice and rationale.** Prewarm the modeled contest capacity before the event, including language images and test bundles. Then scale from oldest queued age, execution duration and free slots. Maintain a practice reservation so one contest does not indefinitely starve ordinary users. Scheduled prewarming fits known contest start times, while queue-age scaling handles uncertain submission mix. We accept reserved idle capacity before the event and a bounded queue when demand exceeds the verified pool.
+Prewarm the modeled contest capacity before the event, including language images and test bundles. Then scale from oldest queued age, execution duration and free slots. Maintain a practice reservation so one contest does not indefinitely starve ordinary users. Scheduled prewarming fits known contest start times, while queue-age scaling handles uncertain submission mix. We accept reserved idle capacity before the event and a bounded queue when demand exceeds the verified pool.
 
 ```text
 Required slots ≈ arrival rate × average occupied time / target utilization

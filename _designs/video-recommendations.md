@@ -251,7 +251,7 @@ If the ranker misses its deadline, order candidates using retrieval scores and l
 
 **Problem.** Scoring every video per request requires too much feature retrieval and model computation.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Popular-video lists:** Precompute a language-appropriate list. Serving is inexpensive and reliable, but current-session interests receive little personalization.
 
@@ -259,7 +259,7 @@ If the ranker misses its deadline, order candidates using retrieval scores and l
 
 - **Retrieval with bounded richer ranking — recommended:** Merge ANN and fresh/popular candidates, then score a shortlist with cross-features and select five. Detailed inference is limited; relevant videos lost during retrieval or pruning remain unavailable to the ranker.
 
-**Choice and rationale.** Use bounded candidate retrieval followed by richer shortlist ranking. The billion-video catalog needs cheap retrieval before per-request inference. We accept measured stage recall loss and compatible index/model artifacts, tuning budgets using relevance and p99 rather than assuming a larger candidate set is free.
+Use bounded candidate retrieval followed by richer shortlist ranking. The billion-video catalog needs cheap retrieval before per-request inference. We accept measured stage recall loss and compatible index/model artifacts, tuning budgets using relevance and p99 rather than assuming a larger candidate set is free.
 
 The user tower encodes recent watches and permitted context; the item tower encodes metadata and content. Train with sampled softmax and correct for the negative-sampling distribution. In-batch negatives are efficient, but frequent items appear more often and some sampled items may also be relevant.
 
@@ -298,7 +298,7 @@ Evaluate candidate recall before adding ranker capacity. Approximate-search prob
 
 **Problem.** Clicks, watch duration and satisfaction capture different behavior. Long videos also provide more possible watch time, making unbounded duration a biased objective.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Click probability:** Train on fast click labels. Feedback is abundant, but enticing thumbnails can win even when the ensuing viewing experience is poor.
 
@@ -306,7 +306,7 @@ Evaluate candidate recall before adding ranker capacity. Approximate-search prob
 
 - **Versioned multi-objective ranking — recommended:** Estimate bounded useful watch duration, engagement and negative outcomes, then apply explicit product weights. Several goals are visible; shared-task gradients can interfere and sparse negative labels require per-head calibration and quality checks.
 
-**Choice and rationale.** Use separately evaluated prediction heads and a versioned multi-objective policy. A useful session requires more than a click or raw duration. We accept loss-weight and product-policy tuning, checking satisfaction and negative outcomes separately so one headline engagement gain does not hide task interference.
+Use separately evaluated prediction heads and a versioned multi-objective policy. A useful session requires more than a click or raw duration. We accept loss-weight and product-policy tuning, checking satisfaction and negative outcomes separately so one headline engagement gain does not hide task interference.
 
 Clip extreme watch durations and evaluate by video length. A direct bounded-duration head is easier to interpret than treating a weighted logistic score as a calibrated number of seconds.
 
@@ -352,7 +352,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Problem.** New users have little history, and new videos have no interaction aggregates.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Wait for engagement:** Rank only after reliable interaction aggregates arrive. Popularity evidence is mature, but new videos receive little exposure and new users have a generic experience.
 
@@ -360,7 +360,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 - **Content representations with bounded exploration — recommended:** Encode approved content and current context, then allocate a limited eligible-item exposure budget. New items can compete; weaker behavioral evidence and exploratory slots can reduce immediate relevance.
 
-**Choice and rationale.** Use content representations with a bounded exploration budget. The feed needs fresh content before its interaction history exists. We accept a measured exploration cost and evaluate cold-start cohorts, keeping eligibility and creator-exposure controls active.
+Use content representations with a bounded exploration budget. The feed needs fresh content before its interaction history exists. We accept a measured exploration cost and evaluate cold-start cohorts, keeping eligibility and creator-exposure controls active.
 
 Mix a small, configurable share of eligible exploration candidates into the slate and log their selection probabilities. Update the session representation as watches arrive. Creator-level priors help when content is sparse, but exploration quotas prevent established creators from occupying all discovery opportunities.
 
@@ -380,7 +380,7 @@ A skip updates recent session features for the next request; it is interpreted w
 
 **Problem.** Only displayed videos can receive watch feedback. Position, UI layout and the previous model influence exposure, so passive logs reflect those choices.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Raw-log training:** Treat observed watch outcomes as relevance. Collection is simple, but the previous policy and display position determine exposure and missing outcomes.
 
@@ -388,7 +388,7 @@ A skip updates recent session features for the next request; it is interpreted w
 
 - **Versioned serving snapshots with controlled exposure — recommended:** Log request-time evidence or reconstruct it with availability-aware histories and known exploration probabilities. Comparisons are better supported; storage, feature provenance and supported weighting add complexity.
 
-**Choice and rationale.** Retain versioned serving evidence with controlled exposure samples. Ranking and exposure change which labels exist. We accept snapshot/history retention and a bounded randomized sample so training reproduces the served context rather than learning from future features or unobserved impressions.
+Retain versioned serving evidence with controlled exposure samples. Ranking and exposure change which labels exist. We accept snapshot/history retention and a bounded randomized sample so training reproduces the served context rather than learning from future features or unobserved impressions.
 
 Inverse-propensity weighting uses exposure/examination estimates, with bounded weights. `P(click | position)` also includes relevance and is unsuitable as an exposure estimate by itself. Position-as-feature is a useful model input, but equalizing it at serving time still requires bias evaluation.
 
@@ -408,7 +408,7 @@ Sampling metadata records negative selection and randomized slot assignment. Wei
 
 **Problem.** Daily retraining captures gradual changes; breaking-news or seasonal shifts can move faster.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Daily batch updates:** Train reproducible weights on mature evidence. Recovery is clear, but a new session action or sudden event is absent from the previous snapshot.
 
@@ -416,7 +416,7 @@ Sampling metadata records negative selection and randomized slot assignment. Wei
 
 - **Batch bundles with live session features — recommended:** Keep weights and index space stable while recent interactions update bounded features. Same-session adaptation is prompt; event lag remains visible and bundle releases need coordinated rebuilds and warm capacity.
 
-**Choice and rationale.** Use compatible batch model bundles and live session features. Immediate user context changes faster than stable model quality can be established. We accept separate feature and bundle clocks, including the storage and rebuild cost of compatible user/item encoders, index and ranker rollback artifacts.
+Use compatible batch model bundles and live session features. Immediate user context changes faster than stable model quality can be established. We accept separate feature and bundle clocks, including the storage and rebuild cost of compatible user/item encoders, index and ranker rollback artifacts.
 
 Block malformed-data and incompatible-index releases. Evaluate by video age, language, creator cohort and user activity; shadow checks validate operational behavior, while a controlled traffic experiment measures user impact. Roll back the whole compatible bundle and retain ingestion watermarks so new-video indexing can continue.
 

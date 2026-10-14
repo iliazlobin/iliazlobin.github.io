@@ -274,14 +274,14 @@ A Top-N worker maintains counts for all active ad candidates in disjoint minute 
 
 **Problem.** A click may be retried by the browser, republished after a timeout or replayed after worker recovery. Correct operator state alone does not make an external database write idempotent.
 
-**Options and tradeoffs.**
+**Options.**
 
 
 - **Processing-state deduplication:** retain seen click IDs in stream state and suppress repeats before aggregation. This reduces duplicate reporting work, but events replayed beyond the retention horizon can be counted again unless reconstruction uses retained evidence.
 - **Checkpoints with transactional sinks:** checkpoint operator state and input positions alongside a sink-supported commit protocol. Supported outputs recover consistently; an ordinary external database call falls outside that protocol unless its connector provides the needed transaction semantics.
 - **Unique ledger entries and reconciliation:** insert charges under a stable click/entry identity and verify provider or settlement evidence afterward. This protects financial retries and supports corrections; transactional writes, evidence retention and reconciliation increase storage and operational work.
 
-**Choice and rationale.** Use exact stream deduplication for reporting and an idempotent ledger for billing. [Flink's checkpoint model](https://nightlies.apache.org/flink/flink-docs-stable/docs/learn-flink/fault_tolerance/) explains operator recovery; the ledger's transaction defines whether a charge has been posted. Reporting needs fast replayable aggregation, while billing needs an auditable charge decision. Exact stream deduplication plus a unique transactional ledger fits those different contracts; it accepts two state systems and an explicit replay horizon rather than treating a stream checkpoint as a universal financial guarantee.
+Use exact stream deduplication for reporting and an idempotent ledger for billing. [Flink's checkpoint model](https://nightlies.apache.org/flink/flink-docs-stable/docs/learn-flink/fault_tolerance/) explains operator recovery; the ledger's transaction defines whether a charge has been posted. Reporting needs fast replayable aggregation, while billing needs an auditable charge decision. Exact stream deduplication plus a unique transactional ledger fits those different contracts; it accepts two state systems and an explicit replay horizon rather than treating a stream checkpoint as a universal financial guarantee.
 
 PostgreSQL's [row locks](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS) serialize verdict application for one click. A unique click/verdict entry key deduplicates financial deltas; the [partial unique index](https://www.postgresql.org/docs/current/indexes-partial.html) is an additional guard against a second original charge. The versioned state, rather than that index alone, handles reordered exclusions and reinstatements.
 
@@ -392,13 +392,13 @@ flowchart TB
 
 **Problem.** A minute window may still receive delayed events after its first report has been published. Waiting for every possible event would delay all dashboard updates.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Long watermark delay:** wait until most delayed events should have arrived before publishing a bucket. Final-looking totals need fewer corrections, but every dashboard waits for the slowest tolerated delay.
 - **Close quickly and drop late events:** finalize a bucket immediately and discard later arrivals. This is simple and fresh, but outages and delayed clients systematically undercount activity.
 - **Provisional buckets with corrections:** publish versioned snapshots quickly, then revise them as late events arrive within a retained horizon. Users see fresh data and recoverable totals; queries must select the latest complete version and the UI must identify provisional results.
 
-**Choice and rationale.** Publish provisional snapshots every few seconds, use a short event-time watermark for normal completion, and accept late corrections within the configured reconciliation horizon. Validate event timestamps at ingestion and retain the original value for audit. Mark idle input partitions so they do not indefinitely delay watermark progress. Provisional buckets fit near-real-time dashboards without sacrificing the retained reconciliation window. The accepted downside is that recent totals change; bucket versions and completion status make those changes explicit and keep replay from adding a second copy of a published total.
+Publish provisional snapshots every few seconds, use a short event-time watermark for normal completion, and accept late corrections within the configured reconciliation horizon. Validate event timestamps at ingestion and retain the original value for audit. Mark idle input partitions so they do not indefinitely delay watermark progress. Provisional buckets fit near-real-time dashboards without sacrificing the retained reconciliation window. The accepted downside is that recent totals change; bucket versions and completion status make those changes explicit and keep replay from adding a second copy of a published total.
 
 ```mermaid
 sequenceDiagram
@@ -428,13 +428,13 @@ Streaming and reconciliation writers share an ordered publication-generation con
 
 **Problem.** A verdict may arrive after the first dashboard update or change after a model review. Meanwhile, asynchronous spend reports trail newly accepted clicks.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Block tracking on fraud evaluation:** obtain a verdict before redirecting or recording eligible activity. This simplifies immediate acceptance, but scanner latency or failure becomes user-visible redirect latency.
 - **Treat immediate counts as final:** count and charge at capture time. Reporting is straightforward, but delayed exclusions require untracked financial corrections or leave invalid clicks charged.
 - **Separate received, pending and accepted activity:** capture durably, evaluate asynchronously and post a charge only for an accepted verdict. Redirects remain responsive and decisions are auditable; pending spend and later adjustments require separate states and cannot enforce an instantaneous cap from delayed reports alone.
 
-**Choice and rationale.** Redirect after durable capture, evaluate fraud in the background and charge only accepted clicks. An unresolved verdict remains pending. Record the rule/model version, apply verdict updates idempotently and post financial adjustments when a previously charged click is excluded. Separate states fit a click-tracking service because redirect availability and billing evidence have different timing requirements. We accept provisional reports and a pending-verdict backlog, then use idempotent verdict transitions and ledger adjustments to make the final financial result explainable.
+Redirect after durable capture, evaluate fraud in the background and charge only accepted clicks. An unresolved verdict remains pending. Record the rule/model version, apply verdict updates idempotently and post financial adjustments when a previously charged click is excluded. Separate states fit a click-tracking service because redirect availability and billing evidence have different timing requirements. We accept provisional reports and a pending-verdict backlog, then use idempotent verdict transitions and ledger adjustments to make the final financial result explainable.
 
 A pacing alert is an operational signal rather than a strict spending cap. Approximate additional spend during reporting delay is:
 

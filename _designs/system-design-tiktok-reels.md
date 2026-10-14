@@ -280,7 +280,7 @@ The client can update its UI optimistically, then reconcile with the accepted se
 
 **Problem.** Batch models provide useful long-term preferences but cannot encode actions that happened after their snapshot.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Offline feed only:** Serve a ranking computed from a historical snapshot. Read cost is low, but a skip or like occurring after that snapshot cannot influence the current session.
 
@@ -288,7 +288,7 @@ The client can update its UI optimistically, then reconcile with the accepted se
 
 - **Stable model with fresh session features — recommended:** Update bounded recent-action features through the stream while keeping model releases versioned. Same-session context changes promptly; event lag, deduplication and feature-schema compatibility remain serving dependencies.
 
-**Choice and rationale.** Use stable model weights with fresh session features. Most immediate adaptation comes from recent user actions, which do not require new weights. We accept a feature-freshness pipeline and monitor its lag, keeping model promotion on quality gates rather than every engagement event.
+Use stable model weights with fresh session features. Most immediate adaptation comes from recent user actions, which do not require new weights. We accept a feature-freshness pipeline and monitor its lag, keeping model promotion on quality gates rather than every engagement event.
 
 Encode the user's context and each video separately with a **two-tower model**. Compare their numeric representations (**embeddings**) using approximate nearest-neighbor (**ANN**) retrieval, then apply a richer ranker to the bounded candidate set. A dot product measures candidate similarity; ranking also models watch completion, satisfaction and session context.
 
@@ -326,7 +326,7 @@ class R control;
 
 **Problem.** Waiting for every output makes one slow encoding job delay the whole publication.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Serial encoding:** Build renditions one after another. Worker coordination is simple, but publication waits for the sum of preparation steps.
 
@@ -334,7 +334,7 @@ class R control;
 
 - **Playable-rendition first — recommended:** Prioritize one compatible output after required eligibility checks, then backfill other renditions. Startup is available earlier; manifests must expose only completed versions and some devices initially have fewer quality choices.
 
-**Choice and rationale.** Prioritize a compatible playable rendition, then backfill optional outputs. A short-video feed needs a usable clip promptly; waiting for every optional output puts the slowest encoder on the publication path. Select the required rendition from device/network coverage and accept reduced initial quality choices while keeping eligibility as a publication gate.
+Prioritize a compatible playable rendition, then backfill optional outputs. A short-video feed needs a usable clip promptly; waiting for every optional output puts the slowest encoder on the publication path. Select the required rendition from device/network coverage and accept reduced initial quality choices while keeping eligibility as a publication gate.
 
 Retry failed outputs independently. Bound queue age and apply admission limits to unusually large uploads. Hardware acceleration is useful only after codec, quality and throughput benchmarks.
 
@@ -368,7 +368,7 @@ A worker retry writes the same rendition/version key and verifies checksums befo
 
 **Problem.** Downloading many predicted videos improves readiness but wastes mobile data when the user skips or leaves.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Demand-only download:** Fetch media only after a swipe selects it. Mobile bytes are conserved, but every new video can have a cold-start delay.
 
@@ -376,7 +376,7 @@ A worker retry writes the same rendition/version key and verifies checksums befo
 
 - **Adaptive bounded prefetch — recommended:** Prepare limited initial segments based on network conditions and session behavior. Startup and byte use can be balanced; prediction errors still waste data and require explicit cancellation and metered-network limits.
 
-**Choice and rationale.** Use adaptive prefetch with hard byte and candidate ceilings. Users swipe unpredictably on mobile connections. We accept a small amount of measured unused data to improve startup, tuning it against watch behavior, rebuffering and wasted bytes rather than prefetch depth alone.
+Use adaptive prefetch with hard byte and candidate ceilings. Users swipe unpredictably on mobile connections. We accept a small amount of measured unused data to improve startup, tuning it against watch behavior, rebuffering and wasted bytes rather than prefetch depth alone.
 
 [HTTP Live Streaming](https://developer.apple.com/documentation/http-live-streaming) provides a standard adaptive-delivery format. Use immutable rendition URLs, shared cache keys for public media and authorization compatible with the content's visibility.
 
@@ -408,7 +408,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Problem.** Feed caches, search and media edges hold different copies of publication state.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **TTL-only eligibility refresh:** Wait for cached records to expire. Recovery is simple, but removed or private content can remain visible throughout the stale window.
 
@@ -416,7 +416,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 - **Versioned eligibility events with current read checks — recommended:** Commit durable changes, invalidate controllable caches and check restricted-media access at serving. Propagation is recoverable; lag and unreachable browser/edge copies still require explicit freshness policy.
 
-**Choice and rationale.** Use versioned eligibility events with current serving checks. Feed ranking and media delivery cache different state. We accept asynchronous propagation with monitored deadlines and fresh restricted-access checks, so a consumer outage cannot silently reverse a newer removal.
+Use versioned eligibility events with current serving checks. Feed ranking and media delivery cache different state. We accept asynchronous propagation with monitored deadlines and fresh restricted-access checks, so a consumer outage cannot silently reverse a newer removal.
 
 Consumers ignore older versions and record propagation lag. Feed generation rechecks eligibility even when reusing a cached candidate batch. Media retention and removal policy determine when objects and CDN copies are revoked.
 

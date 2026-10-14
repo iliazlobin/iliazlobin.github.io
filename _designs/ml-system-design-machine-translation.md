@@ -247,13 +247,13 @@ Synthetic examples from back-translation retain their provenance so evaluation c
 
 **Problem.** Training data is uneven. A high-resource language pair can dominate a shared model, while maintaining a separate model for every pair creates a large serving and release burden.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **One model per language pair:** Train and serve each direction independently. Pair-specific tuning is isolated, but model count, warm capacity and release work grow with the supported directions.
 - **English pivot:** Translate first into English and then into the target language. Existing strong directions can be reused; two inference passes increase latency and an error in the first translation can propagate into the second.
 - **Shared multilingual model — recommended:** Condition one encoder-decoder on source and target languages. Representations and serving capacity are shared; dominant pairs can interfere with weaker ones, requiring balanced training and per-pair release gates.
 
-**Choice and rationale.** **Use a shared multilingual encoder-decoder for the initial service.** Include source and target language identifiers, and route only the directions that passed evaluation. [M2M-100](https://arxiv.org/abs/2010.11125) demonstrates direct multilingual translation, while [NLLB](https://arxiv.org/abs/2207.04672) develops broader coverage using multilingual training and conditional computation. The service supports several evaluated directions under one serving budget. We accept cross-pair interference and stricter sampling/evaluation work in exchange for fewer independently operated models; a weak direction remains excluded until it passes its own gates.
+**Use a shared multilingual encoder-decoder for the initial service.** Include source and target language identifiers, and route only the directions that passed evaluation. [M2M-100](https://arxiv.org/abs/2010.11125) demonstrates direct multilingual translation, while [NLLB](https://arxiv.org/abs/2207.04672) develops broader coverage using multilingual training and conditional computation. The service supports several evaluated directions under one serving budget. We accept cross-pair interference and stricter sampling/evaluation work in exchange for fewer independently operated models; a weak direction remains excluded until it passes its own gates.
 
 For sampling, let `n_i` be the number of examples for pair `i` and choose `p_i ∝ n_i^α`, with `0 < α < 1`. This increases the relative exposure of smaller datasets while keeping their contribution bounded. Tune the exponent against low-resource improvements and high-resource regressions.
 
@@ -289,13 +289,13 @@ class E control;
 
 **Problem.** The decoder performs one step per generated token. Longer outputs and larger beams increase the work even when the input is short.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Greedy decoding:** Choose one token at each step. Work and streaming behavior are predictable, but a locally best token can lead to a poorer complete translation.
 - **Beam search:** Retain several candidate translations and select a completed sequence. Quality can improve for difficult inputs; more decoder state and repeated scoring raise queueing cost, and the leading hypothesis can change before completion.
 - **Greedy streaming with optional bounded-beam quality mode — recommended:** Use one stable decoding path for live deltas and a small beam for completed-text requests. Each mode has a clear latency contract; operating two modes requires separate admission budgets and quality evaluation.
 
-**Choice and rationale.** **Use greedy decoding for streaming and a small beam for the optional non-streaming quality mode.** Start with a maximum 5ms batching wait, then tune it from measured queueing and completion latency. Bound input length, output length and active decoder state per worker. Streaming users need appendable text while some callers value a better completed translation. We accept a separate quality-mode capacity budget rather than making every request pay beam-search cost. Distillation and quantization are complementary optimizations whose speed, memory and quality effects must be evaluated for both modes.
+**Use greedy decoding for streaming and a small beam for the optional non-streaming quality mode.** Start with a maximum 5ms batching wait, then tune it from measured queueing and completion latency. Bound input length, output length and active decoder state per worker. Streaming users need appendable text while some callers value a better completed translation. We accept a separate quality-mode capacity budget rather than making every request pay beam-search cost. Distillation and quantization are complementary optimizations whose speed, memory and quality effects must be evaluated for both modes.
 
 The scheduler groups requests with similar lengths and compatible decoding settings. Long requests use a separate queue so they do not occupy every batch needed by short requests. Reject overload promptly with `429`; the client can retry with backoff.
 
@@ -332,13 +332,13 @@ Beam hypotheses can change order as later tokens arrive, so the optional quality
 
 **Problem.** A general model may translate everyday text well but mishandle legal, medical or product-specific terminology. Fine-tuning only on the new domain can also reduce quality elsewhere.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Domain-only full fine-tuning:** Update all weights using domain translations. Adaptation is flexible, but shared parameters can lose general-language or other-pair quality through forgetting.
 - **Domain adapters:** Train a small routed parameter set while retaining the base model. Domains can release independently; adapter selection, resident memory and compatible bundle versions add serving complexity.
 - **Mixed-data fine-tuning — recommended:** Train on reviewed domain pairs with representative general-data replay. This balances adaptation and retained quality; the mixture needs tuning and a shared release can still regress an unrelated pair.
 
-**Choice and rationale.** **Start with mixed-data fine-tuning.** Use approved domain translations and replay general examples during training; begin with a 20% general-data share and tune it using both domain and general evaluation. Use adapters when domains need independent release schedules or their requirements conflict. The initial service has one shared multilingual bundle, so replay offers a direct way to improve domain errors while checking general quality. We accept broader regression gates; adapters become preferable when domains require independent release ownership.
+**Start with mixed-data fine-tuning.** Use approved domain translations and replay general examples during training; begin with a 20% general-data share and tune it using both domain and general evaluation. Use adapters when domains need independent release schedules or their requirements conflict. The initial service has one shared multilingual bundle, so replay offers a direct way to improve domain errors while checking general quality. We accept broader regression gates; adapters become preferable when domains require independent release ownership.
 
 Each release is tested for terminology, omitted phrases, incorrect numbers and changes in meaning. A domain-specific improvement is accepted only when the agreed general-language regression limits also pass.
 
@@ -356,13 +356,13 @@ Store dataset lineage and permitted uses in the manifest. Deduplicate pairs befo
 
 **Problem.** Text similarity metrics provide useful feedback, but users care about accurate meaning. Fluent output can still reverse a negation or mistranslate a name.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Automated metrics alone:** Score fixed references with BLEU, chrF and a learned metric. Comparisons are repeatable and inexpensive to rerun, but a score gain can miss a meaning-changing negation, number or name error.
 - **Human review alone:** Have reviewers assess meaning and severity by language pair. This covers important semantic failures, but cost and reviewer variation limit repeated coverage across all pairs and lengths.
 - **Automated matrix plus targeted human review — recommended:** Use repeatable pair/domain/length comparisons and reviewed high-impact cases, followed by a canary. This combines broad regression coverage with semantic evidence; it requires scorer versions, reviewer criteria and protected evaluation data.
 
-**Choice and rationale.** Translation quality is about preserved meaning as well as serving performance. We accept review cost for sensitive errors and weaker pairs, using automated checks for coverage rather than as the sole promotion decision.
+Translation quality is about preserved meaning as well as serving performance. We accept review cost for sensitive errors and weaker pairs, using automated checks for coverage rather than as the sole promotion decision.
 
 Use [BLEU](https://aclanthology.org/P02-1040/) and [chrF](https://aclanthology.org/W15-3049/) for reproducible reference comparisons, and [COMET](https://aclanthology.org/2020.emnlp-main.213/) for a learned quality signal. Pin the scorer versions and evaluate the same held-out examples for each candidate.
 

@@ -309,7 +309,7 @@ Each buy fill also records acquisition evidence for lot accounting. Tax-lot sele
 
 **Problem.** Raw ticks can arrive much faster than a screen needs to update, and popular symbols concentrate subscribers.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Broadcast every tick:** Send the raw feed to every connected gateway or user. Routing is simple, but irrelevant-symbol scanning and delivery multiply with the subscriber fleet.
 
@@ -317,7 +317,7 @@ Each buy fill also records acquisition evidence for lot accounting. Tax-lot sele
 
 - **Symbol processors with connection-owned gateways — recommended:** Normalize each symbol once, distribute it to interested gateway groups and conflate display frames per connection. This supports one client stream and hot-symbol replication; subscriptions and sequence recovery become an additional distributed interface.
 
-**Choice and rationale.** Separate symbol processing from connection ownership. Each client has one gateway connection; that gateway registers interest in its watched symbols. Hot-symbol distribution is replicated to multiple gateway groups, with each connection receiving one stream. Most users watch a small symbol set and screens need fewer updates than the raw feed emits. We accept a subscription-routing layer and display conflation, while retained raw events remain separate for audit and historical consumers.
+Separate symbol processing from connection ownership. Each client has one gateway connection; that gateway registers interest in its watched symbols. Hot-symbol distribution is replicated to multiple gateway groups, with each connection receiving one stream. Most users watch a small symbol set and screens need fewer updates than the raw feed emits. We accept a subscription-routing layer and display conflation, while retained raw events remain separate for audit and historical consumers.
 
 Conflate on the server before network delivery, retaining the latest display update per symbol per interval. Send batched frames and enforce subscription limits. Slow clients receive a fresh snapshot or are disconnected before buffers grow without bound. Measure input lag, delivered-record rate, connection count, egress and stale-quote percentage.
 
@@ -347,7 +347,7 @@ class M,J data;
 
 **Problem.** Local acceptance, venue routing and fills cross durability and network boundaries.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **API idempotency only:** Return one local order for a repeated request key. Client retries are handled, but a lost venue response still leaves dispatch outcome unknown.
 
@@ -355,7 +355,7 @@ class M,J data;
 
 - **Reconciliation only:** Compare local records with the venue after the fact. Discrepancies are eventually detected, but real-time resource availability is uncertain and duplicate venue orders can already have executed.
 
-**Choice and rationale.** Combine local idempotency, durable venue command identities and reconciliation. Reusing an API key with changed input returns a conflict. The router uses the same ClOrdID and follows the venue's FIX replay rules instead of creating another logical order after a timeout. An order crosses a database and an external venue, so no local key can atomically cover both. We accept explicit unknown-routing states and journal recovery to preserve one logical order while evidence is incomplete.
+Combine local idempotency, durable venue command identities and reconciliation. Reusing an API key with changed input returns a conflict. The router uses the same ClOrdID and follows the venue's FIX replay rules instead of creating another logical order after a timeout. An order crosses a database and an external venue, so no local key can atomically cover both. We accept explicit unknown-routing states and journal recovery to preserve one logical order while evidence is incomplete.
 
 Execution identity and content are checked before application. A repeated fill returns its recorded result; a conflicting payload or correction enters explicit review/correction handling. Legitimate fills for older orders remain valid even when the account has accepted newer orders—an account-wide version must not discard them.
 
@@ -371,7 +371,7 @@ An execution report is deduplicated by the venue's documented execution identity
 
 **Problem.** Cached balances can lag, and two simultaneous orders may each appear affordable.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Cached risk checks:** Approve from cached balances and restrictions. Reads are fast, but concurrent orders can each reserve the same buying power and outdated restrictions may be applied.
 
@@ -379,7 +379,7 @@ An execution report is deduplicated by the venue's documented execution identity
 
 - **Prepared policy with atomic account reservation — recommended:** Prepare versioned policy inputs, then revalidate freshness and reserve durable cash or shares in a short account transaction. Resource races are serialized; preparation freshness and bounded market-order reserves require explicit policy.
 
-**Choice and rationale.** Prepare versioned policy decisions and account restrictions ahead of submission. Inside the account transaction, revalidate their freshness and atomically reserve available cash or shares. A market order needs a defined buying-power buffer and price-protection policy, not an unbounded reservation calculated from a stale last trade. The final buying-power decision must share the order's transaction, while external checks should not hold its locks. We accept account-local contention and a freshness contract for prepared policy, keeping concurrent spending correct.
+Prepare versioned policy decisions and account restrictions ahead of submission. Inside the account transaction, revalidate their freshness and atomically reserve available cash or shares. A market order needs a defined buying-power buffer and price-protection policy, not an unbounded reservation calculated from a stale last trade. The final buying-power decision must share the order's transaction, while external checks should not hold its locks. We accept account-local contention and a freshness contract for prepared policy, keeping concurrent spending correct.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
@@ -411,7 +411,7 @@ Compute risk using a policy version, a quote-age bound and the order's limit or 
 
 **Problem.** Display values change with quotes, while balances change with fills, fees, transfers and corrections.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Recalculate every portfolio on each tick:** Apply every market update across all portfolios. Displays are current, but work grows with both holdings and tick rate, including inactive accounts.
 
@@ -419,7 +419,7 @@ Compute risk using a policy version, a quote-age bound and the order's limit or 
 
 - **Durable accounting with active-session valuation — recommended:** Commit fills and positions transactionally, then batch current quotes for displayed portfolios. Accounting and market valuation remain distinct; views have stated quote freshness and projection lag.
 
-**Choice and rationale.** Apply execution and balanced ledger changes once, update account positions transactionally, and value active portfolios from batched timestamped quotes. An execution correction appends reversal/replacement evidence rather than silently editing the original fill. Fills change owned resources, while quotes only change their displayed value. We accept bounded valuation freshness for active sessions so raw tick volume never drives ledger mutations or work for every inactive portfolio.
+Apply execution and balanced ledger changes once, update account positions transactionally, and value active portfolios from batched timestamped quotes. An execution correction appends reversal/replacement evidence rather than silently editing the original fill. Fills change owned resources, while quotes only change their displayed value. We accept bounded valuation freshness for active sessions so raw tick volume never drives ledger mutations or work for every inactive portfolio.
 
 Balances are checked per asset and currency; reserved and settled quantities remain distinct. Rebuild position views from retained accounting events, then compare them with custody and venue statements. Monitor ledger balance, position divergence, stale valuation and correction backlog. A balanced ledger is necessary but does not alone prove that an external execution or settlement was correct.
 

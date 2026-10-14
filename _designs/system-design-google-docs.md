@@ -257,13 +257,13 @@ Snapshots accelerate reconstruction; they do not create unlimited history. Keep 
 **Problem.** Two users can insert text at the same position while each is already showing their own local edit. Applying their original offsets in arrival order can produce different results on different clients.
 
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Whole-document locking:** grant one editor exclusive mutation ownership. Conflict handling is simple, but collaborators wait and disconnected lock holders need expiry/recovery.
 - **Operational transformation:** order accepted operations at the server and transform their positions against concurrent accepted changes. Compact text operations fit an online document owner; correct client/server transforms and retained revision history are required for every supported operation.
 - **CRDTs:** assign stable identities and merge independently generated updates using a proven convergence algorithm. Offline edits can synchronize without arrival-order transforms; identifiers, tombstones and library-specific synchronization/garbage collection consume extra state.
 
-**Choice and rationale.** Use server-ordered OT for this online-first design. A deterministic rule orders simultaneous inserts, and transforms adjust positions relative to operations already accepted. A CRDT is a useful alternative when offline editing becomes a requirement; libraries such as [Yjs](https://docs.yjs.dev/api/y.doc) provide their own synchronization and garbage-collection behavior. Server-ordered OT fits the stated online-first document and authoritative revision log. We accept transform complexity and a connection-dependent shared revision order; a move to offline-first editing would justify reassessing the CRDT alternative rather than mixing the two operation contracts.
+Use server-ordered OT for this online-first design. A deterministic rule orders simultaneous inserts, and transforms adjust positions relative to operations already accepted. A CRDT is a useful alternative when offline editing becomes a requirement; libraries such as [Yjs](https://docs.yjs.dev/api/y.doc) provide their own synchronization and garbage-collection behavior. Server-ordered OT fits the stated online-first document and authoritative revision log. We accept transform complexity and a connection-dependent shared revision order; a move to offline-first editing would justify reassessing the CRDT alternative rather than mixing the two operation contracts.
 
 ```text
 Base document: "cat"
@@ -287,13 +287,13 @@ In the “cat” example, choose a deterministic tie rule for inserts at the sam
 
 **Problem.** Waiting for an acknowledgment before showing each keystroke would make editing depend on network latency. Sending unrestricted operations creates a growing transform backlog during outages.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Committed-only rendering:** display text after the server acknowledges its operation. Client state is straightforward, but each keystroke inherits network round-trip latency.
 - **Independent keystroke submissions:** display locally and submit every edit separately. Typing feels immediate, but high latency grows an outstanding-operation queue and multiplies transformations and retry state.
 - **One outstanding operation plus a buffer:** compose compatible subsequent edits locally while one operation is in flight, transforming both against remote revisions. Typing stays immediate with bounded submissions; composition and cursor transformation must preserve the editor's semantics.
 
-**Choice and rationale.** Render locally, keep one outstanding composed operation and compose subsequent compatible changes in a buffer. Remote edits transform against both. Once the outstanding operation is acknowledged, submit the transformed buffer using the updated base revision. One outstanding operation fits continuous typing over variable connections and the server-ordered OT model. We accept a more involved client buffer and unsynced state during outages instead of making UI responsiveness depend on acknowledgments.
+Render locally, keep one outstanding composed operation and compose subsequent compatible changes in a buffer. Remote edits transform against both. Once the outstanding operation is acknowledged, submit the transformed buffer using the updated base revision. One outstanding operation fits continuous typing over variable connections and the server-ordered OT model. We accept a more involved client buffer and unsynced state during outages instead of making UI responsiveness depend on acknowledgments.
 
 ```mermaid
 sequenceDiagram
@@ -323,13 +323,13 @@ When A's acknowledgement arrives, clear that outstanding operation and submit th
 
 **Problem.** Consistent hashing identifies a preferred server, but it cannot by itself prevent an old and a replacement server from committing edits concurrently.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Gateway routing alone:** consistently hash a document to one preferred server. Normal placement is simple, but a stale gateway can still reach an old server after failover and produce concurrent writers.
 - **Lease without storage fencing:** expire ownership and let a successor take over. Most takeover paths work, but a paused old owner can resume and commit unless the durable write checks ownership too.
 - **Fenced revision commits:** advance a durable owner epoch and require it on every log/head transaction. A successor makes stale commits fail and can replay committed history; lease renewal, epoch checks and verified snapshots add control-plane and storage work.
 
-**Choice and rationale.** Keep a document owner lease with a monotonically increasing epoch. A new owner acquires it transactionally after expiration. Every edit transaction checks that epoch and lease validity, then writes the log and head together. A stale owner fails that check and redirects clients to the new owner. Fenced commits fit a document whose acknowledged revision must survive owner replacement. We accept a durable ownership dependency and pause acknowledgments during authority loss; locally visible buffered edits remain explicitly unsynced.
+Keep a document owner lease with a monotonically increasing epoch. A new owner acquires it transactionally after expiration. Every edit transaction checks that epoch and lease validity, then writes the log and head together. A stale owner fails that check and redirects clients to the new owner. Fenced commits fit a document whose acknowledged revision must survive owner replacement. We accept a durable ownership dependency and pause acknowledgments during authority loss; locally visible buffered edits remain explicitly unsynced.
 
 After a failure, the replacement reads a verified snapshot and replays committed operations. A submission whose commit succeeded before the connection failed is recognized by its client sequence and returns the original acknowledgment.
 

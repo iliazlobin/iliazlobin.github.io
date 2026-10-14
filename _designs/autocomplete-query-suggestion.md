@@ -270,13 +270,13 @@ When the user clears or changes the input, increment the sequence immediately. T
 
 **Problem.** A high-frequency query is often a useful completion, but frequency alone misses context. Generating suggestions freely also adds latency and makes policy enforcement harder.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Frequency-ordered prefix lookup:** Traverse a prefix index and return the most frequent approved queries. Precomputed short-prefix lists make this path cheap, but the same ordering is shown to users with different intent and recent context.
 - **Prefix retrieval with a learned ranker — recommended:** Retrieve a bounded set, then score it using prefix, recency and permitted context features. Ranking can adapt the order within a predictable candidate budget; training labels and feature-version compatibility become additional dependencies, and missing candidates stay missing.
 - **Generated completions:** Decode new phrases from a language model conditioned on the prefix. This can cover queries absent from the corpus, but decoding consumes the keystroke latency budget and every generated phrase needs policy validation.
 
-**Choice and rationale.** **Use prefix retrieval followed by a small learned ranker.** Build a weighted FST from approved queries and store query-level features separately. Cache the frequent short-prefix candidate sets so a broad prefix has bounded lookup cost. The 50ms user-visible p99 target favors bounded retrieval and a small scorer over open-ended generation. We accept an approved-corpus coverage limit and maintain candidate-recall tests alongside ranking metrics.
+**Use prefix retrieval followed by a small learned ranker.** Build a weighted FST from approved queries and store query-level features separately. Cache the frequent short-prefix candidate sets so a broad prefix has bounded lookup cost. The 50ms user-visible p99 target favors bounded retrieval and a small scorer over open-ended generation. We accept an approved-corpus coverage limit and maintain candidate-recall tests alongside ranking metrics.
 
 [Elasticsearch](/designs/tech-elasticsearch/) offers a [completion suggester](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/search-suggesters) as a practical prefix-index engine alternative with prefix and fuzzy support. An in-process index gives more control over memory and traversal; the choice is driven by measured corpus size and operational cost.
 
@@ -315,13 +315,13 @@ class S control;
 
 **Problem.** The same prefix can be relevant to many users, but their history and permissions differ. Caching a personalized final list under a public prefix would share private context with other users.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Cache final lists per user:** Key the final result by user and relevant context. Repeated inputs can skip ranking, but rapid input changes create many low-reuse entries and every context or policy change requires careful invalidation.
 - **Cache a global final list:** Reuse one ranked list for a prefix and locale. Hit rate can be high, but context-sensitive relevance is lost and any private feature accidentally included in the result would be shared.
 - **Cache public candidates, rank per request — recommended:** Share prefix retrieval and public query features, then fetch only the requesting user's permitted context. This retains private ranking boundaries; each cache hit still pays for lightweight ranking and a current policy check.
 
-**Choice and rationale.** **Cache public candidates and perform lightweight contextual ranking for every request.** The cache key includes language, coarse region and the active bundle ID. Private history is read separately and never stored in that entry. At 100K requests/s, avoiding repeated index work has substantial value while private history must remain request-specific. We accept per-request scoring cost so shared entries have a clear public-data contract.
+**Cache public candidates and perform lightweight contextual ranking for every request.** The cache key includes language, coarse region and the active bundle ID. Private history is read separately and never stored in that entry. At 100K requests/s, avoiding repeated index work has substantial value while private history must remain request-specific. We accept per-request scoring cost so shared entries have a clear public-data contract.
 
 The final policy check runs on both hits and misses. Trend updates invalidate affected entries; a bundle switch changes the cache namespace through its versioned key.
 
@@ -346,13 +346,13 @@ If a suggestion becomes prohibited, a long candidate-cache TTL must not preserve
 
 **Problem.** A stable corpus may contain hundreds of millions of queries, while a trend can emerge within minutes. Rebuilding the entire index for each trend is costly.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Frequent full builds:** Rebuild and publish the complete approved corpus for every update window. One immutable artifact simplifies serving and rollback, but processing hundreds of millions of queries for a small trend wastes build work and delays freshness.
 - **Continuously mutable index:** Apply query updates directly to the serving index. Freshness improves, but concurrent reads, mutation recovery and reproducible release snapshots require more coordination.
 - **Immutable base plus trend overlay — recommended:** Publish large stable snapshots less often and merge a small recent overlay at retrieval time. Trends can meet the two-minute target; cutovers must reconcile watermarks and query IDs to avoid losing or double-counting updates.
 
-**Choice and rationale.** **Use an immutable base index and a Redis trend overlay.** The event stream feeds short-window aggregates. Abuse checks require enough independent activity and constrain sudden spikes before promotion. The corpus is large while the freshness requirement applies to a much smaller changing set. Two retrieval layers are an accepted cost in exchange for bounded rebuild work; base manifests and overlay watermarks make that coordination explicit.
+**Use an immutable base index and a Redis trend overlay.** The event stream feeds short-window aggregates. Abuse checks require enough independent activity and constrain sudden spikes before promotion. The corpus is large while the freshness requirement applies to a much smaller changing set. Two retrieval layers are an accepted cost in exchange for bounded rebuild work; base manifests and overlay watermarks make that coordination explicit.
 
 Each base build records the last event watermark it includes. At cutover, retain overlay entries newer than that watermark and reconcile candidates already present in the new base. Deduplicate by query ID so merging the two sources preserves one candidate per query.
 
@@ -377,13 +377,13 @@ A query's historical frequency and recent-window trend are different features, s
 
 **Problem.** A suggestion near the top gets more exposure than one below it. A missing suggestion gets no selection opportunity at all. Treating every unselected candidate as equally irrelevant would reproduce the old ranking's biases.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Selection labels alone:** Train from clicks on displayed suggestions. These labels are inexpensive and directly tied to an exposure, but position and the old candidate set determine what users had a chance to select.
 - **Manually completed queries:** Use the query eventually typed by the user as a candidate-coverage signal. This reveals omissions, but intent can change during typing and it gives no controlled comparison between suggestions.
 - **Displayed-list outcomes with bounded exploration — recommended:** Join actual impressions, selections and search outcomes, with a small approved randomized exposure sample. This provides better-supported comparisons; exploration may temporarily worsen ordering and requires assignment-probability logs.
 
-**Choice and rationale.** **Train on actual displayed lists and resulting search outcomes.** Attribute selection and downstream engagement to the request ID. An unselected suggestion is a weak label; an abandoned search has a different interpretation from a successful manually typed query. Autocomplete needs both coverage and useful ordering, so the design combines completion signals with outcome-linked exposures. We accept a small, controlled exploration cost and keep it separate from ordinary production impressions.
+**Train on actual displayed lists and resulting search outcomes.** Attribute selection and downstream engagement to the request ID. An unselected suggestion is a weak label; an abandoned search has a different interpretation from a successful manually typed query. Autocomplete needs both coverage and useful ordering, so the design combines completion signals with outcome-linked exposures. We accept a small, controlled exploration cost and keep it separate from ordinary production impressions.
 
 Split data chronologically and group events from the same session. Fit normalization and query statistics on the training period so future popularity does not leak into evaluation.
 

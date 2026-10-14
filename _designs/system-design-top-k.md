@@ -246,7 +246,7 @@ The request finishes against G even if G+1 becomes current halfway through it. R
 
 **Problem.** Partitioning only by video ID concentrates a viral video's traffic.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Partition by video ID:** Send all contributions for an item to one worker. Exact per-item accumulation is straightforward, but a viral video can dominate that worker and delay unrelated keys.
 
@@ -254,7 +254,7 @@ The request finishes against G even if G+1 becomes current halfway through it. R
 
 - **Salted partial aggregation with mergeable candidate summaries — recommended:** Distribute hot-item contributions, retain bounded candidate evidence and combine lane estimates at publication. Ingest balance improves; candidate coverage and approximation error need explicit bounds and reconciliation.
 
-**Choice and rationale.** Use salted partial aggregation for hot traffic, then combine counts/summaries at publication time. Stable event IDs retain retry deduplication even when routing changes. Viral traffic needs more than one worker without losing global ranking candidates. We accept summary merge work and approximate discovery limits, preserving the lane example below to show why a plain local-top-K union is insufficient.
+Use salted partial aggregation for hot traffic, then combine counts/summaries at publication time. Stable event IDs retain retry deduplication even when routing changes. Viral traffic needs more than one worker without losing global ranking candidates. We accept summary merge work and approximate discovery limits, preserving the lane example below to show why a plain local-top-K union is insufficient.
 
 Exact per-video ownership permits merging local top-K lists into an exact global list. Salted partitions split a video's count, so local top-K unions alone are insufficient: a globally popular item may be absent locally. Approximate candidate summaries need explicit coverage/error accounting and evaluation.
 
@@ -274,7 +274,7 @@ For an exact path, partial lanes emit per-video bucket deltas to one final video
 
 **Problem.** A sliding hour needs old contributions to expire as new events arrive.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Retain every event in the live window:** Expire each contribution at its exact timestamp. Boundaries are precise, but state, timers and cleanup scale with the full event rate.
 
@@ -282,7 +282,7 @@ For an exact path, partial lanes emit per-video bucket deltas to one final video
 
 - **Tiered time buckets — recommended:** Keep fine summaries for recent windows and coarser ones for longer periods. Work and retention are bounded; declared boundary precision and late-event correction require separate handling.
 
-**Choice and rationale.** Keep minute-level summaries for the hour and coarser summaries for longer windows. Combine the buckets for each publication; retain finer boundary buckets when the promised precision requires them. Top-K requests repeat standard windows, so minute-level recent summaries can amortize event processing. We accept bucket-boundary approximation where the contract permits it and retain finer boundary state when exactness is required.
+Keep minute-level summaries for the hour and coarser summaries for longer windows. Combine the buckets for each publication; retain finer boundary buckets when the promised precision requires them. Top-K requests repeat standard windows, so minute-level recent summaries can amortize event processing. We accept bucket-boundary approximation where the contract permits it and retain finer boundary state when exactness is required.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
@@ -314,7 +314,7 @@ A query ending at 12:00:30 cuts both boundary buckets. Minute summaries cannot r
 
 **Problem.** A frequency sketch answers how often an ID appeared, but does not enumerate IDs.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Exact keyed counters:** Retain a count for every active item in each window. Ranking has clear count semantics, but item cardinality drives state size and merge work.
 
@@ -322,7 +322,7 @@ A query ending at 12:00:30 cuts both boundary buckets. Minute summaries cannot r
 
 - **Space-Saving candidates with compatible Count-Min estimates — recommended:** Maintain candidate identities separately, then estimate their totals across mergeable bucket sketches. State stays bounded; discovery omissions and sketch error remain distinct limits and close ranks need exact reconciliation.
 
-**Choice and rationale.** Use Space-Saving for candidate identities and compatible Count-Min Sketches for estimating candidate totals. The [original Count-Min paper](https://www.cs.ox.ac.uk/people/graham.cormode/pubs/html/CormodeMuthukrishnan04CMLatin.html) describes collision-based count overestimation. The API needs item IDs as well as frequency estimates. We accept explicit approximation bounds and occasional exact checks, because a small count sketch alone cannot produce the ranking it promises.
+Use Space-Saving for candidate identities and compatible Count-Min Sketches for estimating candidate totals. The [original Count-Min paper](https://www.cs.ox.ac.uk/people/graham.cormode/pubs/html/CormodeMuthukrishnan04CMLatin.html) describes collision-based count overestimation. The API needs item IDs as well as frequency estimates. We accept explicit approximation bounds and occasional exact checks, because a small count sketch alone cannot produce the ranking it promises.
 
 For nonnegative streams, choose sketch width and depth from the required additive error and failure probability. Space-Saving retains items above its documented frequency threshold; an untracked item may still have nonzero frequency.
 
@@ -338,7 +338,7 @@ The [original Count-Min paper](https://www.cs.ox.ac.uk/people/graham.cormode/pub
 
 **Problem.** A crash can replay events or publish only part of a new ranking.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Direct result increments:** Update serving counters after each event. Freshness is immediate, but replay after a partial failure can count one view twice and readers can observe incomplete updates.
 
@@ -346,7 +346,7 @@ The [original Count-Min paper](https://www.cs.ox.ac.uk/people/graham.cormode/pub
 
 - **Checkpointed state with immutable generations — recommended:** Recover input positions with state, write absolute outputs under a generation ID and switch a pointer only after completeness checks. Reads are consistent; old generations and publication manifests add storage and cleanup work.
 
-**Choice and rationale.** Deduplicate logical view IDs, checkpoint aggregation state with source offsets, and write absolute versioned outputs. Atomically switch the serving pointer after the generation is complete. Retries and partition lag are normal at ingest volume. We accept a publication interval and generation-retention cost so queries receive a complete snapshot rather than a partly updated ranking.
+Deduplicate logical view IDs, checkpoint aggregation state with source offsets, and write absolute versioned outputs. Atomically switch the serving pointer after the generation is complete. Retries and partition lag are normal at ingest volume. We accept a publication interval and generation-retention cost so queries receive a complete snapshot rather than a partly updated ranking.
 
 Restoring from a checkpoint replays only later events under the same deduplication contract. Missing dimensions or lagging partitions are reported explicitly. Track duplicate rate, watermark lag, checkpoint age, top-K recall and exact-versus-approximate count drift.
 

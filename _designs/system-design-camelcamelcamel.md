@@ -265,13 +265,13 @@ A valid available offer below the target triggers an armed watch. A transaction 
 
 **Problem.** Checking every product frequently is expensive, and a retailer's permitted request rate may be lower than demand.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Fixed-frequency polling:** check every product on one interval. Scheduling is easy to explain, but unwatched products consume the same retailer quota as products with active alerts.
 - **One collector per watch:** schedule each user's watch independently. Ownership is direct, but thousands of watches for one product repeat the same fetch and compete for source capacity.
 - **Shared priority scheduling:** maintain one product/source task and rank it by demand, freshness and permitted source capacity. One observation serves many watches; priority queues, leases and fairness are needed to prevent low-demand products from remaining overdue.
 
-**Choice and rationale.** Use shared scheduling with a per-source budget. Separate urgent and routine queues, reserve capacity for each, and spread due times with jitter. Prefer authorized APIs or partner feeds where available. A product's advertised freshness is limited by its source quota and observed completion rate; [CamelCamelCamel's price-check documentation](https://camelcamelcamel.com/support/price_checks) also treats checking frequency as an explicit part of the product. Shared scheduling fits overlapping watches and finite retailer quotas. We accept unequal check frequency and expose actual coverage, using reserved routine capacity so highly watched products do not consume every permitted request.
+Use shared scheduling with a per-source budget. Separate urgent and routine queues, reserve capacity for each, and spread due times with jitter. Prefer authorized APIs or partner feeds where available. A product's advertised freshness is limited by its source quota and observed completion rate; [CamelCamelCamel's price-check documentation](https://camelcamelcamel.com/support/price_checks) also treats checking frequency as an explicit part of the product. Shared scheduling fits overlapping watches and finite retailer quotas. We accept unequal check frequency and expose actual coverage, using reserved routine capacity so highly watched products do not consume every permitted request.
 
 A scheduler lease prevents duplicate dispatch, while the observation ID handles a retry that still completes twice. On 429, honor Retry-After; repeated access failures pause the affected source for review. Track overdue products, valid-check rate, source errors and freshness percentiles. Extra IPs are not a substitute for permitted collection capacity.
 
@@ -302,13 +302,13 @@ flowchart TB
 
 **Problem.** Most checks may return the same offer, but users still need to know that it was checked recently.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Every observation:** append each valid check even when its price is unchanged. This preserves detailed replay evidence, but repeated checks dominate storage and chart scans.
 - **Changed prices only:** append a point only when price changes. The series stays compact, but users cannot distinguish a recently verified unchanged price from a collector that has stopped.
 - **History plus collection status:** retain change points and update a separate successful-check/gap record. Charts remain compact and freshness remains explicit; recent raw evidence still needs its own retention policy for parser recovery and audit.
 
-**Choice and rationale.** Keep change-point history plus collection status. Compare normalized price, currency, availability, seller and condition; an offer identity change creates a separate series. Update last_checked_at on a valid unchanged check. Record parser or source failures separately. Change points plus collection status fit long-lived price charts because observed price and observed freshness answer different questions. We accept a separate evidence-retention window instead of retaining every raw check forever; parser replay is limited to that declared window.
+Keep change-point history plus collection status. Compare normalized price, currency, availability, seller and condition; an offer identity change creates a separate series. Update last_checked_at on a valid unchanged check. Record parser or source failures separately. Change points plus collection status fit long-lived price charts because observed price and observed freshness answer different questions. We accept a separate evidence-retention window instead of retaining every raw check forever; parser replay is limited to that declared window.
 
 Hourly or daily chart summaries preserve min/max and the last value, with exact recent points available for detail. Choose compression and retention from measured query and recovery needs. Restoring a parser version may require replaying retained observations, so that window must fit the evidence-retention policy.
 
@@ -322,13 +322,13 @@ Normalize currency and minor units before comparison, and distinguish a seller c
 
 **Problem.** Observation processing and notification delivery can both retry. A price can also remain below the target for days or cross it repeatedly.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Every below-target check:** notify whenever a valid price is below the target. The rule is simple and responsive, but an unchanged offer can repeatedly message the same user.
 - **Lowest notified price:** send only when a new low beats the stored notified minimum. This suits new-low alerts, but a later rise and renewed threshold crossing may be silently suppressed.
 - **Threshold-crossing state machine:** persist armed/disarmed state, a rearm margin and a cooldown, committing each crossing with its notification intent. Retries reuse the same identity; the extra state and policy mean a cooldown can intentionally suppress closely spaced crossings.
 
-**Choice and rationale.** Use threshold-crossing state with a cooldown and documented rearm margin. Save the state transition and notification outbox entry together. The durable key is (watch_id, generation, observation_id); a short-lived Redis dedupe key alone cannot cover queue replay. Threshold crossings match a user's request to hear when an offer reaches their target. We accept the configured rearm/cooldown behavior, persist it with the delivery intent and distinguish suppressed policy events from lost notifications.
+Use threshold-crossing state with a cooldown and documented rearm margin. Save the state transition and notification outbox entry together. The durable key is (watch_id, generation, observation_id); a short-lived Redis dedupe key alone cannot cover queue replay. Threshold crossings match a user's request to hear when an offer reaches their target. We accept the configured rearm/cooldown behavior, persist it with the delivery intent and distinguish suppressed policy events from lost notifications.
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -357,13 +357,13 @@ If the next check reports \$89, the watch stays disarmed. A configured rearm mar
 
 **Problem.** An attractive chart can mislead users if it treats a missing check as a known price.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Interpolate between observations:** draw a smooth line between collected values. It is visually continuous, but implies intermediate prices that the service never verified.
 - **Isolated observed points:** show only known measurements. This faithfully represents evidence, but sparse points make long-term changes harder to read.
 - **Step chart with gaps:** hold the last observed value within its freshness policy and mark uncovered intervals explicitly. Users can follow price changes and coverage; rendering and downsampling must carry freshness/gap metadata as well as numeric values.
 
-**Choice and rationale.** Use a step chart for valid observed offers and explicit gaps when collection fails. Keep seller, condition, marketplace and currency fixed for each series. A stale current price includes its observation time; unavailable offers are not shown as zero. Monitor parser disagreement and implausible price changes, quarantine suspicious observations, and retain bounded evidence for investigation. An observed step chart fits retailer polling, where the service learns discrete changes rather than a continuous price trajectory. We accept visible gaps and stale labels to preserve what the evidence actually supports.
+Use a step chart for valid observed offers and explicit gaps when collection fails. Keep seller, condition, marketplace and currency fixed for each series. A stale current price includes its observation time; unavailable offers are not shown as zero. Monitor parser disagreement and implausible price changes, quarantine suspicious observations, and retain bounded evidence for investigation. An observed step chart fits retailer polling, where the service learns discrete changes rather than a continuous price trajectory. We accept visible gaps and stale labels to preserve what the evidence actually supports.
 
 **How it works — Rendering observed coverage.** The chart API returns points with observation timestamps plus coverage intervals and gap markers. For the \$100 → \$90 example, the UI draws a step at 09:30. After the failed 09:40 check, it marks the following interval as uncertain according to the freshness threshold.
 

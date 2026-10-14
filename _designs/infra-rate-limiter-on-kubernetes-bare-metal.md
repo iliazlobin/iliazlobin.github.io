@@ -12,7 +12,8 @@ We are deploying a production rate limiter on a self-managed bare metal Kubernet
 
 <!--more-->
 
-## 1. Context
+## Context
+{: id="1-context"}
 
 We are deploying a production rate limiter on a self-managed bare metal Kubernetes cluster inside an on-premises data center. The rate limiter itself handles 1M+ requests per second with a sub-10ms p99 added latency per request, serving a user base of 100M+ daily active users. Its internal architecture is two-tier: local token chunks at each service node amortize the cost of a centralized Redis backing store, cutting Redis calls roughly tenfold. Redis runs sharded across 10-20 nodes at approximately 100K operations per second per shard, with a total active working set of about 400MB (80 bytes per key across 5M active keys). The service rejects over-limit requests with HTTP 429 and attaches standard rate-limit response headers.
 
@@ -21,7 +22,8 @@ The environment is a single on-premises data center with three physical availabi
 > [!TIP]
 > **Bare metal is the right home for a latency-sensitive stateless service** - there is no hypervisor stealing CPU slices, no noisy neighbor, no cloud network overlay adding 0.5-2ms of variance. The trade-off is that *you* own every layer: OS provisioning, kernel upgrades, switch config, and failure recovery.
 
-## 2. Goals
+## Goals
+{: id="2-goals"}
 
 - Sub-1.5ms p99 K8s networking overhead per packet (target: 0.5ms).
 - 99.99% availability for the rate limiter service across 3 AZs.
@@ -31,7 +33,8 @@ The environment is a single on-premises data center with three physical availabi
 - Full air-gap operation: cluster provisions, upgrades, and monitors without internet access.
 - **Out of scope:** Multi-cluster federation, public cloud migration, GPU workloads, analytics dashboards, long-term request log persistence.
 
-## 3. Architecture
+## Architecture
+{: id="3-architecture"}
 
 The cluster spans three availability zones within a single data center. Each AZ houses a control plane node, a set of rate-limiter worker nodes, dedicated Redis nodes, and shared monitoring nodes. The physical topology is a standard leaf-spine: every server connects to a top-of-rack switch, and each ToR switch peers with two spine routers via BGP.
 
@@ -118,7 +121,8 @@ Rate-limiter worker nodes run Talos Linux v1.9.0 with Cilium v1.16.3 as the CNI 
 | Vault | v1.18.0 | Secrets management |
 | Harbor | v2.11.0 | Container registry |
 
-## 4. Reliability
+## Reliability
+{: id="4-reliability"}
 
 ### SLOs
 
@@ -157,7 +161,8 @@ etcd backups run every 6 hours via `talosctl etcd snapshot` pushed to a MinIO bu
 
 Recovery from a total cluster loss: provision bare metal nodes via PXE, restore the latest etcd snapshot with `talosctl bootstrap --recover`, re-apply the ArgoCD Application manifests, and Redis AOF files replay on the restored shards. Estimated time to full recovery: 90-120 minutes (dominated by bare-metal provisioning and data replay).
 
-## 5. Security
+## Security
+{: id="5-security"}
 
 ### Identity and access
 
@@ -206,7 +211,8 @@ All container images are pulled from the internal Harbor registry, which mirrors
 
 Talos itself supply chain: the Talos imager produces a signed, verifiable OS image from a pinned set of components (kernel, initramfs, kubelet). The image is PXE-booted; no local OS install media is ever inserted.
 
-## 6. Scalability & Performance
+## Scalability & Performance
+{: id="6-scalability--performance"}
 
 ### Capacity model
 
@@ -230,7 +236,7 @@ At 1M req/s with average request/response size of ~2KB, total throughput is ~2 G
 
 Rate limiter pods scale via the Kubernetes HorizontalPodAutoscaler (HPA) on CPU utilization. Target: 70% average CPU across pods. At 1M req/s, the rate limiter service runs hot but stable - HPA reacts to diurnal traffic patterns (typically 0.6-1.2M req/s across the day). Minimum replicas: 10. Maximum: 30.
 
-Bare metal node autoscaling is not automatic. The cluster does not run a cluster-autoscaler (there is no cloud API to provision physical servers). Instead, we size the cluster for peak load plus one AZ's worth of headroom. If sustained traffic grows beyond capacity, new nodes are provisioned via the PXE pipeline (see section 8), joined to the cluster with `talosctl apply-config`, and the HPA scales up pods.
+Bare metal node autoscaling is not automatic. The cluster does not run a cluster-autoscaler (there is no cloud API to provision physical servers). Instead, we size the cluster for peak load plus one AZ's worth of headroom. If sustained traffic grows beyond capacity, new nodes are provisioned via the PXE pipeline (see [Operations](#8-operations)), joined to the cluster with `talosctl apply-config`, and the HPA scales up pods.
 
 ### Bottlenecks
 
@@ -249,7 +255,8 @@ Throughput and latency are validated with a `wrk2`-based load test against a sta
 - **Metrics collected:** p50/p95/p99/p999 latency (rate limiter decision overhead), Redis ops/s, CPU per pod, packet drops (Cilium `cilium metrics list`), etcd fsync latency.
 - **Pass criteria:** p99 added latency under 500 microseconds at 150% of target per-node throughput, zero Redis timeouts, zero Cilium packet drops.
 
-## 7. Cost
+## Cost
+{: id="7-cost"}
 
 ### CAPEX + OPEX (3-year amortized, USD)
 
@@ -292,7 +299,8 @@ Cloud total: ~$231K/year vs bare metal: ~$132K/year. The bare metal approach sav
 > [!TIP]
 > **Bare metal savings come from three places:** (1) no cross-AZ data transfer fees - the largest single cloud cost at $63K/yr vanishes on our own fiber, (2) no instance-hour premium for dedicated tenancy, and (3) Redis on local NVMe has zero storage markup vs. EBS gp3 at $0.08/GB-month.
 
-## 8. Operations
+## Operations
+{: id="8-operations"}
 
 ### Observability
 
@@ -567,9 +575,10 @@ spec:
           periodSeconds: 5
 ```
 
-## 9. Key Decisions & Trade-offs
+## Key Decisions & Trade-offs
+{: id="9-key-decisions--trade-offs"}
 
-### D1: Talos Linux vs Ubuntu/Kubeadm for the OS
+### Talos Linux vs Ubuntu/Kubeadm for the OS {#d1-talos-linux-vs-ubuntukubeadm-for-the-os}
 
 **Option A: Talos Linux v1.9.0.** Immutable, API-driven, no SSH, ~150MB image, PXE-bootable, A-B upgrades with automatic rollback, LUKS with TPM sealing built-in, CIS-compliant by default.
 
@@ -584,7 +593,7 @@ spec:
 > [!TIP]
 > **Talos flips the operational model from "pet servers with SSH access" to "cattle nodes with an API"** - the industry is moving this direction (Equinix Metal, Adidas, and a growing number of financial services run Talos in production), and the security benefit is real: no SSH brute-force attempts, no stolen keys, no configuration drift from ad-hoc shell commands.
 
-### D2: Cilium eBPF vs Calico for networking
+### Cilium eBPF vs Calico for networking {#d2-cilium-ebpf-vs-calico-for-networking}
 
 **Option A: Cilium v1.16.3 (eBPF dataplane).** Kernel-level packet processing via eBPF programs attached to network interfaces. Replaces kube-proxy entirely (BPF-based load balancing). Built-in L7 network policies (HTTP method, path, gRPC method). WireGuard-based transparent encryption. Hubble observability (per-flow latency, service maps, packet drops). Requires Linux kernel 5.10+ (5.19+ for full features).
 
@@ -596,7 +605,7 @@ spec:
 
 **Decision:** Cilium eBPF. The latency advantage (3-5 microseconds vs 15-22 microseconds) directly contributes 10-17 microseconds of saved budget per request toward the sub-10ms p99 target. At 1M req/s, eliminating iptables conntrack table management also saves 0.5-1% of total cluster CPU - roughly half a server's worth of compute. The Hubble observability is essential: without per-flow latency breakdowns, debugging a 10ms p99 regression is guesswork.
 
-### D3: Local SSDs + Sentinel vs Rook/Ceph for Redis storage
+### Local SSDs + Sentinel vs Rook/Ceph for Redis storage {#d3-local-ssds--sentinel-vs-rookceph-for-redis-storage}
 
 **Option A: Dedicated bare metal nodes with local NVMe SSDs.** Redis runs directly on the host (no PVC abstraction). Each NVMe device is dedicated to a single Redis shard. Redis Sentinel manages failover across AZs. AOF persistence writes to the local NVMe (sub-100-microsecond fsync). No distributed storage layer.
 
@@ -608,7 +617,7 @@ spec:
 
 **Decision:** Local NVMe SSDs with Redis Sentinel. At sub-10ms p99 latency targets, every microsecond of storage overhead hurts. Ceph replication adds 0.5-2ms of write latency that is incompatible with the latency budget. Redis's own replication (async, with AOF) provides sufficient durability for rate-limit data, which is inherently ephemeral (tokens reset every window). The operational simplicity of local disks also means one less distributed system to debug at 3 AM.
 
-### D4: MetalLB BGP vs Cilium LB for service exposure
+### MetalLB BGP vs Cilium LB for service exposure {#d4-metallb-bgp-vs-cilium-lb-for-service-exposure}
 
 **Option A: MetalLB v0.14.9 in BGP mode.** MetalLB speakers (DaemonSet) establish BGP sessions with upstream routers (the spine switches). When a LoadBalancer Service is created, MetalLB allocates an IP from the configured pool and announces it via BGP. ECMP at the router distributes traffic across all nodes where the Service has endpoints. BFD (Bidirectional Forwarding Detection) for sub-second failure detection.
 
@@ -620,7 +629,8 @@ spec:
 
 **Decision:** MetalLB BGP. At this scale, the separation of concerns is valuable: Cilium handles pod-to-pod networking, MetalLB handles external-to-cluster traffic. A production outage at a peer company (2023) where a Cilium BGP speaker bug caused route flaps affecting both pod networking and service exposure cemented this choice - keeping the load balancer as a separate, simpler component limits blast radius. Cilium's BGP Control Plane has improved significantly since v1.14 and will likely be the right answer in 12-18 months; revisit this decision at the next major cluster upgrade.
 
-## 10. References
+## References
+{: id="10-references"}
 
 1. [Talos Linux Documentation](https://www.talos.dev/v1.9/)
 1. [Cilium eBPF Dataplane Documentation](https://docs.cilium.io/en/v1.16/)

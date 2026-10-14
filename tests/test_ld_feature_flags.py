@@ -103,11 +103,19 @@ class FeatureFlagTests(unittest.TestCase):
         section = TEXT.split("## Deep dives\n", 1)[1].split("## Key implementation\n", 1)[0]
         dives = re.findall(r"^### ([^\n]+)\n(.*?)(?=^### |\Z)", section, re.MULTILINE | re.DOTALL)
         self.assertEqual(len(dives), 3)
-        for _, dive in dives:
-            for label in ("Problem", "Options and tradeoffs", "Choice and rationale",
+        choices = (
+            "Use ordered first-match rules, with a separate off switch.",
+            "Use stable hash buckets because this design needs memory-only Boolean percentage rollout",
+            "Capture one immutable snapshot per request. The consistency boundary is **one session, one version**.",
+        )
+        for (_, dive), choice in zip(dives, choices):
+            for label in ("Problem", "Options",
                           "How it works", "Tradeoffs and recovery"):
                 self.assertIn("**" + label + ".**", dive)
             self.assertIn("Cost and failure mode", dive)
+            self.assertIn("\n\n" + choice, dive)
+            self.assertNotIn("**Choice and rationale.**", dive)
+            self.assertNotIn("**Options and tradeoffs.**", dive)
         self.assertNotIn("launchdarkly.com", TEXT)
 
     def test_missing_flag_uses_default_and_reason(self):

@@ -301,7 +301,7 @@ Pricing workers aggregate eligible supply and ride demand over local windows. Th
 
 **Problem.** Drivers cross cell boundaries constantly. An old membership entry can make one driver appear in multiple cells, and straight-line distance may differ greatly from pickup time.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Relational spatial index:** Update current positions in an indexed geometry store and query radius directly. Geometry semantics are flexible, but frequent writes and dense-region reads need measured capacity.
 
@@ -309,7 +309,7 @@ Pricing workers aggregate eligible supply and ride demand over local windows. Th
 
 - **H3 candidates with current-location validation — recommended:** Use cell neighborhoods for reusable geographic features, then recheck freshness, actual position and road pickup ETA. Neighborhood traversal is convenient; stale memberships, variable geometry and pentagons need explicit handling.
 
-**Choice and rationale.** Use H3 for candidate indexing, then filter by current position and road-network ETA. [H3 grid traversal](https://h3geo.org/docs/api/traversal/#griddisk) returns nearby cells, not an exact distance radius. A regular grid disk has up to `1 + 3k(k+1)` cells; k=7 is up to 169, not 127. Cell shape varies and pentagon handling matters. Matching and pricing can share a bounded cell interface, while road ETA makes the final proximity decision. We accept approximate candidate geometry and validation work rather than treating an H3 disk as an exact radius.
+Use H3 for candidate indexing, then filter by current position and road-network ETA. [H3 grid traversal](https://h3geo.org/docs/api/traversal/#griddisk) returns nearby cells, not an exact distance radius. A regular grid disk has up to `1 + 3k(k+1)` cells; k=7 is up to 169, not 127. Cell shape varies and pentagon handling matters. Matching and pricing can share a bounded cell interface, while road ETA makes the final proximity decision. We accept approximate candidate geometry and validation work rather than treating an H3 disk as an exact radius.
 
 On movement, write the driver's new current-location version, add new membership and remove old membership asynchronously. Across Redis shards these writes may not be one atomic operation, so candidate queries deduplicate IDs and verify each latest record. Periodic pruning removes old member timestamps even in busy cell keys.
 
@@ -325,7 +325,7 @@ Suppose a river separates two nearby coordinates. Straight-line distance may put
 
 **Problem.** Assigning the nearest driver to the first request can leave a nearby second request with a much longer pickup. Waiting too long for a batch consumes the latency budget.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Immediate greedy assignment:** Offer the best available driver to each request as it arrives. First-offer latency is low, but one early assignment can leave the next rider with a much worse pickup.
 
@@ -333,7 +333,7 @@ Suppose a river separates two nearby coordinates. Straight-line distance may put
 
 - **Short regional batch with sparse immediate path — recommended:** Build a bounded dense-region rider/driver graph and retain an immediate path where arrivals are sparse. Local competition is handled; batching adds deliberate waiting and needs reservation checks after the advisory solve.
 
-**Choice and rationale.** Start with a 100–250ms dense-region batch and a sparse-region immediate path. Build a sparse rider-driver graph using pickup ETA, eligibility and a calibrated marketplace-value term. Use minimum-cost matching with unmatched alternatives rather than forcing unsuitable assignments. Dense regions benefit from seeing competing riders, while sparse regions may gain little from waiting. We accept a short measured batch delay, preserving unmatched alternatives and transactional reservations instead of forcing every solver edge into an assignment.
+Start with a 100–250ms dense-region batch and a sparse-region immediate path. Build a sparse rider-driver graph using pickup ETA, eligibility and a calibrated marketplace-value term. Use minimum-cost matching with unmatched alternatives rather than forcing unsuitable assignments. Dense regions benefit from seeing competing riders, while sparse regions may gain little from waiting. We accept a short measured batch delay, preserving unmatched alternatives and transactional reservations instead of forcing every solver edge into an assignment.
 
 The batch optimizer proposes pairs; storage reserves them. If one reservation fails because another zone claimed the driver, remove that candidate and retry within the remaining request budget.
 
@@ -354,7 +354,7 @@ Build the graph only from fresh eligible pairs and include an unmatched option f
 
 **Problem.** Routing provides a plausible road path, while historical behavior reveals systematic differences between its travel-time estimate and actual arrival.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Routing estimate only:** Use road topology and traffic speeds directly. Coverage is available in new areas, but repeated local timing bias remains.
 
@@ -362,7 +362,7 @@ Build the graph only from fresh eligible pairs and include an unmatched option f
 
 - **Routing plus residual correction — recommended:** Learn the signed difference between observed arrival and a versioned route baseline. The road-aware fallback remains useful; routing, feature and model versions must align and corrections need held-out regional evaluation.
 
-**Choice and rationale.** Use route ETA as the baseline and train a model to correct its error. This follows the hybrid approach described in [Uber's DeepETA article](https://www.uber.com/blog/deepeta-how-uber-predicts-arrival-times/). Keep model evaluation and rollout separate from the routing engine. The matcher needs plausible estimates even for sparsely labeled roads. We accept residual-model version coordination and bounded corrections to improve measured routing bias without replacing the topology-aware baseline.
+Use route ETA as the baseline and train a model to correct its error. This follows the hybrid approach described in [Uber's DeepETA article](https://www.uber.com/blog/deepeta-how-uber-predicts-arrival-times/). Keep model evaluation and rollout separate from the routing engine. The matcher needs plausible estimates even for sparsely labeled roads. We accept residual-model version coordination and bounded corrections to improve measured routing bias without replacing the topology-aware baseline.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
@@ -392,7 +392,7 @@ Version route and feature inputs with the model. Using today's traffic or final 
 
 **Problem.** Event deduplication recognizes repeated messages, but two different ride requests can still compete for the same driver. Likewise, a database uniqueness check performed after a provider charge cannot prevent duplicate external charges.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Event deduplication alone:** Ignore repeated event IDs. Replay is handled, but two distinct requests can still compete for one driver and an uncertain provider response remains unresolved.
 
@@ -400,7 +400,7 @@ Version route and feature inputs with the model. Using today's traffic or final 
 
 - **Atomic reservations and durable payment intents — recommended:** Reserve trip/driver state together, version offers, and persist one charge intent before calling the provider with its stable key. Competing work is coordinated; ownership fencing and ambiguous-payment reconciliation add recovery state.
 
-**Choice and rationale.** Commit driver and trip reservations together, enforce unique active assignments and version every offer. A region handoff drains active reservations or uses a coordinated ownership transfer; active-active writers must not independently assign the same driver. Assignment and payment cross different authorities. We accept versioned offers, fenced regional writers and pending payment states so retries recover the original operation instead of creating another side effect.
+Commit driver and trip reservations together, enforce unique active assignments and version every offer. A region handoff drains active reservations or uses a coordinated ownership transfer; active-active writers must not independently assign the same driver. Assignment and payment cross different authorities. We accept versioned offers, fenced regional writers and pending payment states so retries recover the original operation instead of creating another side effect.
 
 For payment, store a charge intent first, use the same provider idempotency key on retry and query its status after uncertainty. Completion notifications can be delivered repeatedly without creating another intent. Monitor reservation conflicts, expired offers, unknown payment outcomes and reconciliation age.
 

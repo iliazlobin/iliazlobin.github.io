@@ -252,13 +252,13 @@ The application can still display an estimate, while monitoring records which pa
 
 **Problem.** A routing engine already accounts for road topology and route length. Training a model to relearn those relationships requires substantial data and makes new-region behavior harder to control.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Routing estimate only:** Sum road-segment travel times and routing costs. This works before local trip labels exist, but recurring pickup, intersection or route-specific bias remains in the estimate.
 - **Predict duration directly:** Learn duration from route and context features. The model can capture flexible interactions, but it depends more heavily on representative routes and can behave poorly on unseen roads or regions.
 - **Routing plus learned residual — recommended:** Predict the signed error of a road-aware baseline and add that correction to it. This reuses routing structure and gives a useful fallback; model labels and serving features must pin the same routing version.
 
-**Choice and rationale.** **Use a residual model.** Start with a gradient-boosted tree model over compact route and context features. Consider a neural model when embedding interactions and traffic volume justify its serving cost. [Uber's DeepETA](https://www.uber.com/us/en/blog/deepeta-how-uber-predicts-arrival-times/) describes this routing-plus-residual architecture. The routing engine already handles topology, and this design needs controlled behavior in new regions. We accept version coordination between routing and the residual model in exchange for preserving that baseline and learning only its remaining errors.
+**Use a residual model.** Start with a gradient-boosted tree model over compact route and context features. Consider a neural model when embedding interactions and traffic volume justify its serving cost. [Uber's DeepETA](https://www.uber.com/us/en/blog/deepeta-how-uber-predicts-arrival-times/) describes this routing-plus-residual architecture. The routing engine already handles topology, and this design needs controlled behavior in new regions. We accept version coordination between routing and the residual model in exchange for preserving that baseline and learning only its remaining errors.
 
 ```python
 residual_target = actual_seconds - baseline_seconds
@@ -299,13 +299,13 @@ class F,T,L,V data;
 
 **Problem.** A GPS observation may describe conditions at 10:00 but arrive at the feature pipeline at 10:03. A prediction made at 10:01 could not have used it, even though its observation timestamp is earlier.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Observation-time joins:** Join traffic by when a GPS observation occurred. Temporal windows look plausible, but a late observation can enter an earlier prediction's training row even though serving could not yet read it.
 - **Archived serving snapshots:** Train from the exact feature values logged with each prediction. This closely reproduces online input, at the cost of logging and retaining substantial snapshot data.
 - **Availability-aware reconstruction with snapshot checks — recommended:** Require both a valid event-time window and a publication time preceding the request. This enables historical rebuilding; it depends on arrival/version history and is verified against logged serving snapshots.
 
-**Choice and rationale.** Traffic data arrives late, so observation timestamps alone cannot establish what the API knew. We accept dual-time history and sampled snapshot storage to make offline errors comparable with real request-time errors.
+Traffic data arrives late, so observation timestamps alone cannot establish what the API knew. We accept dual-time history and sampled snapshot storage to make offline errors comparable with real request-time errors.
 
 **How it works — Log the served feature snapshot and use availability-aware joins for reconstruction.** An eligible historical feature satisfies both its event-time window and `available_at <= prediction_time`.
 
@@ -351,13 +351,13 @@ The joined row also records feature age and missingness. Defaulting an unavailab
 
 **Problem.** Current traffic is relevant to the first road segment. A segment reached 30 minutes later needs a forecast for that time.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Current speeds for the whole route:** Use one live snapshot for every segment. Lookup is straightforward, but it assumes present conditions still apply to roads reached much later.
 - **Historical time-of-day speeds:** Use past traffic for the expected traversal time. Sparse regions have a stable baseline, but unusual incidents and current congestion are underrepresented.
 - **Horizon-specific forecasts — recommended:** Walk the route using expected segment-arrival times to select forecast buckets. This aligns traffic with when it is relevant; forecast errors accumulate and a revised duration can require another bounded pass.
 
-**Choice and rationale.** **Use current traffic for the near term and horizon-specific forecasts farther along the route.** Start with forecast buckets such as 0, 10, 20, 30 and 60 minutes, and select a bucket using the estimated time each segment will be reached. Long trips span changing conditions, so the serving interface must expose future traffic horizons. We accept forecast-version coordination and bounded iteration, keeping historical estimates as the sparse-data fallback.
+**Use current traffic for the near term and horizon-specific forecasts farther along the route.** Start with forecast buckets such as 0, 10, 20, 30 and 60 minutes, and select a bucket using the estimated time each segment will be reached. Long trips span changing conditions, so the serving interface must expose future traffic horizons. We accept forecast-version coordination and bounded iteration, keeping historical estimates as the sparse-data fallback.
 
 Long routes may need another pass because revised segment times change later arrival horizons. Bound the number of passes and include that cost in the routing budget. Regions with limited observations fall back to historical speeds and wider, separately evaluated intervals.
 
@@ -384,13 +384,13 @@ Interpolation must be defined for adjacent buckets; missing forecasts use histor
 
 **Problem.** A point estimate hides how variable a trip can be. Repeated model sampling can estimate uncertainty, but adds serving work and may still need calibration.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Direct quantile prediction:** Train outputs with quantile loss for P10, P50 and P90. One inference supplies useful bounds, but outputs can cross and nominal quantiles can lose coverage after distribution shifts.
 - **Model ensembles:** Run several independently trained models and examine their prediction spread. This can expose model disagreement, but costs multiple inferences and spread alone does not establish trip-duration coverage.
 - **Quantile outputs with held-out calibration — recommended:** Adjust quantile intervals using independent completed trips, then test coverage on a later untouched set. Serving remains compact; maintaining cohort-aware calibration requires mature labels and interval-width monitoring.
 
-**Choice and rationale.** **Train P10, P50 and P90 quantile outputs, then calibrate them on held-out trips.** Quantile loss penalizes errors differently above and below the requested percentile. The API needs a fast interval with observable coverage, not repeated expensive sampling. We accept separate calibration releases and wider intervals in weakly supported cohorts, while monitoring whether the resulting ranges remain useful.
+**Train P10, P50 and P90 quantile outputs, then calibrate them on held-out trips.** Quantile loss penalizes errors differently above and below the requested percentile. The API needs a fast interval with observable coverage, not repeated expensive sampling. We accept separate calibration releases and wider intervals in weakly supported cohorts, while monitoring whether the resulting ranges remain useful.
 
 ```python
 error = actual_seconds - predicted_quantile
@@ -423,13 +423,13 @@ Interval width:             200s
 
 **Problem.** A new region has a road graph before it has enough completed trips to train a reliable local model. Traffic shifts also happen faster than a full training cycle.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Independent regional models:** Train and serve a model per region. Local tuning is straightforward, but sparse regions have fewer labels and many deployments fragment evaluation and capacity.
 - **One shared residual model:** Learn across regions with regional features. Data and capacity are shared, but dominant regions can hide local bias in aggregate metrics.
 - **Shared model with routing fallback and local calibration — recommended:** Reuse shared learning and enable regional corrections only with sufficient completed-trip evidence. New regions keep a road-aware baseline; this adds calibration versions and requires explicit regional release gates.
 
-**Choice and rationale.** **Use a shared residual model with an explicit routing fallback, then add regional calibration from measured errors.** Keep the initial correction small where coverage is weak. Evaluate new regions separately before enabling a larger learned correction. Coverage varies by region and traffic updates faster than model training. We accept separate live-feature, calibration and model-release clocks so sparse regions have a controlled fallback and local improvements remain evidence-based.
+**Use a shared residual model with an explicit routing fallback, then add regional calibration from measured errors.** Keep the initial correction small where coverage is weak. Evaluate new regions separately before enabling a larger learned correction. Coverage varies by region and traffic updates faster than model training. We accept separate live-feature, calibration and model-release clocks so sparse regions have a controlled fallback and local improvements remain evidence-based.
 
 Traffic features update continuously. Calibration refreshes use recent completed trips; full model candidates follow a slower release cycle. Keep recent trips out of training when they are used for release evaluation.
 

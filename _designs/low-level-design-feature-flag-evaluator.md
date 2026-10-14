@@ -264,7 +264,7 @@ Invalid configuration is rejected before publication; a stale version is rejecte
 
 **Problem.** Several targeting rules may match the same customer and return conflicting values. The evaluator needs predictable precedence, including a feature-wide off switch and a caller-provided fallback.
 
-**Options and tradeoffs.**
+**Options.**
 
 | Option | Mechanism and benefit | Cost and failure mode |
 | --- | --- | --- |
@@ -272,7 +272,7 @@ Invalid configuration is rejected before publication; a stale version is rejecte
 | Rank by specificity | Prefer the rule judged most specific; reduces manual ordering. | Requires a ranking definition and tie handling; changes to a condition can unexpectedly change precedence. |
 | Ordered first match | Evaluate rules in configured order and stop at the first match; precedence is explicit and evaluation can stop early. | Authors must order rules carefully; a broad early rule can shadow later exceptions. |
 
-**Choice and rationale.** Use ordered first-match rules, with a separate off switch. This Boolean evaluator needs deliberate targeting precedence and a small local decision path. Configuration order expresses the policy directly; it adds no ranking model or result-combination language.
+Use ordered first-match rules, with a separate off switch. This Boolean evaluator needs deliberate targeting precedence and a small local decision path. Configuration order expresses the policy directly; it adds no ranking model or result-combination language.
 
 **How it works.** A missing flag uses the caller's fallback. For an existing flag, the off switch takes precedence, followed by the first matching targeting rule. If no rule matches, an identified customer enters the percentage rollout; an unidentified customer receives the fallback. Every outcome carries the captured version and a diagnostic reason.
 
@@ -321,7 +321,7 @@ All conditions within a rule must match using string equality. With “excluded 
 
 **Problem.** Repeated evaluations should keep a customer in the same rollout position. Raising the percentage should add eligible customers while preserving those already included, provided the other decision inputs remain unchanged.
 
-**Options and tradeoffs.**
+**Options.**
 
 | Option | Mechanism and benefit | Cost and failure mode |
 | --- | --- | --- |
@@ -329,7 +329,7 @@ All conditions within a rule must match using string equality. With “excluded 
 | Persist assignments | Save a customer-to-variant record; supports audited enrollment, explicit overrides and cohort history. | Needs durable storage and cached records; stale caches delay changes and authority outages affect new enrollment. |
 | Stable hash bucket | Derive a repeatable position from identity, flag key and salt; evaluation stays local without per-customer storage. | Changing those inputs or the hash contract reshuffles customers; a percentage is not an exact customer quota. |
 
-**Choice and rationale.** Use stable hash buckets because this design needs memory-only Boolean percentage rollout, rather than an enrollment ledger. Explicit customer exceptions fit the ordered rules. Audited enrollment or an exact cohort quota would justify a separate persisted assignment model.
+Use stable hash buckets because this design needs memory-only Boolean percentage rollout, rather than an enrollment ledger. Explicit customer exceptions fit the ordered rules. Audited enrollment or an exact cohort quota would justify a separate persisted assignment model.
 
 **How it works.** Encode `[flag.key, flag.salt, subject_id]` as a compact JSON array in UTF-8. Hash it with SHA-256, interpret the first eight bytes as an unsigned big-endian integer, and scale it into the 10,000-bucket space. [Python's hashlib](https://docs.python.org/3/library/hashlib.html) supplies the hash primitive; the encoding and bucket formula are this evaluator's contract.
 
@@ -371,7 +371,7 @@ Keep cross-process and cross-language vectors for UTF-8 encoding, JSON serializa
 
 **Problem.** A checkout can check several flags while building one response. If each check uses the latest configuration, a refresh between calls can mix behaviors from different versions.
 
-**Options and tradeoffs.**
+**Options.**
 
 | Option | Mechanism and benefit | Cost and failure mode |
 | --- | --- | --- |
@@ -379,7 +379,7 @@ Keep cross-process and cross-language vectors for UTF-8 encoding, JSON serializa
 | Lock configuration for the request | Keep a read lock through the request; several checks share one version. | Slow application work delays publication; an incomplete locking protocol can still allow mixed versions. |
 | Capture an immutable snapshot | Briefly capture one reference per request and evaluate against it; decisions share a version and need no configuration lock. | Old generations remain referenced until sessions finish, delaying off-switch adoption for those requests. |
 
-**Choice and rationale.** Capture one immutable snapshot per request. The consistency boundary is **one session, one version**. The application reuses that session for every check, allowing publication to proceed independently of request processing.
+Capture one immutable snapshot per request. The consistency boundary is **one session, one version**. The application reuses that session for every check, allowing publication to proceed independently of request processing.
 
 **How it works.**
 

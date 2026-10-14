@@ -259,13 +259,13 @@ Checking every possible route becomes expensive as orders accumulate. Candidate 
 
 **Problem.** Independent nearest-driver decisions can assign a scarce driver to an easy order while leaving another order with no feasible pickup.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Nearest available driver:** choose the closest eligible position. Candidate selection is fast, but straight-line distance ignores restaurant readiness, accepted routes and another order's limited choices.
 - **Greedy pair scoring:** rank each order/driver pair using pickup and lateness estimates, then take feasible pairs one at a time. It adds useful prediction signals cheaply, but an early choice can consume the only driver for a harder order.
 - **Bounded batch optimization:** compare recent orders and eligible drivers together under capacity and offer constraints. Scarce drivers can be allocated across competing orders; solver time and prediction error require a deadline and a feasible fallback.
 
-**Choice and rationale.** Small city-level batches fit a marketplace with competing simultaneous orders. We accept a short dispatch wait and bounded solver cost to improve collective assignments, while greedy fallback prevents optimization from consuming the response budget.
+Small city-level batches fit a marketplace with competing simultaneous orders. We accept a short dispatch wait and bounded solver cost to improve collective assignments, while greedy fallback prevents optimization from consuming the response budget.
 
 Use a short dispatch interval, prune distant pairs and estimate pickup time, lateness risk and added route distance. The optimizer selects compatible assignments subject to driver capacity and offer state. Offers become final only through the assignment transaction.
 
@@ -302,13 +302,13 @@ Suppose driver A can serve orders X or Y, while driver B can serve only X. Greed
 
 **Problem.** Putting every GPS update in the order database would add a large write workload unrelated to checkout.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Relational location history:** persist every update with queryable indexes. Durable audit and historical queries are straightforward, but frequent GPS writes compete with checkout and assignment transactions.
 - **Global in-memory geo index:** update one searchable location space. Radius lookup is simple, but hot cities concentrate writes and broad searches create a shared capacity bottleneck.
 - **Regional geo indexes:** route updates by city/cell and search neighboring partitions near boundaries. Live work scales geographically; crossing drivers, duplicate boundary results and stale membership need explicit version/freshness handling.
 
-**Choice and rationale.** Regional indexes fit dispatch queries that are naturally local and GPS state that can be refreshed by heartbeats. We accept temporary coverage reduction after cache loss and rebuild from fresh positions; accepted order/driver ownership remains durable.
+Regional indexes fit dispatch queries that are naturally local and GPS state that can be refreshed by heartbeats. We accept temporary coverage reduction after cache loss and rebuild from fresh positions; accepted order/driver ownership remains durable.
 
 **How it works.** Keep coordinates, observation time and sequence together. The geospatial index provides candidates; the position record provides the freshness check. An expired driver record must also be removed from the geo index because a geo member has no independent key TTL.
 
@@ -344,13 +344,13 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Problem.** Cooking, driver arrival and travel can overlap. Adding independent component averages can hide long waits, and adding component p90 values does not generally produce the route's p90.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Distance and historical averages:** estimate travel from route length and typical stage times. This is cheap and interpretable, but restaurant queues and changing demand make its error uneven.
 - **Gradient-boosted quantile models:** learn tabular route, restaurant and stage features and predict arrival intervals. They provide a measurable baseline at bounded serving cost; calibration drifts by city and stage and component quantiles cannot simply be added.
 - **Shared probabilistic model:** jointly model related delivery outcomes across stages or tasks. It can share sparse signals and capture dependencies, but training, serving and calibration become more complex and require stronger evidence.
 
-**Choice and rationale.** Start with component-aware gradient-boosted predictions and an end-to-end arrival model. This is a bounded-serving-cost baseline for tabular restaurant, route and order-stage features. We accept periodic recalibration and imperfect tails; a shared probabilistic model must improve cohort-level coverage and lateness within the serving budget.
+Start with component-aware gradient-boosted predictions and an end-to-end arrival model. This is a bounded-serving-cost baseline for tabular restaurant, route and order-stage features. We accept periodic recalibration and imperfect tails; a shared probabilistic model must improve cohort-level coverage and lateness within the serving budget.
 
 Measure absolute error, late-arrival rate and interval coverage by city, restaurant and order stage. Promote the shared model when it improves those outcomes within the latency budget.
 
@@ -387,13 +387,13 @@ Train the end-to-end output against completed delivery outcomes using features a
 
 **Problem.** Exhaustive route enumeration grows rapidly with the number of stops.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **First feasible insertion:** place new pickup/drop-off stops at the first valid positions. Computation is small, but a feasible route can still add unnecessary travel or food waiting.
 - **Exact global optimization:** search every allowed route combination. It finds the optimum under the supplied model, but runtime grows rapidly and predictions may change before that optimum is usable.
 - **Bounded insertion with local improvement:** enumerate a shortlist, retain the best feasible route and improve it until the compute deadline. Runtime is controlled and commitments are preserved; the selected route may be locally rather than globally optimal.
 
-**Choice and rationale.** Bounded insertion fits continuously changing routes where a timely feasible plan is more useful than a late global optimum. We accept suboptimality under the deadline and replan only remaining actions as better traffic and readiness information arrives.
+Bounded insertion fits continuously changing routes where a timely feasible plan is more useful than a late global optimum. We accept suboptimality under the deadline and replan only remaining actions as better traffic and readiness information arrives.
 
 Score added travel, food waiting time and missed delivery windows. Keep the best feasible route throughout the search. If traffic changes or a pickup is delayed, replan the remaining stops while preserving completed actions and accepted work.
 

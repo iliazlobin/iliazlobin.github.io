@@ -251,7 +251,7 @@ A feature or inference timeout selects the merchant's versioned fallback policy:
 
 **Problem.** Fraud inputs mix amounts, categorical identifiers, missing values and nonlinear behavior. Serving must also produce a reproducible decision quickly.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Rules and logistic regression:** Score explicit transaction fields and simple aggregates. Inference and explanations are inexpensive, but nonlinear interactions and coordinated relationships need richer evidence.
 
@@ -259,7 +259,7 @@ A feature or inference timeout selects the merchant's versioned fallback policy:
 
 - **Graph or transformer inference per transaction:** Process relational neighborhoods or event sequences directly at checkout. Richer evidence can help difficult cases, but traversal and inference add variable latency and larger recovery complexity.
 
-**Choice and rationale.** Use a fast baseline plus LightGBM, with graph representations as prepared inputs. [LightGBM](https://papers.nips.cc/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html) handles tabular interactions; the graph encoder is trained and published separately. Compare graph-feature lift against the tabular baseline before keeping that dependency. Checkout needs a reproducible low-latency decision on mixed tabular inputs. We accept feature-preparation work and a tested fast fallback, adding graph representations only when their measured quality gain justifies that dependency.
+Use a fast baseline plus LightGBM, with graph representations as prepared inputs. [LightGBM](https://papers.nips.cc/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html) handles tabular interactions; the graph encoder is trained and published separately. Compare graph-feature lift against the tabular baseline before keeping that dependency. Checkout needs a reproducible low-latency decision on mixed tabular inputs. We accept feature-preparation work and a tested fast fallback, adding graph representations only when their measured quality gain justifies that dependency.
 
 Fast-path thresholds require their own calibration and quality gates. Evaluate them on representative mature labels; confidence from a small model is not automatically equivalent to confidence from the full scorer.
 
@@ -294,7 +294,7 @@ Log raw/calibrated scores, exit mode, feature/model versions and selected policy
 
 **Problem.** A model that approves almost everything can have high accuracy while missing most fraud.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Natural-prevalence training:** Use transaction examples in their observed proportions. Distribution is representative, but many batches contain little fraud evidence and training work is dominated by easy negatives.
 
@@ -302,7 +302,7 @@ Log raw/calibrated scores, exit mode, feature/model versions and selected policy
 
 - **Tuned weighting with representative calibration — recommended:** Emphasize reviewed positives or difficult examples using one controlled loss policy. Rare-event learning improves; weight tuning can overfit or damage legitimate-user precision, so calibration and release evaluation use untouched population data.
 
-**Choice and rationale.** Evaluate one sampling or weighting policy, then calibrate on representative data. The service needs fraud recall at an explicit decline precision, not high overall accuracy. We accept careful sampling/weight tracking and independent calibration rather than stacking adjustments whose combined effect is hard to interpret.
+Evaluate one sampling or weighting policy, then calibrate on representative data. The service needs fraud recall at an explicit decline precision, not high overall accuracy. We accept careful sampling/weight tracking and independent calibration rather than stacking adjustments whose combined effect is hard to interpret.
 
 **How it works.** Record sampling rates, tune one weighting policy and calibrate on untouched representative data. Avoid stacking large positive weights with heavily oversampled positives by default. Evaluate PR-AUC and recall at the required decline precision; report uncertainty for small cohorts.
 
@@ -335,7 +335,7 @@ Raw scorer → held-out calibration → amount/merchant-aware action policy
 
 **Problem.** Confirmed outcomes may arrive weeks after checkout. Reviews and rules arrive sooner but reflect the current decision policy.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Recent proxy labels:** Learn quickly from rules or initial reviews. Adaptation is prompt, but the labels inherit the current policy's mistakes and may be revised after a dispute.
 
@@ -343,7 +343,7 @@ Raw scorer → held-out calibration → amount/merchant-aware action policy
 
 - **Separate mature and provisional datasets — recommended:** Use mature evidence for the stable scorer and clearly weighted provisional records for candidate adaptation. This preserves provenance; multiple label states and observation windows require careful data and evaluation management.
 
-**Choice and rationale.** Train the stable scorer on mature evidence and use weighted provisional data for candidate adaptation. Start with a 90-day observation window, then measure maturity by payment channel and dispute type. An undisputed transaction is not automatically a verified negative. Fraud outcomes mature well after checkout. We accept slower stable-model conclusions and keep provisional evidence visibly distinct, so a short rollout cannot be mistaken for a confirmed fraud-quality result.
+Train the stable scorer on mature evidence and use weighted provisional data for candidate adaptation. Start with a 90-day observation window, then measure maturity by payment channel and dispute type. An undisputed transaction is not automatically a verified negative. Fraud outcomes mature well after checkout. We accept slower stable-model conclusions and keep provisional evidence visibly distinct, so a short rollout cannot be mistaken for a confirmed fraud-quality result.
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -381,7 +381,7 @@ Treat this schedule as the proposed observation policy, not a universal payment-
 
 **Problem.** A new user has little history but may share a device or payment token with known activity.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **User history:** Use established account behavior and prior reviewed outcomes. Evidence is direct once it exists, but new users, cards and merchants lack sufficient history.
 
@@ -389,7 +389,7 @@ Treat this schedule as the proposed observation policy, not a universal payment-
 
 - **Coverage-aware relationships with cohort priors — recommended:** Combine bounded relationship features with age/missingness and a calibrated cohort baseline. This supports sparse entities; priors can conceal small-group bias and need independent cold-start evaluation.
 
-**Choice and rationale.** Use relationship features with age, coverage and missing-value masks, then blend in observed history. Device reuse is a signal interpreted with other evidence. Evaluate new-user, new-card and new-merchant cohorts independently; shared IP addresses alone do not establish fraud. Cold-start decisions begin with weaker evidence; age and measured coverage control the influence of relationship and cohort estimates.
+Use relationship features with age, coverage and missing-value masks, then blend in observed history. Device reuse is a signal interpreted with other evidence. Evaluate new-user, new-card and new-merchant cohorts independently; shared IP addresses alone do not establish fraud. Cold-start decisions begin with weaker evidence; age and measured coverage control the influence of relationship and cohort estimates.
 
 Merchant priors use relevant business characteristics and are replaced gradually by measured history. Sensitive attributes and invasive fingerprinting require explicit privacy and fairness controls.
 
@@ -420,7 +420,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Problem.** Attack patterns evolve, but noisy feedback can also move the decision boundary in the wrong direction.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Checkpointed daily retraining:** Build repeatable candidates from a stable dataset. Diagnosis and rollback are clear, but new attack labels can wait for the next release.
 
@@ -428,7 +428,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 - **Direct live parameter updates:** Change the deployed boundary as feedback arrives. Delay is small, but individual changes are harder to reproduce and delayed or poisoned feedback can produce harmful enforcement.
 
-**Choice and rationale.** Promote versioned candidates through offline evaluation, shadow traffic and a bounded rollout. Mature labels establish model quality; shadow traffic checks latency, feature parity and disagreements. A short shadow window cannot establish fraud outcomes that mature weeks later. The release delay is justified by the customer and financial cost of checkout errors; frequent provisional candidates accelerate response while mature outcomes remain the quality anchor.
+Promote versioned candidates through offline evaluation, shadow traffic and a bounded rollout. Mature labels establish model quality; shadow traffic checks latency, feature parity and disagreements. A short shadow window cannot establish fraud outcomes that mature weeks later. The release delay is justified by the customer and financial cost of checkout errors; frequent provisional candidates accelerate response while mature outcomes remain the quality anchor.
 
 Monitor loss rates, legitimate declines, review volume, calibration, stale features and fallback use by merchant/channel. Rollback restores a compatible model, feature encoding and threshold policy together. Velocity ingestion continues independently, and every historic decision remains reproducible.
 

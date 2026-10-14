@@ -247,13 +247,13 @@ Use the existing enforcement state and approved fallback rules when the feature/
 
 **Problem.** Timing/count features detect individual bursts; graph and sequence representations detect patterns across actions and accounts.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Rules or logistic regression:** Use current counts and account attributes in a small, explainable scorer. Serving cost is low, but fixed rules and simple feature combinations can miss coordinated behavior spread across accounts.
 - **Full graph and sequence scoring for every action:** Run the richest available model on every request. Detection has consistent access to deeper evidence, but graph-feature retrieval and long sequences consume latency and capacity even for clear low-risk actions.
 - **Bounded cascade — recommended:** Apply fast checks to all actions and deeper scoring to the uncertain or high-impact subset, using prepared graph features. This concentrates expensive inference where it matters; early exits need separate recall validation and sudden ambiguity can overload the heavy path.
 
-**Choice and rationale.** High action volume and proportionate enforcement favor a bounded cascade. We accept two scoring paths and monitor the escalation rate, because the fast path's missed-abuse rate and the heavy path's capacity jointly determine the result.
+High action volume and proportionate enforcement favor a bounded cascade. We accept two scoring paths and monitor the escalation rate, because the fast path's missed-abuse rate and the heavy path's capacity jointly determine the result.
 
 [GraphSAGE](https://arxiv.org/abs/1706.02216) provides inductive graph representations. Cap neighbor sampling and retain the graph's event-time/version context; an embedding for a new account still needs available attributes or neighbors.
 
@@ -291,13 +291,13 @@ A sequence includes event type and time since the preceding action, allowing rap
 
 **Problem.** False-positive rate, precision and appeal-overturn rate use different denominators. A low appeal rate can coexist with many mistaken restrictions if few users appeal.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **One fixed raw-score threshold:** Reuse one cutoff across releases. It is easy to deploy, but a changed score scale or cohort distribution can change restriction rates without any policy decision.
 - **Online histogram updates:** Move thresholds using recent labeled score distributions. This reacts quickly with representative labels; sparse bins and selectively investigated accounts can make the update unstable or biased.
 - **Versioned calibration and action thresholds — recommended:** Fit calibration on mature independent labels and set separate challenge, review and restriction bands. This makes user-impact costs explicit; it requires labeled support per cohort and reviewed threshold releases.
 
-**Choice and rationale.** A challenge and a restriction have different user costs, so this design ties thresholds to actions rather than one raw score. We accept slower promotion where labels are sparse and use broader reviewed bands instead of an unsupported precise cutoff.
+A challenge and a restriction have different user costs, so this design ties thresholds to actions rather than one raw score. We accept slower promotion where labels are sparse and use broader reviewed bands instead of an unsupported precise cutoff.
 
 ```text
 False-positive rate = restricted legitimate accounts / all reviewed legitimate accounts
@@ -339,13 +339,13 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Problem.** A supervised model recognizes patterns represented in its labels. Novel coordination may look unusual without resembling a known attack.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Supervised detection alone:** Learn the patterns represented in reviewed abuse labels. It gives directly evaluated known-attack quality, but a genuinely new coordination pattern may remain outside the training coverage.
 - **Anomaly-triggered restrictions:** Restrict accounts whose behavior differs sharply from the baseline. Novel attacks can stand out, but live events, new features and accessibility workflows can also be unusual, creating mistaken strong actions.
 - **Anomaly-assisted investigation — recommended:** Combine novelty with observed harmful impact to prioritize review and proportionate temporary controls. This supports discovery without making novelty a gold label; investigator capacity and label turnaround limit response speed.
 
-**Choice and rationale.** Bot detection needs a path for new attacks while preserving legitimate unusual activity. We accept an investigation delay and queue-management cost, with temporary controls chosen by impact instead of automatically escalating an anomaly score into a permanent restriction.
+Bot detection needs a path for new attacks while preserving legitimate unusual activity. We accept an investigation delay and queue-management cost, with temporary controls chosen by impact instead of automatically escalating an anomaly score into a permanent restriction.
 
 [Isolation Forest](https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.IsolationForest.html) is a lightweight candidate for activity features; an autoencoder can add a separate sequence/feature anomaly signal. Compare their investigation yield before maintaining both.
 
@@ -381,13 +381,13 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Problem.** Restricted accounts have truncated future activity. Appeals and investigator queues sample selected accounts, so they cannot alone measure the whole population.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Survivors or denied appeals only:** Train from readily available post-enforcement outcomes. Collection is convenient, but restricted accounts have truncated activity and appeals represent a self-selected subset, so the dataset does not represent all actions.
 - **Synthetic behavior or counterfactual imputation:** Generate attack scenarios or estimate outcomes hidden by enforcement. Coverage can improve for known mechanisms; simulation fidelity and unverifiable outcome assumptions limit population-quality claims.
 - **Independent audits with targeted review — recommended:** Review stored action-time evidence across enforcement bands and retain selection probabilities. This supports quality estimates and difficult-case learning; audit labels, restricted evidence retention and reviewer work add cost.
 
-**Choice and rationale.** The design must measure legitimate-user impact and missed abuse after it has intervened. Independent audits supply that missing coverage; synthetic tests remain useful for mechanisms, while their accepted limitation is that they do not estimate live prevalence.
+The design must measure legitimate-user impact and missed abuse after it has intervened. Independent audits supply that missing coverage; synthetic tests remain useful for mechanisms, while their accepted limitation is that they do not estimate live prevalence.
 
 Keep normal safety controls active during evaluation. Quarantined evidence and red-team test environments provide review data without deliberately allowing harmful activity. Red-team recall tests known scenarios; representative audits estimate current prevalence and missed abuse.
 
@@ -405,13 +405,13 @@ Draw audits across action bands with logged probabilities, and keep targeted inv
 
 **Problem.** Monitor input distributions, missing features, scores, action rates and mature labeled quality by cohort. Distribution changes trigger investigation; they are not proof that quality has degraded.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Calendar-only retraining:** Release reproducible candidates on a fixed cadence. Operations are predictable, but abrupt compromise patterns may wait for the next labeled cycle.
 - **Retrain on every drift alert:** Immediately train and promote from changing inputs. Adaptation is fast, but seasonal traffic or poisoned labels can produce an unnecessary or harmful model change.
 - **Scheduled releases with reviewed incident response — recommended:** Use drift diagnostics to collect evidence and accelerate a validated candidate. This combines repeatable release gates with urgent response; investigation and mature labels take time and require retained compatible bundles.
 
-**Choice and rationale.** A model update can change restrictions at scale. We accept the reviewed response time so diagnosis can distinguish a product event from actual degradation, and rollback can restore the corresponding scorer, features and thresholds together.
+A model update can change restrictions at scale. We accept the reviewed response time so diagnosis can distinguish a product event from actual degradation, and rollback can restore the corresponding scorer, features and thresholds together.
 
 Block incompatible feature/model releases. Test timeouts, missing graph snapshots, duplicate events and restriction expiry. Track investigator backlog and challenge completion alongside bot impact. A rollback restores the approved scoring/policy bundle while preserving the audit trail and human corrections.
 

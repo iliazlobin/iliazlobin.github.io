@@ -305,7 +305,7 @@ Reports are retained in restricted review storage. Moderation decisions update p
 
 **Problem.** If A's swipe and B's swipe are stored in separate user partitions, two handlers can each read an older inverse decision and miss the mutual like. Sending both operations through one stateless coordinator does not make writes to different partitions atomic.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Independent writes with reconciliation:** Write each user's decision and check the inverse afterward. User-partition throughput is high, but simultaneous reads can both miss the reciprocal like and require delayed repair.
 
@@ -313,7 +313,7 @@ Reports are retained in restricted review storage. Moderation decisions update p
 
 - **PostgreSQL pair transaction — recommended:** Lock one canonical pair row and commit decisions, match identity, command outcome and outbox together. Mutual likes serialize directly; pair-shard routing and writer fencing become explicit operational requirements.
 
-**Choice and rationale.** Use the PostgreSQL pair transaction. [Row locking](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS) serializes concurrent updates to the pair. A later transaction sees the earlier committed decision and creates the match when both are likes. The design needs one recoverable match transition and messages/unmatches already share pair authority. We accept pair-row contention and shard ownership in exchange for an account-independent transactional boundary that covers the entire state change.
+Use the PostgreSQL pair transaction. [Row locking](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS) serializes concurrent updates to the pair. A later transaction sees the earlier committed decision and creates the match when both are likes. The design needs one recoverable match transition and messages/unmatches already share pair authority. We accept pair-row contention and shard ownership in exchange for an account-independent transactional boundary that covers the entire state change.
 
 ```python
 # One transaction on the pair's shard.
@@ -361,7 +361,7 @@ sequenceDiagram
 
 **Problem.** A full radius query with preference joins and ranking for every request becomes expensive in dense areas. Precomputed pools reduce that load, but can miss eligible users near boundaries or omit lower-ranked candidates.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Direct PostGIS queries:** Run indexed radius and preference queries per request. Coverage and distance semantics are clear, but dense regions and repeated ranking joins raise serving cost.
 
@@ -369,7 +369,7 @@ sequenceDiagram
 
 - **Distributed spatial index:** Partition a frequently changing location index across owners. Capacity grows horizontally, but movement, neighborhood fan-out and ownership changes complicate recovery and query coverage.
 
-**Choice and rationale.** Use indexed regional spatial storage and precomputed Redis pools. Select all cells intersecting the radius, oversample candidates from those pools, then verify actual distance and preferences. A fixed 3×3 geohash neighborhood does not cover an arbitrary 50km radius. Regional candidate reuse is valuable at discovery volume, while final pair/profile checks protect visibility. We accept pool-refresh lag and oversampling work, testing boundary and dense-region recall rather than assuming a fixed cell neighborhood covers every radius.
+Use indexed regional spatial storage and precomputed Redis pools. Select all cells intersecting the radius, oversample candidates from those pools, then verify actual distance and preferences. A fixed 3×3 geohash neighborhood does not cover an arbitrary 50km radius. Regional candidate reuse is valuable at discovery volume, while final pair/profile checks protect visibility. We accept pool-refresh lag and oversampling work, testing boundary and dense-region recall rather than assuming a fixed cell neighborhood covers every radius.
 
 Candidate builders publish versioned pools atomically. Rebuilds include active profiles and allocate exposure for new users; pagination reads one version. In sparse areas, offer an explicit distance change instead of silently changing age or preference filters. Dense areas use larger or rotating pools to avoid permanently hiding the same profiles.
 
@@ -385,7 +385,7 @@ In a dense city, each cell pool is a sampled/rotating eligible set rather than a
 
 **Problem.** A heavy user's swipe history can contain many thousands of IDs. Fetching and transmitting the complete set for every feed page adds memory and network work.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Exact candidate membership checks — recommended:** Batch only the candidate pair IDs on their authoritative shards. Correctness work is proportional to the current page; shard fan-out and database latency remain bounded serving costs.
 
@@ -393,7 +393,7 @@ In a dense city, each cell pool is a sampled/rotating eligible set rather than a
 
 - **Bloom-filter acceleration:** Use a compact probabilistic history representation before exact checks. Memory is smaller; false positives can hide unseen profiles, while an incomplete or stale filter can miss a recorded decision.
 
-**Choice and rationale.** Batch exact checks, with a Bloom filter as an optional accelerator. Use [Redis Bloom filters](https://redis.io/docs/latest/develop/data-types/probabilistic/bloom-filter/) to cheaply discard likely repeats, then check surviving candidates against current pair records. This keeps database work proportional to the candidate batch. Exclusions affect user-visible correctness and permissions, so exact checks remain final. We accept bounded shard reads and optionally use a measured Bloom-filter accelerator, tracking coverage loss and freshness rather than calling it an exact history.
+Batch exact checks, with a Bloom filter as an optional accelerator. Use [Redis Bloom filters](https://redis.io/docs/latest/develop/data-types/probabilistic/bloom-filter/) to cheaply discard likely repeats, then check surviving candidates against current pair records. This keeps database work proportional to the candidate batch. Exclusions affect user-visible correctness and permissions, so exact checks remain final. We accept bounded shard reads and optionally use a measured Bloom-filter accelerator, tracking coverage loss and freshness rather than calling it an exact history.
 
 A complete Bloom filter has no false negatives for inserted IDs. That property does not cover dropped updates, resets or stale cache replicas. Rebuild from a consistent checkpoint, replay newer outbox updates into the replacement and swap versions after catching up.
 
@@ -411,7 +411,7 @@ A complete Bloom filter can skip likely repeats cheaply, but false positives can
 
 **Problem.** Distance alone gives a relevant area, but users still need a useful ordering within it. Ranking solely by popularity concentrates exposure and provides weak evidence of mutual compatibility.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Activity and completeness baseline:** Order eligible profiles using transparent freshness and completion features. Operations and explanations are simple, but mutual interest is weakly represented.
 
@@ -419,7 +419,7 @@ A complete Bloom filter can skip likely repeats cheaply, but false positives can
 
 - **Learned retrieval and ranking:** Estimate compatibility from impression-linked interactions. Personalization can improve with mature labels, but exposure bias, model/index compatibility and safety controls add substantial release work.
 
-**Choice and rationale.** Start with the multi-signal ranker and evaluate learned ranking against it. Score only eligible candidates, include exploration for new profiles and measure mutual matches and useful conversations alongside exposure coverage and safety reports. Start with a measurable multi-signal baseline while independent interaction evidence accumulates. We accept less expressive personalization initially, promoting learned ranking only when mutual matches and useful conversations improve without concentrating exposure or weakening safety.
+Start with the multi-signal ranker and evaluate learned ranking against it. Score only eligible candidates, include exploration for new profiles and measure mutual matches and useful conversations alongside exposure coverage and safety reports. Start with a measurable multi-signal baseline while independent interaction evidence accumulates. We accept less expressive personalization initially, promoting learned ranking only when mutual matches and useful conversations improve without concentrating exposure or weakening safety.
 
 Training uses actual displayed profiles and later outcomes so an unseen profile is not treated as a rejection. Keep feature and model versions in impression events. Cold-start users rely on declared preferences and location; new profiles receive measured exploration exposure.
 

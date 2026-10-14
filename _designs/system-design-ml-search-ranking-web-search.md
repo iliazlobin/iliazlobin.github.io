@@ -244,7 +244,7 @@ Indexing follows the accepted document change, while serving checks current remo
 
 **Problem.** Exact matching is important for product names, identifiers and navigation queries. Semantic retrieval helps when the user and document express the same idea with different words.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Lexical retrieval only:** Use exact terms and term statistics in an inverted index. Identifiers and navigation queries work well, but documents using different vocabulary can be missed.
 
@@ -252,7 +252,7 @@ Indexing follows the accepted document change, while serving checks current remo
 
 - **Hybrid retrieval — recommended:** Retrieve both sets, deduplicate document IDs and fuse ranks before detailed scoring. Coverage is broader; two index families add fan-out, freshness coordination and candidate-budget tuning.
 
-**Choice and rationale.** Use hybrid retrieval with bounded rank fusion. Web queries include both exact entities and vocabulary mismatch. We accept dual-index cost and bounded fan-out so one retrieval representation does not determine all coverage; downstream ranking measures the merged candidates.
+Use hybrid retrieval with bounded rank fusion. Web queries include both exact entities and vocabulary mismatch. We accept dual-index cost and bounded fan-out so one retrieval representation does not determine all coverage; downstream ranking measures the merged candidates.
 
 [DPR](https://arxiv.org/abs/2004.04906) demonstrates separately encoded query and passage retrieval. For this design, train the query/document encoders on relevant pairs with in-batch and mined negatives; keep unknown relevance separate from judged irrelevance. Sampling correction matters when popular documents dominate the batches.
 
@@ -279,7 +279,7 @@ A navigation query like a product serial number may rely primarily on exact term
 
 **Problem.** A cross-encoder evaluates query/document interactions directly, but doing that for every retrieved candidate makes inference dominate latency.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Feature ranker throughout:** Score with prepared match, quality and context features. Serving is inexpensive and inspectable, but fine query–passage interactions may be missed.
 
@@ -287,7 +287,7 @@ A navigation query like a product serial number may rely primarily on exact term
 
 - **Bounded ranking cascade — recommended:** Use LambdaMART or a distilled student to shortlist, then cross-encode a final batch. Deep scoring fits a deadline; useful documents pruned earlier are irrecoverable and need stage-retention evaluation.
 
-**Choice and rationale.** Shortlist with a light ranker, then cross-encode the bounded final set. The search deadline leaves limited capacity for joint text inference. We accept measured shortlist loss in exchange for bounded work, tuning candidate budgets with relevance and tail latency rather than average throughput alone.
+Shortlist with a light ranker, then cross-encode the bounded final set. The search deadline leaves limited capacity for joint text inference. We accept measured shortlist loss in exchange for bounded work, tuning candidate budgets with relevance and tail latency rather than average throughput alone.
 
 The [LambdaMART overview](https://www.microsoft.com/en-us/research/publication/from-ranknet-to-lambdarank-to-lambdamart-an-overview/) explains ranking losses for tree-based models; [BERT passage re-ranking](https://arxiv.org/abs/1901.04085) provides the query/text interaction model.
 
@@ -326,7 +326,7 @@ Select passages with the same versioned text pipeline used in training. Truncati
 
 **Problem.** A click reflects relevance, display position, snippet quality and user behavior. Some queries are answered directly by a snippet, so a successful search may have no click.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Raw clicks:** Treat clicked documents as useful. Labels are abundant, but position, snippet quality and the previous exposure policy determine what can be clicked.
 
@@ -334,7 +334,7 @@ Select passages with the same versioned text pipeline used in training. Truncati
 
 - **Judgments plus exposure-aware interactions — recommended:** Use human judgments for evaluation and impression-linked outcomes for learning. Scale and semantic evidence complement each other; selection bias, delayed actions and annotation consistency require separate controls.
 
-**Choice and rationale.** Combine judged relevance with exposure-aware interactions. A successful search can end with a snippet rather than a click. We accept reviewed relevance cost and richer event joins so the design can improve usefulness without optimizing only attractive result positions.
+Combine judged relevance with exposure-aware interactions. A successful search can end with a snippet rather than a click. We accept reviewed relevance cost and richer event joins so the design can improve usefulness without optimizing only attractive result positions.
 
 Record displayed positions, UI version and known exploration probabilities. Inverse-propensity weighting uses estimated examination/exposure probabilities, with clipping to control variance; the observed click rate at a position mixes exposure and relevance. Small randomized experiments help estimate these effects.
 
@@ -371,7 +371,7 @@ Use judged query/document pairs as the stable evaluation anchor. A no-click can 
 
 **Problem.** A new page needs a searchable representation before its eventual popularity is known. A new encoder also changes the meaning of every vector in its index.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Full rebuild for every update:** Publish one consistent snapshot after each crawl change. Recovery is straightforward, but repeatedly rebuilding a large corpus cannot meet the five-minute freshness target efficiently.
 
@@ -379,7 +379,7 @@ Use judged query/document pairs as the stable evaluation anchor. A no-click can 
 
 - **Incremental ingestion with periodic base rebuilds — recommended:** Query an immutable base plus versioned deltas, merging the newest document version. Freshness and compaction have separate clocks; watermarks, deletion filters and compatible encoder cutovers add operational work.
 
-**Choice and rationale.** Incrementally update versioned document indexes and publish compatible model/index bundles. Crawl changes are smaller and more frequent than model-space releases. We accept layered-index coordination and periodic rebuild cost to preserve fresh documents and reproducible rollback without serving incompatible vectors.
+Incrementally update versioned document indexes and publish compatible model/index bundles. Crawl changes are smaller and more frequent than model-space releases. We accept layered-index coordination and periodic rebuild cost to preserve fresh documents and reproducible rollback without serving incompatible vectors.
 
 Use crawl age and query intent as ranking features. Time-sensitive queries can favor recent pages; reference queries often benefit from established sources. If a freshness adjustment is used, its half-life is query-dependent:
 
