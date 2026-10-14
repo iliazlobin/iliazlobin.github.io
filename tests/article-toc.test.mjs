@@ -48,7 +48,7 @@ function fixture({ desktop = true, invalidLink = false, headerHeight = 0 } = {})
     addEventListener: (name, callback) => events.set(name, callback),
     removeEventListener: name => events.delete(name),
   };
-  const article = { ownerDocument: document, querySelector: selector => selector === "[data-article-toc]" ? toc : content };
+  const article = { ownerDocument: document, querySelector: selector => selector === "[data-article-toc]" ? toc : selector === ".post-content" ? content : null };
   function flush() { for (const [id, callback] of [...frames]) { frames.delete(id); callback(); } }
   return { article, view, toc, nav, panel, summary, headings, links, events, frames, media, mediaEvents, flush };
 }

@@ -35,7 +35,8 @@ class ArticleOutline(HTMLParser):
                     self.errors.append("outline link is not a plain fragment anchor")
                 self._link = {"id": unquote(href[1:]), "parent": self._list_parents[-1] if self._list_parents else None, "text": []}
         if self._content_depth and tag in ("h2", "h3", "h4"):
-            self._heading = {"id": attrs.get("id"), "level": int(tag[1]), "text": []}
+            self._heading = {"id": attrs.get("id"), "level": int(tag[1]), "text": [],
+                             "toc_label": attrs.get("data-toc-label")}
 
     def handle_data(self, data):
         if self._heading is not None:
@@ -77,7 +78,8 @@ class ArticleOutline(HTMLParser):
             seen.add(heading["id"])
             while stack and stack[-1]["level"] >= heading["level"]:
                 stack.pop()
-            expected.append({"id": heading["id"], "text": heading["text"], "parent": stack[-1]["id"] if stack else None})
+            label = heading["toc_label"] if heading["toc_label"] is not None else heading["text"]
+            expected.append({"id": heading["id"], "text": " ".join(label.split()), "parent": stack[-1]["id"] if stack else None})
             stack.append(heading)
         if self.links != expected:
             self.errors.append(f"outline differs from heading order, labels or hierarchy: expected {expected!r}, received {self.links!r}")

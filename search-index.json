@@ -19,7 +19,12 @@ search_disabled: true
     {%- assign search_section = entry.title | downcase -%}
     {%- if header_path == 'designs.md' -%}{%- assign search_section = 'design' -%}{%- endif -%}
     {%- if header_path == 'infrastructure.md' -%}{%- assign search_section = 'infra' -%}{%- endif -%}
-    {"url":{{ entry.url | relative_url | jsonify }},"title":{{ entry.title | jsonify }},"description":{{ entry.description | default: '' | jsonify }},"category":"page","categoryLabel":"Pages","section":{{ search_section | jsonify }},"tags":{{ search_tags | uniq | jsonify }},"html":{% if entry.projects %}""{% else %}{{ entry.content | markdownify | jsonify }}{% endif %}}
+    {%- assign search_html = entry.content | markdownify -%}
+    {%- if entry.left_rail -%}
+      {%- capture search_rail -%}{% include {{ entry.left_rail }} %}{%- endcapture -%}
+      {%- assign search_html = search_html | append: search_rail -%}
+    {%- endif -%}
+    {"url":{{ entry.url | relative_url | jsonify }},"title":{{ entry.title | jsonify }},"description":{{ entry.description | default: '' | jsonify }},"category":"page","categoryLabel":"Pages","section":{{ search_section | jsonify }},"tags":{{ search_tags | uniq | jsonify }},"html":{% if entry.projects %}""{% else %}{{ search_html | jsonify }}{% endif %}}
     {%- if entry.projects -%}
       {%- assign search_articles = entry.content | split: '<article id="' -%}
       {%- for project in entry.projects -%}

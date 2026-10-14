@@ -1,18 +1,24 @@
 - category: system-design
+  section: design
   label: System design
   prefix: "SD: "
 - category: system-design-ml
+  section: design
   label: Machine learning
   prefix: "ML: "
 - category: low-level-design
+  section: design
   label: Low-level design
   prefix: "LD: "
 - category: ai
+  section: design
   label: Agentic AI
   prefix: "AI: "
 - category: infra
+  section: infrastructure
   label: Infrastructure
   prefix: "INFRA: "
 - category: tech
+  section: infrastructure
   label: Technologies
   prefix: "TECH: "

@@ -1,7 +1,19 @@
 ---
 layout: default
 ---
-<article class="post post--page">
+{%- if page.toc %}
+<link rel="stylesheet" href="{{ '/assets/css/article-toc.css' | relative_url }}?v={{ site.time | date: '%s' }}">
+<div class="document-shell document-shell--page{% if page.left_rail %} document-shell--profile{% endif %}" data-document-shell>
+  {% if page.left_rail %}
+  <aside class="page-profile-rail" data-page-profile aria-label="Contact and qualifications">
+    {% include {{ page.left_rail }} %}
+  </aside>
+  {% endif %}
+  <aside class="page-side-rail" data-toc-scroll aria-label="Page navigation and details">
+    {% include article-toc.html content=content %}
+  </aside>
+{%- endif %}
+<article class="post post--page{% if page.toc %} post--document{% endif %}">
 
   {%- unless site.header_pages contains page.path -%}
   <header class="post-header">
@@ -14,3 +26,12 @@ layout: default
   </div>
 
 </article>
+{%- if page.toc %}
+</div>
+<script type="module">
+  import { setupArticleToc, setupSidePanels } from "{{ '/assets/js/article-toc.mjs' | relative_url }}?v={{ site.time | date: '%s' }}";
+  const shell = document.querySelector("[data-document-shell]");
+  setupArticleToc(shell);
+  setupSidePanels(shell);
+</script>
+{%- endif %}

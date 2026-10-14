@@ -1,6 +1,6 @@
 /* Native page scrolling in the center; each library/outline rail scrolls itself. */
 .document-shell { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; align-items: start; }
-.document-shell > .post--document { min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; margin: 0; }
+.document-shell > .post--document { min-width: 0; max-width: var(--site-reading-width); width: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; margin: 0; }
 .document-shell > .post--document:focus { outline: none; }
 .document-shell > .post--document:focus-visible { outline: 2px solid #1a73e8; outline-offset: .4rem; }
 .document-shell .article-toc, .document-shell .document-nav { min-width: 0; }
@@ -90,8 +90,39 @@
   }
 }
 
+/* Personal pages share the document reading column without a library rail. */
+.document-shell--page { grid-template-columns: minmax(0, 1fr); max-width: var(--site-reading-width); margin-inline: auto; }
+.document-shell--page > .post--document { grid-column: 1; grid-row: 2; }
+.document-shell--page > .page-side-rail { grid-column: 1; grid-row: 1; min-width: 0; }
+.document-shell--profile > .page-profile-rail { grid-column: 1; grid-row: 2; min-width: 0; }
+.document-shell--profile > .post--document { grid-row: 3; }
+.page-side-rail > .article-toc { position: static; }
+
+@media (min-width: 1240px) {
+  .document-shell--page { grid-template-columns: 210px minmax(0, 1fr) 220px; max-width: none; }
+  .document-shell--page > .post--document { grid-column: 2; grid-row: 1; }
+  .document-shell--profile > .page-profile-rail {
+    grid-column: 1; grid-row: 1; position: sticky;
+    top: calc(var(--site-header-height) + 1.25rem);
+    max-height: calc(100vh - var(--site-header-height) - 3rem);
+    max-height: calc(100dvh - var(--site-header-height) - 3rem);
+    overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+  }
+  .document-shell--page > .page-side-rail {
+    grid-column: 3; grid-row: 1; position: sticky;
+    top: calc(var(--site-header-height) + 1.25rem);
+    max-height: calc(100vh - var(--site-header-height) - 3rem);
+    max-height: calc(100dvh - var(--site-header-height) - 3rem);
+    overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+  }
+  .page-side-rail .article-toc nav { max-height: none; overflow-y: visible; }
+}
+
 @media print {
   .document-shell > :is(.document-nav, .article-toc) { display: none; }
   .document-shell { display: block !important; }
   .document-shell > .post--document { max-width: none; }
+  .document-shell--page > .page-side-rail .article-toc { display: none; }
+  .document-shell--page > .page-side-rail { position: static; max-height: none; overflow: visible; }
+  .document-shell--profile > .page-profile-rail { position: static; max-height: none; overflow: visible; }
 }
