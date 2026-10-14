@@ -261,9 +261,15 @@ category is singular; multiple tags narrow results together. Preserve `q`,
 owns its scrolling: align cards using feed-relative geometry, not ancestor
 offsets. Check the first filtered card after filter, resize and image loading.
 
-Article navigation keeps all six category links above its independently
-scrolling article list. Keep these categories distinct from tags, and maintain
-the current category and current article highlights separately.
+Article navigation keeps six category links in a vertical, bounded scrolling
+list above the independently scrolling articles. Desktop has no extra heading;
+mobile uses the native Articles disclosure. Keep categories distinct from tags,
+with separate current-category and current-article highlights.
+
+Technical article headings are unnumbered; preserve existing section IDs when
+renaming them. Deep dives label alternatives **Options** and explain the chosen
+approach in ordinary prose, without a Choice and rationale label. Keep the
+mechanisms, benefits, costs, failure modes and workload-specific reasoning.
 
 Jekyll builds `/search-index.json` automatically from public design articles,
 posts and the configured `header_pages`. Titles, descriptions, tags and rendered

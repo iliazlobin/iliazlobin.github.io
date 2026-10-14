@@ -29,3 +29,13 @@ class DocumentMarkupTests(unittest.TestCase):
         self.assertEqual(page.article_categories, [("tech", "/infrastructure/?type=tech")])
         self.assertEqual(page.current_categories, ["tech"])
         self.assertEqual(page.project_ids, {"hermes"})
+
+    def test_category_list_preserves_semantics_and_accessible_name(self):
+        page = Page()
+        page.feed('<ul data-document-nav-categories aria-label="Article categories">'
+                  '<li><a data-article-category="tech" href="/infrastructure/?type=tech">'
+                  'Technologies</a></li></ul>')
+        self.assertEqual(page.category_lists, [("ul", "Article categories")])
+        invalid = Page()
+        invalid.feed('<div data-document-nav-categories role="group"></div>')
+        self.assertEqual(invalid.category_lists, [("div", None)])

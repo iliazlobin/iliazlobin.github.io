@@ -54,6 +54,7 @@ class Page(HTMLParser):
         self.search_triggers = 0
         self.search_selects = 0
         self.article_categories = []
+        self.category_lists = []
         self.current_categories = []
         self.project_ids = set()
         self._in_search = False
@@ -86,6 +87,8 @@ class Page(HTMLParser):
             self.article_categories.append((attrs["data-article-category"], attrs.get("href")))
             if attrs.get("aria-current") == "true":
                 self.current_categories.append(attrs["data-article-category"])
+        if "data-document-nav-categories" in attrs:
+            self.category_lists.append((tag, attrs.get("aria-label")))
         if tag == "a" and "document-skip" in attrs.get("class", "").split():
             self.article_skip_links.append(attrs.get("href"))
         for attribute in ("href", "src", "poster"):
@@ -163,6 +166,8 @@ def check_document_layout(root, errors):
             errors.append(f"{source}: expected exactly one current article, got {page.current_articles!r}")
         if page.article_categories != list(ARTICLE_CATEGORIES.items()) or len(page.current_categories) != 1:
             errors.append(f"{source}: expected six distinct category links and one current category")
+        if page.category_lists != [("ul", "Article categories")]:
+            errors.append(f"{source}: categories must be one named semantic list")
         if page.article_skip_links != ["#document-article"]:
             errors.append(f"{source}: missing skip-to-article link")
         if any("post--document" not in classes for classes in posts):
@@ -175,6 +180,9 @@ def check_document_layout(root, errors):
         outline = ArticleOutline()
         outline.feed(source.read_text(encoding="utf-8"))
         errors.extend(f"{source}: {error}" for error in outline.validate())
+        for heading in outline.headings:
+            if re.match(r"(?:\d+(?:\.\d+)*[.)]\s+|D\d+:\s+)", heading["text"]):
+                errors.append(f"{source}: numbered article heading: {heading['text']}")
     if not document_count:
         errors.append("No document articles found")
 
