@@ -122,6 +122,25 @@ test('listing introductions and redundant category button rows are absent, with 
   assert.match(read('assets/css/portfolio.css'), /overflow-anchor:\s*none/);
 });
 
+test('desktop controls clear the inherited sticky top offset and controlled cards have stable geometry', () => {
+  const css = read('assets/css/portfolio.css');
+  const sticky = css.match(/\.blog-controls\s*\{([^}]+)\}/)[1];
+  const desktop = css.match(/body\.design-browser-page \.design-controls\s*\{([^}]+)\}/)[1];
+  assert.match(sticky, /position:\s*sticky/); assert.match(sticky, /top:\s*var\(--site-header-height\)/);
+  assert.match(desktop, /position:\s*relative/); assert.match(desktop, /top:\s*auto/);
+  // The desktop selector has two classes, overriding the shared one-class
+  // sticky rule for BOTH properties, while mobile retains that sticky rule.
+  const declarations = rule => Object.fromEntries([...rule.matchAll(/([\w-]+)\s*:\s*([^;]+);/g)].map(([, key, value]) => [key, value.trim()]));
+  const computed = { ...declarations(sticky), ...declarations(desktop) };
+  assert.equal(computed.position, 'relative'); assert.equal(computed.top, 'auto');
+  const mediaStart = css.indexOf('@media (min-width: 901px)');
+  assert.ok(mediaStart >= 0 && css.indexOf('body.design-browser-page .design-controls') > mediaStart);
+  const cards = css.match(/\.js \.design-browser \.portfolio-item\s*\{([^}]+)\}/)[1];
+  assert.match(cards, /opacity:\s*1/); assert.match(cards, /transform:\s*none/);
+  assert.doesNotMatch(cards, /transition:\s*[^;]*(?:transform|opacity)/);
+  assert.match(read('assets/css/site.css'), /\.js \.reveal\s*\{[^}]*transform:\s*translateY\(14px\)/);
+});
+
 test('category and tag chips restore URL state, remain distinct, and reset without losing unrelated parameters', () => {
   const dom = fixture({ query: '?type=ai-ml&tag=Docker&keep=yes' }); dom.setupFilter();
   assert.equal(dom.count.textContent, '1 project');
