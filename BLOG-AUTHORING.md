@@ -261,10 +261,12 @@ category is singular; multiple tags narrow results together. Preserve `q`,
 owns its scrolling: align cards using feed-relative geometry, not ancestor
 offsets. Check the first filtered card after filter, resize and image loading.
 
-Article navigation keeps six category links in a vertical, bounded scrolling
-list above the independently scrolling articles. Desktop has no extra heading;
-mobile uses the native Articles disclosure. Keep categories distinct from tags,
-with separate current-category and current-article highlights.
+Article navigation has one bounded scrolling rail: six category links at the
+top, then the article groups. Do not pin categories or auto-scroll past them on
+load. Desktop has no extra heading; mobile uses the native Articles disclosure.
+Keep categories distinct from tags, with separate current-category and
+current-article highlights. Article topic tags sit below the title; the owning
+category badge stays with the date and reading time above it.
 
 Technical article headings are unnumbered; preserve existing section IDs when
 renaming them. Deep dives label alternatives **Options** and explain the chosen
