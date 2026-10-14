@@ -57,7 +57,8 @@ class Node {
   get innerHTML() { return this._html || ''; }
 }
 
-function fixture({ desktop = true, query = '', scrollY = 0, feedScroll = 0 } = {}) {
+function fixture({ desktop = true, query = '', scrollY = 0, feedScroll = 0,
+  categories = [{ name: 'ai-ml', label: 'AI/ML' }, { name: 'infra', label: 'Infra' }] } = {}) {
   const doc = new Node('document'); const body = new Node('body'); doc.body = body; doc.documentElement = new Node('html');
   doc.createElement = tag => { const node = new Node(tag); node.doc = doc; return node; };
   doc.getElementById = id => doc.querySelectorAll('[id]').find(node => node.id === id);
@@ -69,7 +70,7 @@ function fixture({ desktop = true, query = '', scrollY = 0, feedScroll = 0 } = {
   const clear = box.appendChild(new Node('button', { 'data-tag-clear': '' }));
   const suggestions = box.appendChild(new Node('div', { id: 'fixture-suggestions', class: 'ti-suggest' })); suggestions.hidden = true;
   const count = controls.appendChild(new Node('span', { 'data-result-count': '' }));
-  doc.appendChild(new Node('script', { 'data-content-categories': '' }, JSON.stringify([{ name: 'ai-ml', label: 'AI/ML' }, { name: 'infra', label: 'Infra' }])));
+  doc.appendChild(new Node('script', { 'data-content-categories': '' }, JSON.stringify(categories)));
   const feed = browser.appendChild(new Node('div', { 'data-blog-feed': '' })); feed.scrollTop = feedScroll;
   feed.rect = () => ({ top: 180, bottom: 630, left: 0, width: 600 });
   const rail = browser.appendChild(new Node('nav', { class: 'portfolio-rail' }));
@@ -172,6 +173,33 @@ test('category autocomplete uses the existing query input and replaces only the 
   assert.equal(dom.view.location.searchParams.has('tag'), false);
   dom.field.emit('keydown', { key: 'Backspace' });
   assert.equal(dom.view.location.searchParams.has('type'), false); assert.equal(dom.count.textContent, '3 projects');
+});
+
+test('Design/Infra category autocomplete accepts plain full names and the existing abbreviated aliases', () => {
+  const dom = fixture({ categories: [
+    { name: 'system-design-ml', label: 'Machine learning', alias: 'ML' },
+    { name: 'tech', label: 'Technologies', alias: 'TECH' },
+  ] });
+  dom.cards[0].setAttribute('data-type', 'system-design-ml'); dom.cards[1].setAttribute('data-type', 'tech');
+  dom.setupFilter();
+  dom.field.value = 'machine'; dom.field.emit('input');
+  const machine = dom.suggestions.querySelector('[data-category]');
+  assert.equal(machine.getAttribute('data-category'), 'system-design-ml');
+  assert.equal(machine.getAttribute('aria-label'), 'Machine learning, category');
+  machine.emit('click');
+  assert.equal(dom.view.location.searchParams.get('type'), 'system-design-ml');
+  assert.match(dom.tokens.children[0].innerHTML, /Category: Machine learning/);
+  dom.clear.emit('click'); dom.field.value = 'technolog'; dom.field.emit('input');
+  const tech = dom.suggestions.querySelector('[data-category]');
+  assert.equal(tech.getAttribute('data-category'), 'tech');
+  assert.equal(tech.getAttribute('aria-label'), 'Technologies, category');
+  dom.field.value = 'ML'; dom.field.emit('keydown', { key: 'Enter' });
+  assert.equal(dom.view.location.searchParams.get('type'), 'system-design-ml'); assert.equal(dom.field.value, '');
+  const include = read('_includes/design-list.html');
+  for (const label of ['System design', 'Machine learning', 'Low-level design', 'Agentic AI', 'Infrastructure', 'Technologies']) {
+    assert.ok(include.includes(`category_label = '${label}'`));
+  }
+  assert.match(include, /"alias":\s*{{ site\.data\.design_types\[category\]/);
 });
 
 test('unknown categories/tags are ignored while text queries keep count, rail and cards synchronized', () => {

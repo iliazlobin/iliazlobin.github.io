@@ -466,7 +466,8 @@
       if (unifiedSearch && !q && !showAll) { closeSuggest(); return; }
       var categoryOptions = allCategories.filter(function (category) {
         return category.name !== selectedType &&
-          (normalize(category.name).indexOf(normalize(q)) > -1 || normalize(category.label).indexOf(normalize(q)) > -1);
+          (normalize(category.name).indexOf(normalize(q)) > -1 || normalize(category.label).indexOf(normalize(q)) > -1 ||
+            normalize(category.alias || "").indexOf(normalize(q)) > -1);
       }).map(function (category) {
         return { name: category.name, label: category.label, kind: "Category" };
       });
@@ -571,7 +572,8 @@
           return normalize(t.name) === normalize(field.value) || normalize(tagLabel(t.name)) === normalize(field.value);
         });
         var exactCategory = allCategories.find(function (category) {
-          return normalize(category.name) === normalize(field.value) || normalize(category.label) === normalize(field.value);
+          return normalize(category.name) === normalize(field.value) || normalize(category.label) === normalize(field.value) ||
+            (category.alias && normalize(category.alias) === normalize(field.value));
         });
         if (a) chooseOption(a);
         else if (unifiedSearch && exactCategory) {

@@ -31,7 +31,17 @@
   </div>
   <span class="result-count" data-result-count role="status" aria-live="polite"></span>
 </div>
-<script type="application/json" data-content-categories>[{%- for category in categories %}{"name": {{ category | jsonify }}, "label": {{ site.data.design_types[category] | default: category | jsonify }}}{%- unless forloop.last %},{% endunless %}{%- endfor %}]</script>
+<script type="application/json" data-content-categories>[{%- for category in categories %}
+{%- case category %}
+{%- when 'system-design' %}{%- assign category_label = 'System design' %}
+{%- when 'system-design-ml' %}{%- assign category_label = 'Machine learning' %}
+{%- when 'low-level-design' %}{%- assign category_label = 'Low-level design' %}
+{%- when 'ai' %}{%- assign category_label = 'Agentic AI' %}
+{%- when 'infra' %}{%- assign category_label = 'Infrastructure' %}
+{%- when 'tech' %}{%- assign category_label = 'Technologies' %}
+{%- else %}{%- assign category_label = category %}
+{%- endcase %}
+{"name": {{ category | jsonify }}, "label": {{ category_label | jsonify }}, "alias": {{ site.data.design_types[category] | default: category | jsonify }}}{%- unless forloop.last %},{% endunless %}{%- endfor %}]</script>
 <script type="application/json" data-blog-tags>[{%- for t in uniq_tags %}{"name": {{ t | jsonify | replace: '</', '<\/' }}{% if t == 'System Design' %}, "label": "SD"{% endif %}}{%- unless forloop.last %},{% endunless %}{%- endfor %}]</script>
 
 <div class="portfolio-layout design-layout">
