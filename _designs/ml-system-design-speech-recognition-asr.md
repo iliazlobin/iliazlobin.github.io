@@ -271,13 +271,13 @@ Convert segment-relative timestamps to file-relative timestamps, reconcile overl
 
 **Problem.** A streaming decoder has only the audio received so far. Similar-sounding words may become distinguishable later in the utterance, while waiting for the full recording makes a live interface feel unresponsive.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Full-context model:** Wait for a completed recording and recognize it with full acoustic context. Final accuracy can benefit from future audio, but this does not provide responsive partial text during speech.
 - **Streaming model only:** Maintain causal encoder/decoder state and emit revisions as audio arrives. Capacity and latency are bounded, but ambiguous words have limited future context and final quality inherits those errors.
 - **Streaming plus final rescoring — recommended:** Generate prompt partial hypotheses, then rescore candidates with the completed utterance. This fits interactive transcription; it retains utterance state and consumes extra final-pass capacity, while rescoring is limited by candidate coverage.
 
-**Choice and rationale.** **Use a streaming Conformer/RNN-T first pass and a final rescoring pass.** [Conformer](https://arxiv.org/abs/2005.08100) combines convolutional and attention-based acoustic modeling. [Two-pass ASR](https://arxiv.org/abs/1908.10992) uses a streaming RNN-T followed by a Listen, Attend and Spell model for final recognition. The product needs useful text while the user speaks and a better final result after endpointing. We accept retained utterance state and reserved final-pass capacity, with a tested streaming-only fallback for overload.
+**Use a streaming Conformer/RNN-T first pass and a final rescoring pass.** [Conformer](https://arxiv.org/abs/2005.08100) combines convolutional and attention-based acoustic modeling. [Two-pass ASR](https://arxiv.org/abs/1908.10992) uses a streaming RNN-T followed by a Listen, Attend and Spell model for final recognition. The product needs useful text while the user speaks and a better final result after endpointing. We accept retained utterance state and reserved final-pass capacity, with a tested streaming-only fallback for overload.
 
 Keep a bounded set of candidate transcripts from the first pass. The second pass scores those candidates using the complete utterance. Its benefit depends on candidate coverage: a correct word pruned by the first pass may be unavailable to the rescoring stage.
 
@@ -314,7 +314,7 @@ For example, the partial text may change from “send to Ann” to “send to An
 
 **Problem.** Audio transport, model lookahead and silence detection contribute different delays. Reporting only decoder execution time can hide most of the time the user waits.
 
-**Options and tradeoffs.**
+**Options.**
 
 | Measurement | Starts | Ends |
 | --- | --- | --- |
@@ -326,7 +326,7 @@ For example, the partial text may change from “send to Ann” to “send to An
 - **Learned endpoint model:** Use acoustic and linguistic context to decide when speech has ended. It can recognize natural endings, but requires separate cohort calibration and can fail on hesitant speech or background conversation.
 - **VAD silence threshold with explicit end signals — recommended:** Use predictable silence handling for continuous audio and honor a sequenced client end signal for push-to-talk. This covers both interaction modes; the silence threshold still trades false cutoffs against waiting.
 
-**Choice and rationale.** **Start with VAD plus a 500ms silence threshold and explicit end signals.** At 200ms finalization, the last-word-to-final delay can be around 700ms before delivery overhead. Tune endpointing against false cutoffs, missed endings and the complete user-visible delay. A baseline endpoint state machine is easy to test against the user-visible budget. We accept its configurable silence delay and measure false cutoffs, endpoint delay and final-pass work separately before adding another endpoint model.
+**Start with VAD plus a 500ms silence threshold and explicit end signals.** At 200ms finalization, the last-word-to-final delay can be around 700ms before delivery overhead. Tune endpointing against false cutoffs, missed endings and the complete user-visible delay. A baseline endpoint state machine is easy to test against the user-visible budget. We accept its configurable silence delay and measure false cutoffs, endpoint delay and final-pass work separately before adding another endpoint model.
 
 Reserve capacity for final passes so a burst of completed utterances cannot delay every active stream. If final rescoring misses its deadline, return the streaming result as final and record that fallback mode.
 
@@ -359,13 +359,13 @@ Test pauses inside names, hesitant speech, background conversation and long term
 
 **Problem.** Audio preprocessing can change recognition quality as much as model weights. A sample-rate mismatch, different normalization or inconsistent feature extraction affects every downstream token.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Train from scratch:** Learn the recognizer from representative labeled audio. Architecture and language coverage are fully controlled, but training compute and labeled-data requirements are substantial.
 - **Use a pretrained recognizer unchanged:** Deploy its original weights and preprocessing bundle. Setup and baseline evaluation are simpler, but target microphones, accents and domain speech can remain outside its training distribution.
 - **Fine-tune a pretrained model — recommended:** Adapt the pretrained recognizer on consented target-domain audio while retaining a reproducible preprocessing contract. This reduces the initial training burden; it still needs domain coverage and regression tests for forgetting.
 
-**Choice and rationale.** The proposed service benefits from an established acoustic representation and needs adaptation to its actual audio cohorts. We accept reviewed fine-tuning and bundle-parity tests. Noise, speed and feature masking are complementary training augmentation for either model origin, not a separate alternative to pretraining.
+The proposed service benefits from an established acoustic representation and needs adaptation to its actual audio cohorts. We accept reviewed fine-tuning and bundle-parity tests. Noise, speed and feature masking are complementary training augmentation for either model origin, not a separate alternative to pretraining.
 
 **Fine-tune a pretrained model on representative, consented audio.** Split by speaker and recording session before training, then reserve recent recordings for chronological evaluation. Keep microphone, accent, background-noise and language cohorts visible in the reports.
 
@@ -404,13 +404,13 @@ Apply training augmentation after split assignment. A noise recording, speaker s
 
 **Problem.** A general recognizer may assign low probability to a product name or technical term. Increasing that term's score can help, but excessive bias can insert it when the user said something else.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Hotword biasing:** Boost a bounded vocabulary during candidate expansion. New terms can be introduced quickly without retraining; excessive boosts can insert the hotword into unrelated speech, so absent-term recordings are part of evaluation.
 - **Domain adapters:** Train a small domain-specific parameter set from approved audio. Persistent pronunciation and language patterns can improve; adapter routing and base/tokenizer compatibility must be versioned, warmed and rolled back together.
 - **Full fine-tuning:** Update the shared recognizer for domain examples. It can address broad acoustic shifts, but changes every session using those weights and needs general-cohort regression evaluation.
 
-**Choice and rationale.** **Start with bounded hotword biasing, then add adapters for sustained domain errors.** Apply the boost while expanding decoder candidates, and tune its strength on both recordings containing the term and recordings that do not contain it. The design starts with bounded hotword biasing because vocabulary updates are smaller and faster than recognizer releases. We accept a false-insertion budget validated on negative examples; sustained errors justify a versioned adapter, with the selected adapter pinned at session start.
+**Start with bounded hotword biasing, then add adapters for sustained domain errors.** Apply the boost while expanding decoder candidates, and tune its strength on both recordings containing the term and recordings that do not contain it. The design starts with bounded hotword biasing because vocabulary updates are smaller and faster than recognizer releases. We accept a false-insertion budget validated on negative examples; sustained errors justify a versioned adapter, with the selected adapter pinned at session start.
 
 ```python
 candidate_score = model_log_probability + hotword_bonus
@@ -439,13 +439,13 @@ Audio likelihood + language-model score + bounded trie-path boost
 
 **Problem.** A candidate can improve aggregate recognition while regressing a language, noise cohort or live response delay. Calculate word error rate from substitutions, deletions and insertions against reviewed reference transcripts. Use character error rate where word segmentation is unsuitable, with consistent normalization in both candidate and baseline evaluation.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Automatic reference scoring only:** Calculate WER/CER and serving distributions on a fixed audio set. It gives repeatable regressions, but aggregate WER can hide silence insertions, a weak accent cohort or unstable partial text.
 - **Human listening review only:** Review difficult recordings and error severity. This exposes acoustic and user-experience failures, but reviewer cost limits broad repeated coverage.
 - **Reference metrics plus targeted listening and canary gates — recommended:** Compare identical labeled audio by cohort, review consequential errors and test endpointing and capacity before rollout. This establishes both recognition and operational quality; it requires maintained references, reviewers and compatible warm rollback workers.
 
-**Choice and rationale.** A live recognizer must be accurate and responsive across accents, devices and noise. We accept combined evaluation cost, while session pinning keeps a rollout or rollback from transferring decoder state between incompatible bundles.
+A live recognizer must be accurate and responsive across accents, devices and noise. We accept combined evaluation cost, while session pinning keeps a rollout or rollback from transferring decoder state between incompatible bundles.
 
 Compare results by language, accent, device, noise and utterance length. A candidate passes only when quality and latency gates pass together. Live corrections and user abandonment provide operational signals; periodic labeled evaluation provides the actual error-rate measurement.
 

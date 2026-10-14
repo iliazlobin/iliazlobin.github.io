@@ -246,13 +246,13 @@ Send firing and resolved state to [Alertmanager](https://prometheus.io/docs/aler
 
 **Problem.** At 1M samples/s, a separate database row and index entry for every sample creates substantial write amplification. Queries usually read many consecutive samples from the same series, so the physical layout should make that access cheap.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Partitioned PostgreSQL:** batch samples into time partitions with series/time indexes. SQL and familiar recovery are available, but row/index overhead and sharding work grow at the stated 1M samples/s.
 - **LSM key-value storage:** append series/time keys into sorted runs and compact them in the background. Write throughput improves, but label postings, compression and PromQL semantics still need a dedicated implementation, and compaction competes with reads.
 - **Prometheus-style TSDB:** append compressed series chunks with label postings and time-partitioned blocks. The physical layout matches repeated range reads; compaction, series admission and distributed query/recovery remain explicit operating responsibilities.
 
-**Choice and rationale.** Use a Prometheus-style TSDB for samples and PostgreSQL for transactional configuration. Series chunks and label postings match the stated sample rate and consecutive range reads. The accepted cost is specialized query/recovery operations and temporary compaction space, rather than a relational row/index entry per sample.
+Use a Prometheus-style TSDB for samples and PostgreSQL for transactional configuration. Series chunks and label postings match the stated sample rate and consecutive range reads. The accepted cost is specialized query/recovery operations and temporary compaction space, rather than a relational row/index entry per sample.
 
 **How the write path works**
 
@@ -289,13 +289,13 @@ Adding 100,000 user IDs can expand the theoretical space to 1 billion.
 Actual series depend on which combinations are observed.
 ```
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Arbitrary labels:** admit every observed label combination. Instrumentation is flexible, but user IDs and raw URLs can create unbounded memory/index state.
 - **Drop labels after ingestion:** reduce dimensions downstream. Series counts may fall, but unrelated measurements can merge and already-created index state has already incurred the cost.
 - **Explicit admission budgets:** canonicalize identity and grant each tenant bounded active-series and new-series-rate capacity before materialization. Memory and churn are controlled; legitimate new metrics may be rejected and distributed quota grants need accounting and expiry.
 
-**Choice and rationale.** Enforce explicit per-tenant active-series and new-series-rate budgets before materialization. This isolates a bad instrumentation rollout while preserving admitted series. Excess new identities receive actionable rejection reasons; distributed grants and expiry add quota state, and historical retention is budgeted separately.
+Enforce explicit per-tenant active-series and new-series-rate budgets before materialization. This isolates a bad instrumentation rollout while preserving admitted series. Excess new identities receive actionable rejection reasons; distributed grants and expiry add quota state, and historical retention is budgeted separately.
 
 The gateway canonicalizes labels, validates size/count limits and routes the series to its owner. The owner checks whether the identity already exists. Existing admitted series continue through the ingestion path; a new identity consumes a series admission slot. Each shard receives a bounded share of the tenant's quota, and the sum of those grants stays within the global budget. This avoids a global transaction for every sample while preventing simultaneous shard admissions from bypassing the limit.
 
@@ -309,13 +309,13 @@ For a rollout that suddenly adds a high-cardinality label, reject excess new ide
 
 **Problem.** Consider an alert that fires when a service's error rate exceeds 5% for two minutes. Its result depends on a five-minute window, and it must preserve the same service-level grouping at every evaluation. Evaluating every rule for every arriving sample would repeat work and would still need timers for missing data.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Periodic query evaluation:** run each rule at a scheduled timestamp using the query engine's established range/join semantics. Full PromQL and missing-data timers share one model; detection includes one interval plus ingestion/query and configured hold time.
 - **Evaluate all rules for every sample:** repeatedly execute rules when data arrives. Simple rules can react quickly, but the stated ingest rate multiplies work and absent data still needs timers.
 - **Indexed streaming evaluation:** maintain incremental state only for a restricted supported rule language and series-to-rule dependencies. Specialized rules can be low latency; state/checkpoint recovery, late data and unsupported operators need a separate contract.
 
-**Choice and rationale.** Evaluate full PromQL periodically through the existing query engine and reserve capacity for rule groups. This preserves established range, join and missing-data semantics. We accept one tick of scheduling delay plus ingestion/query and configured hold time; lower-latency streaming is a separately defined restricted rule contract.
+Evaluate full PromQL periodically through the existing query engine and reserve capacity for rule groups. This preserves established range, join and missing-data semantics. We accept one tick of scheduling delay plus ingestion/query and configured hold time; lower-latency streaming is a separately defined restricted rule contract.
 
 The proposed rule is:
 
@@ -362,13 +362,13 @@ Assign rule groups to evaluators with versioned ownership. Persist the rule vers
 
 **Problem.** A seven-day query over 10K series sampled every 15 seconds can read about 403M points. Adding workers reduces individual scan time, but every worker also consumes memory and produces results that need a correct merge.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Single worker:** execute one complete expression without distributed merges. Semantics are straightforward, but one worker's memory and scan capacity cap long/high-cardinality queries.
 - **Unbounded fan-out:** send work to every eligible shard at once. Individual scans can finish sooner, but concurrency, stragglers and merge memory amplify load for all tenants.
 - **Budgeted operator-aware splitting:** plan required lookback, split independent time/series work and cap scanned data/concurrency. Parallelism remains controlled and merges preserve operator quantities; some joins need global inputs and oversized queries must be rejected or explicitly partial.
 
-**Choice and rationale.** Use work budgets, bounded parallelism and operator-aware splitting, then recording rules for repeated expensive expressions. This shares scan capacity without changing lookback or merge semantics and protects alert evaluation. Oversized queries are rejected or clearly partial under policy; unlimited fan-out is not the fallback.
+Use work budgets, bounded parallelism and operator-aware splitting, then recording rules for repeated expensive expressions. This shares scan capacity without changing lookback or merge semantics and protects alert evaluation. Oversized queries are rejected or clearly partial under policy; unlimited fan-out is not the fallback.
 
 For `sum(rate(http_requests_total[5m]))`, a time split at 13:00 must still read the previous five minutes for the first evaluation after that boundary. Splitting only the raw 13:00-onward samples would change the rate.
 

@@ -253,7 +253,7 @@ Gateways already forwarding admitted work do not undo it. Publication must expos
 
 **Problem.** Rate, burst, rolling-window and concurrency limits express different policies.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Fixed-window counter:** Increment a counter for a calendar window. State is small and reporting is intuitive, but a client can spend one window's allowance just before the boundary and another immediately after it.
 
@@ -263,7 +263,7 @@ Gateways already forwarding admitted work do not undo it. Publication must expos
 
 - **Token bucket or GCRA — recommended for rate and burst control:** Maintain refillable allowance or a virtual scheduling time in one atomic update. Sustained rate and burst behavior are explicit; time, expiry and concurrency handling must be correct, and this differs from an exact rolling-window policy.
 
-**Choice and rationale.** Use token buckets for API fairness and burst control. Choose an exact log only for a workload needing precise rolling-window semantics. Concurrency limits separately bound in-flight work; a request-rate limit alone cannot protect a slow upstream. The selected bucket owner coordinates clock and balance updates; its outage behavior follows the endpoint policy below.
+Use token buckets for API fairness and burst control. Choose an exact log only for a workload needing precise rolling-window semantics. Concurrency limits separately bound in-flight work; a request-rate limit alone cannot protect a slow upstream. The selected bucket owner coordinates clock and balance updates; its outage behavior follows the endpoint policy below.
 
 [Envoy's global rate-limiting architecture](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_features/global_rate_limiting) is a useful reference for combining local protection and a shared decision service.
 
@@ -277,7 +277,7 @@ This differs from a fixed “ten per five seconds” counter, which can admit te
 
 **Problem.** Separate reads and writes can allow two gateways to spend the same token.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Client read-modify-write:** Read a balance, calculate admission, then write it back. Implementation is straightforward, but concurrent gateways can read the same balance and admit requests against the same token.
 
@@ -285,7 +285,7 @@ This differs from a fixed “ten per five seconds” counter, which can admit te
 
 - **Bounded atomic Lua script — recommended:** Refill, check and deduct next to the Redis state as one operation. A request observes a consistent bucket result; scripts block other work on that server, so calculation and key count must remain small.
 
-**Choice and rationale.** Use one bounded script per bucket. [Redis documents atomic script execution](https://redis.io/docs/latest/develop/programmability/eval-intro/); the script blocks other server work while it runs, so avoid loops over request history. Hot identities make optimistic contention retries costly. Redis failover can lose recent decisions, so hard spending guarantees remain in a separately designed durable ledger.
+Use one bounded script per bucket. [Redis documents atomic script execution](https://redis.io/docs/latest/develop/programmability/eval-intro/); the script blocks other server work while it runs, so avoid loops over request history. Hot identities make optimistic contention retries costly. Redis failover can lose recent decisions, so hard spending guarantees remain in a separately designed durable ledger.
 
 ```lua
 -- KEYS[1]: bucket. ARGV: rate, capacity, positive cost.
@@ -341,7 +341,7 @@ With one token remaining, competing scripts produce one allowed result and one r
 
 **Problem.** A network check for every admitted request increases Redis load and tail latency.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Per-request global checks:** Deduct allowance for every request through the shared store. Accounting is easiest to inspect, but each admission adds network latency and Redis work.
 
@@ -349,7 +349,7 @@ With one token remaining, competing scripts produce one allowed result and one r
 
 - **Reserved token grants — recommended for busy tolerant rules:** Deduct a small batch globally before consuming it locally under a versioned expiry. Shared-store calls fall; crashed gateways strand unused tokens and grants temporarily reduce fairness or rule-change responsiveness.
 
-**Choice and rationale.** Grant small batches only to busy, burst-tolerant rules. Deduct the grant before returning it, bind it to a gateway/rule version and expire it quickly. Lost or unused tokens are discarded; automatic refunds would require proof that they were never spent. Tune grant size against refill frequency and short-term allocation skew, retaining per-request authority for rules that require tighter fairness.
+Grant small batches only to busy, burst-tolerant rules. Deduct the grant before returning it, bind it to a gateway/rule version and expire it quickly. Lost or unused tokens are discarded; automatic refunds would require proof that they were never spent. Tune grant size against refill frequency and short-term allocation skew, retaining per-request authority for rules that require tighter fairness.
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -378,7 +378,7 @@ Twenty gateways each holding 20 unused tokens can collectively emit an extra bur
 
 **Problem.** Unlimited fail-open traffic can overload the application, while universal fail-closed behavior can disable it.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Fail open:** Continue admission during an authority outage. Availability is preserved, but the affected rule offers no global protection and an outage can become an application overload.
 
@@ -386,7 +386,7 @@ Twenty gateways each holding 20 unused tokens can collectively emit an extra bur
 
 - **Endpoint-specific bounded local fallback — recommended:** Use declared emergency local limits for tolerant endpoints and fail closed for strict rules. Some availability and protection remain; the total emergency allowance depends on fleet size and must be measured and time-bounded.
 
-**Choice and rationale.** Choose fallback per endpoint and retain coarse local controls everywhere. Login and other abuse-sensitive endpoints require their own policy; being user-facing alone does not justify unlimited admission. Bound emergency allowance across the fleet and report fallback duration and admitted volume, making the temporary reduction in protection visible.
+Choose fallback per endpoint and retain coarse local controls everywhere. Login and other abuse-sensitive endpoints require their own policy; being user-facing alone does not justify unlimited admission. Bound emergency allowance across the fleet and report fallback duration and admitted volume, making the temporary reduction in protection visible.
 
 Use circuit breakers and short timeouts to prevent dependency failures from exhausting gateway pools. Alert on degraded-check duration, admitted traffic and upstream saturation. Test lost replies, failover, rule-version changes and gateway crashes as well as normal refill behavior.
 

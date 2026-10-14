@@ -12,7 +12,8 @@ We are building a real-time collaborative document editing platform at global sc
 
 <!--more-->
 
-## 1. Context
+## Context
+{: id="1-context"}
 
 We are building a real-time collaborative document editing platform at global scale. The product serves over 100 million monthly active users with millions of concurrent editors operating simultaneously across every region. Documents range from short memos to hundred-page reports with embedded media; a single document must support up to 100 live collaborators seeing each other's keystrokes within one round-trip of the user's region  -  typically under 150 ms end-to-end, even when editors span continents.
 
@@ -24,7 +25,8 @@ The platform runs across at least three geographic regions (Americas, Europe, As
 
 This is a greenfield build on Google Cloud Platform augmented by Cloudflare for edge termination. We assume a start-from-zero environment and design for self-service onboarding of new service regions within a quarter. The architecture must survive zone failures without user-visible disruption, region failures with sub-minute failover for metadata and sub-10-second reconnection for active editing sessions, and sustained traffic spikes of 3x baseline during coordinated editing events.
 
-## 2. Goals
+## Goals
+{: id="2-goals"}
 
 - Sub-150 ms p99 end-to-end keystroke latency for same-region collaborators
 - Sub-300 ms p99 for cross-continent edits (Asia to Americas)
@@ -38,7 +40,8 @@ This is a greenfield build on Google Cloud Platform augmented by Cloudflare for 
 - <2 seconds p95 cold-open latency (document not in active cache)
 - **Out of scope:** offline-first editing with arbitrary-duration disconnected merge, end-to-end encrypted documents where the server cannot read content, real-time video/audio calling inside documents, spreadsheet formula evaluation engine
 
-## 3. Architecture
+## Architecture
+{: id="3-architecture"}
 
 ```mermaid
 flowchart LR
@@ -90,7 +93,8 @@ Total end-to-end latency for the Tokyo user to see their own keystroke acknowled
 > [!TIP]
 > **Region-anchor model** - Every document lives in one home region for OT processing. Users remote from that region pay cross-continent backbone RTT on every keystroke. Document open-time anchor selection (pin to the region with the most collaborators) is the single highest-leverage optimization for perceived latency at scale.
 
-## 4. Reliability
+## Reliability
+{: id="4-reliability"}
 
 ### SLIs and SLOs
 
@@ -118,7 +122,8 @@ Error budget: with 99.95% document read SLO, we can tolerate ~22 minutes of tota
 > [!TIP]
 > **Thundering herd** - When a global routing event drops millions of WebSocket connections simultaneously, the reconnection wave can overwhelm OT shards. Client-side exponential backoff with jitter (1 to 30 second base) is the primary defense. The WebSocket gateway can also inject a `Retry-After` header on new upgrade requests to spread the herd over a 60-second window.
 
-## 5. Security
+## Security
+{: id="5-security"}
 
 ### IAM and RBAC
 
@@ -148,7 +153,8 @@ Container images are built via Cloud Build with Binary Authorization enabled  - 
 
 GKE clusters conform to CIS GKE Benchmark v1.5.0: workload identity enabled, node auto-upgrade with a 7-day maintenance window, shielded nodes, container-optimized OS with read-only filesystem where possible, Pod Security Standards at the `restricted` level, network policy deny-by-default. Audit logs from Cloud Audit Logs are routed to a centralized project and retained for 365 days.
 
-## 6. Scalability & Performance
+## Scalability & Performance
+{: id="6-scalability--performance"}
 
 ### Capacity Model
 
@@ -189,7 +195,8 @@ The single-threaded OT processing loop per document is the fundamental bottlenec
 > [!TIP]
 > **Hot-document contention** - A single document with 100 collaborators is harder to serve than 100 documents with one editor each. The OT serializer per document is the ultimate ceiling; operation batching buys headroom but compound operations (find-and-replace across a 100-page doc) must still serialize. Shard evacuation of viral documents to dedicated pods is the escape hatch.
 
-## 7. Cost
+## Cost
+{: id="7-cost"}
 
 > **Verdict.** Three-region operational cost at steady state is approximately $867,000/month ($10.4M/year) for compute + storage. Cloudflare Enterprise, inter-region backbone egress, and operational tooling push total toward $1.1M/month. The dominant cost driver is OT processor compute (36 percent), followed by Spanner (22 percent) and GKE node infrastructure (42 percent combined). Committed-use discounts (3-year) reduce the total by ~30 percent to ~$770,000/month. A single-region deployment at one-third the user base (33M MAU) drops to ~$260,000/month.
 
@@ -210,7 +217,8 @@ Per-keystroke cost: assuming 100 billion operations per month (10 keystrokes per
 
 At 500M MAU (5x launch scale), linear scaling breaks on OT processor density. Per-document memory can be reduced from 2 MB to 1.5 MB via more aggressive eviction of idle documents. Per-pod document density improves from 10,000 to 15,000. The net result: 5x users → 3.5x OT compute → ~$2.3M/month. Spanner scales linearly with node count up to thousands of nodes.
 
-## 8. Operations
+## Operations
+{: id="8-operations"}
 
 ### Observability
 
@@ -324,7 +332,7 @@ Adding a fourth region (e.g., `asia-southeast1` in Singapore) to the platform:
 1. **GCS bucket.** Create new dual-region bucket pairing `asia-southeast1` with the nearest existing region (e.g., `asia-northeast1` Tokyo). Lifecycle policies mirror existing buckets.
 1. **Cloudflare.** Add a new DNS record for `docs.example.com` with the new region's GLB IP as an additional origin. Argo routing updated to include Singapore PoP.
 1. **Deploy workloads.** Argo CD target cluster added; sync `k8s/` manifests for all three workload types. WS Gateway scales to 20 pods, OT Processor operator provisions 44 shards (proportional to the region's expected document share).
-1. **Validation.** Run the synthetic validation suite (Section 6 validation methodology):
+1. **Validation.** Run the synthetic validation suite against the [capacity model](#capacity-model):
 
   ```bash
 otctl validate --region asia-southeast1 --load-profile peak-2x
@@ -334,9 +342,10 @@ otctl validate --region asia-southeast1 --load-profile peak-2x
 
 1. **Traffic ramp.** Shift 5 percent of `docs.example.com` DNS traffic to the new GLB IP via Cloudflare Load Balancing (weighted record). Monitor for 24 hours. If all SLOs hold, ramp to full share.
 
-## 9. Key Decisions & Trade-offs
+## Key Decisions & Trade-offs
+{: id="9-key-decisions--trade-offs"}
 
-### D1: Operational Transformation vs CRDT for Conflict Resolution
+### Operational Transformation vs CRDT for Conflict Resolution {#d1-operational-transformation-vs-crdt-for-conflict-resolution}
 
 **Context.** Multiplayer text editing requires a conflict resolution strategy when two users edit the same position simultaneously. The two dominant families are Operational Transformation (OT) and Conflict-free Replicated Data Types (CRDT). Google Docs uses OT; Figma, Notion, and Coda use CRDT or CRDT-inspired approaches.
 
@@ -348,7 +357,7 @@ OT's cost is implementation complexity. The transform function `T(op1, op2)` mus
 
 CRDT was rejected because the centralized architecture eliminates CRDT's main selling point (decentralized convergence), and the per-character metadata overhead at our scale (billions of documents, trillions of characters) would dominate storage costs. At $0.020/GB/month for hot storage, 1 TB of CRDT metadata across the hot tier costs $20,000/month in storage alone before applying to the full document corpus.
 
-### D2: Sharded In-Memory State vs Per-Document Process Isolation
+### Sharded In-Memory State vs Per-Document Process Isolation {#d2-sharded-in-memory-state-vs-per-document-process-isolation}
 
 **Context.** Figma runs one OS process per active document  -  every Rust binary holds a single document's state in memory, and all collaborators connect to that process. This gives strong isolation: a CPU-bound render on document A cannot delay edits on document B.
 
@@ -358,7 +367,7 @@ CRDT was rejected because the centralized architecture eliminates CRDT's main se
 
 The trade-off is weaker isolation. A misbehaving document (e.g., one that triggers an O(n^2) operation in the OT engine) can slow down its neighbors in the same pod. We mitigate this with three mechanisms: (1) per-document CPU budgeting  -  if a single document consumes >50 ms of CPU in a 100 ms window, the event loop preempts it and queues remaining work, (2) watchdog goroutine that kills a document's task after 5 seconds of continuous CPU, reloading from checkpoint, (3) the shard balancer operator can evacuate a "noisy neighbor" document to a dedicated pod. In practice, with flat text documents and bounded OT complexity, per-document CPU spikes are rare.
 
-### D3: Region-Anchored OT Processing vs Multi-Region Active-Active
+### Region-Anchored OT Processing vs Multi-Region Active-Active {#d3-region-anchored-ot-processing-vs-multi-region-active-active}
 
 **Context.** OT requires a total order of operations for a given document. Achieving this order across regions with low latency is a distributed consensus problem.
 
@@ -371,7 +380,8 @@ The alternative  -  true multi-region active-active OT with distributed consensu
 > [!TIP]
 > **Anchor-pin vs consensus** - Multi-region active-active OT sounds appealing but the consensus round-trip (30 to 50 ms via Paxos) makes every keystroke slower for everyone, everywhere. The anchor-region model keeps the common case fast (5 ms same-region) and degrades gracefully for the minority cross-region case. This is the same trade-off AWS Aurora made with single-writer regional databases.
 
-## 10. References
+## References
+{: id="10-references"}
 
 1. [RFC 6455 - The WebSocket Protocol](https://datatracker.ietf.org/doc/html/rfc6455)
 1. [RFC 9000 - QUIC: A UDP-Based Multiplexed and Secure Transport](https://datatracker.ietf.org/doc/html/rfc9000)

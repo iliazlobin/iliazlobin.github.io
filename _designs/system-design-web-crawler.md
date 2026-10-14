@@ -265,7 +265,7 @@ Resuming preserves each origin's delay and retry history. A replacement schedule
 
 **Problem.** One global FIFO queue can leave many workers waiting behind URLs from the same website.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Global FIFO:** Dispatch URLs in arrival order. The queue is simple, but many URLs for one delayed origin can block useful work for others and origin fairness is weak.
 
@@ -273,7 +273,7 @@ Resuming preserves each origin's delay and retry history. A replacement schedule
 
 - **Sharded origin schedulers — recommended:** Assign one fenced owner per origin and run priority/aging plus due-time queues on each shard. Scheduling scales across origins; ownership changes and checkpoint recovery must preserve delays and in-flight leases.
 
-**Choice and rationale.** Shard by origin and run the dual-queue scheduler within each shard. Add aging so lower-priority URLs make progress. Discovery topics have a fixed partition count; ownership changes rebuild scheduler state from checkpoints and its changelog. The crawler needs parallel progress across many sites while honoring each site's limits. We accept durable scheduler ownership and recovery work so adding workers does not multiply permitted load on one origin.
+Shard by origin and run the dual-queue scheduler within each shard. Add aging so lower-priority URLs make progress. Discovery topics have a fixed partition count; ownership changes rebuild scheduler state from checkpoints and its changelog. The crawler needs parallel progress across many sites while honoring each site's limits. We accept durable scheduler ownership and recovery work so adding workers does not multiply permitted load on one origin.
 
 **How it works: Local dual-queue scheduling.**
 
@@ -332,7 +332,7 @@ After owner failure, the successor restores queues, due times and outstanding re
 
 **Problem.** URLs and content have different forms of duplication.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **URL normalization and conditional insertion:** Normalize only established equivalences and insert each fetch target once. Repeated discovery is handled, but different URLs can still contain identical content.
 
@@ -340,7 +340,7 @@ After owner failure, the successor restores queues, due times and outstanding re
 
 - **Exact checks plus near-duplicate retrieval — recommended:** Use exact URL/content identities first, then retrieve SimHash/MinHash candidates for verification. Similar pages can be grouped; thresholds can merge distinct meaning or miss variations and therefore require corpus evaluation.
 
-**Choice and rationale.** Use exact URL/content checks first, then approximate retrieval for near-duplicates. Verify candidate distance and meaningful text differences before collapsing results. Preserve uncertain candidates and their source URLs. Scheduling identity and content identity answer different questions. We accept a separate approximate candidate stage and preserve URL provenance, verifying meaningful differences before collapsing near-duplicate results.
+Use exact URL/content checks first, then approximate retrieval for near-duplicates. Verify candidate distance and meaningful text differences before collapsing results. Preserve uncertain candidates and their source URLs. Scheduling identity and content identity answer different questions. We accept a separate approximate candidate stage and preserve URL provenance, verifying meaningful differences before collapsing near-duplicate results.
 
 A Bloom-filter false positive must not discard a unique page. Near-duplicate indexes also need bounded, measured candidate search: splitting a 64-bit signature into four 16-bit buckets can create large candidate lists at billions of pages. Partition and index those signatures deliberately; report recall when search is capped.
 
@@ -354,7 +354,7 @@ After fetching, hash the recorded normalized text for exact duplicate content. S
 
 **Problem.** Calendars, session identifiers and generated paths can expand faster than useful pages are collected.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Depth-only limits:** Stop beyond a configured link depth. Control is easy, but calendars or session URLs can create an unlimited shallow graph.
 
@@ -362,7 +362,7 @@ After fetching, hash the recorded normalized text for exact duplicate content. S
 
 - **Novelty-based scheduling:** Prioritize URLs likely to produce new content. Useful-work yield can improve, but unusual low-frequency pages may receive insufficient exposure and the signal needs evaluation.
 
-**Choice and rationale.** Enforce explicit budgets and pattern limits, then use measured novelty as a scheduling signal. Back off failures with jitter and a retry budget; separate DNS failures, throttling and permanent HTTP outcomes. A crawler must remain bounded even when a site generates endlessly changing URLs. We accept explicit coverage limits and recorded exclusions, using novelty to prioritize within those bounds rather than as the only safety control.
+Enforce explicit budgets and pattern limits, then use measured novelty as a scheduling signal. Back off failures with jitter and a retry budget; separate DNS failures, throttling and permanent HTTP outcomes. A crawler must remain bounded even when a site generates endlessly changing URLs. We accept explicit coverage limits and recorded exclusions, using novelty to prioritize within those bounds rather than as the only safety control.
 
 Keep reasons for exclusions and failures in the job report. Fetch deadlines, parser memory limits and maximum extracted links bound the work caused by one hostile page. Recovery tests should include a failed owner, duplicated events, an interrupted shard upload and a robots-policy change.
 

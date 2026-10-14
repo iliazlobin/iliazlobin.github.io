@@ -267,7 +267,7 @@ Checkpoint consistency does not make arbitrary external writes exactly-once; eac
 
 **Problem.** Hashing only by video ID puts all events for that video on one aggregation task.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **One per-video counter:** Send every view for an item to one aggregate owner. Counts are simple, but a viral item serializes a large fraction of traffic on one task.
 
@@ -275,7 +275,7 @@ Checkpoint consistency does not make arbitrary external writes exactly-once; eac
 
 - **Larger batches only:** Combine several updates before touching the same key. Command overhead falls, but the hot item still has one owner and remains a throughput ceiling.
 
-**Choice and rationale.** Batch locally and use stable event-ID salting for sufficiently hot videos. Merge absolute partial totals by video, scope, bucket and salt; update a partial only when its revision advances. The workload contains highly skewed video popularity. We accept lane merge and completeness checks so hot traffic spreads without changing the logical accepted-view identity or inflating totals on replay.
+Batch locally and use stable event-ID salting for sufficiently hot videos. Merge absolute partial totals by video, scope, bucket and salt; update a partial only when its revision advances. The workload contains highly skewed video popularity. We accept lane merge and completeness checks so hot traffic spreads without changing the logical accepted-view identity or inflating totals on replay.
 
 Redis hash tags must not force every salt onto the same slot. Cross-slot reads use cluster-aware individual commands or a precomputed merged value, rather than an unsupported cross-slot MGET.
 
@@ -291,7 +291,7 @@ If lane three advances from 100 to 125, the merger contributes an additional 25;
 
 **Problem.** Recent rankings must remove views once they leave the reporting interval.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Rescan raw events:** Read the interval and recount at each publication. Semantics are easy to verify, but repeated scans at view volume are expensive.
 
@@ -299,7 +299,7 @@ If lane three advances from 100 to 125, the merger contributes an additional 25;
 
 - **Increment and decrement one sketch:** Add incoming contributions and subtract expired ones. A compact live structure is possible, but the algorithm must support deletions and coordinated expiry streams without invalidating its error guarantees.
 
-**Choice and rationale.** Use aligned slices with a declared one-minute resolution. A snapshot sums disjoint slices for its interval; a live current slice is added once, not on top of an overlapping completed window. The endpoint publishes repeated standard windows with a stated one-minute resolution. We accept that boundary precision to reuse bucket work, keeping exact archive reconciliation available where the product requires stronger counts.
+Use aligned slices with a declared one-minute resolution. A snapshot sums disjoint slices for its interval; a live current slice is added once, not on top of an overlapping completed window. The endpoint publishes repeated standard windows with a stated one-minute resolution. We accept that boundary precision to reuse bucket work, keeping exact archive reconciliation available where the product requires stronger counts.
 
 [Apache Flink's windowing](https://nightlies.apache.org/flink/flink-docs-stable/docs/sql/reference/queries/window-tvf/) and [window Top-N](https://nightlies.apache.org/flink/flink-docs-stable/docs/sql/reference/queries/window-topn/) support this processing model. Verify the execution plan instead of assuming every operator automatically shares slice state.
 
@@ -315,7 +315,7 @@ For an arbitrary 12:00:30 endpoint, minute buckets approximate the two boundarie
 
 **Problem.** Maintaining all video identities and every active window in memory is expensive.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Exact partitioned counts:** Persist every item's accepted bucket total. Count queries and reconciliation have strong semantics; storage and full-rank scans grow with active item/window cardinality.
 
@@ -323,7 +323,7 @@ For an arbitrary 12:00:30 endpoint, minute buckets approximate the two boundarie
 
 - **Count-Min frequency estimates:** Maintain compatible hashed counters per bucket. Memory is predictable, but collisions overestimate and a separate identity source is required.
 
-**Choice and rationale.** Retain durable exact bucket totals for count queries and use bounded candidate summaries for fresh ranking when required. Rank a candidate union using compatible count summaries; disclose error bounds and measure recall against exact samples. Candidate omissions and close ranks remain the fast path's accepted limitation; exact reads or a disclosed approximate result handle that uncertainty.
+Retain durable exact bucket totals for count queries and use bounded candidate summaries for fresh ranking when required. Rank a candidate union using compatible count summaries; disclose error bounds and measure recall against exact samples. Candidate omissions and close ranks remain the fast path's accepted limitation; exact reads or a disclosed approximate result handle that uncertainty.
 
 Space-Saving's replacement error remains attached to an entry after further increments. An item's absence from a local candidate set is not proof that it cannot be globally important. Standard Space-Saving also does not support simply decrementing expired events.
 
@@ -337,7 +337,7 @@ For example, if the estimated Kth video has 10,100 ± 500 views and another has 
 
 **Problem.** A globally popular video may fall below the local cutoff in every region.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Union local top-K only:** Collect each region's strongest IDs and rank their union. Communication is small, but a globally strong video can fall below every regional cutoff and never enter the union.
 
@@ -345,7 +345,7 @@ For example, if the estimated Kth video has 10,100 ± 500 views and another has 
 
 - **Globally owned exact per-video totals:** Merge each video's regional partials at one global owner, then combine disjoint-owner rankings. Global ranking can be exact for the complete interval; cross-region summary traffic and completeness coordination are higher.
 
-**Choice and rationale.** Send regional partial counts or compatible heavy-hitter summaries with omitted-count bounds. Retrieve all regional contributions for candidate videos before ranking. Use exact global count aggregation when product requirements demand an exact global list. The response contract decides whether approximation is acceptable. We accept richer regional summary work for bounded estimates, switching to exact global aggregation when a product requires an exact list rather than an incomplete local-top-K union.
+Send regional partial counts or compatible heavy-hitter summaries with omitted-count bounds. Retrieve all regional contributions for candidate videos before ranking. Use exact global count aggregation when product requirements demand an exact global list. The response contract decides whether approximation is acceptable. We accept richer regional summary work for bounded estimates, switching to exact global aggregation when a product requires an exact list rather than an incomplete local-top-K union.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%

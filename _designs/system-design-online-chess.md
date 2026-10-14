@@ -274,13 +274,13 @@ Use a tested pairing implementation such as [bbpPairings](https://github.com/cya
 
 **Problem.** In-memory state gives fast validation, but two servers must not accept different next moves after routing or membership changes.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Stateless storage validation:** load and reconstruct game state for every command. Ownership is simple, but repeated reads and replay add move latency and storage pressure.
 - **Sticky in-memory owner:** keep board/clock state on one routed server. Normal validation is fast, but stale routing after replacement can leave two owners accepting different next moves.
 - **Leased owner with fenced commits:** retain fast local state and require a durable epoch/expected ply on each write. Replacement replays the accepted log and stale writes fail; lease renewal, replay and reconnect handling add control state.
 
-**Choice and rationale.** Use a leased game owner with a durable epoch. A replacement acquires a higher epoch transactionally. Every move write checks that epoch and expected ply, so an old owner cannot commit afterward. A fenced owner fits low-latency move validation and one authoritative game history. We accept a durable commit on each accepted move and brief takeover recovery rather than allowing routing alone to decide ownership.
+Use a leased game owner with a durable epoch. A replacement acquires a higher epoch transactionally. Every move write checks that epoch and expected ply, so an old owner cannot commit afterward. A fenced owner fits low-latency move validation and one authoritative game history. We accept a durable commit on each accepted move and brief takeover recovery rather than allowing routing alone to decide ownership.
 
 ```mermaid
 sequenceDiagram
@@ -318,13 +318,13 @@ If the response is lost, retry M returns the stored move rather than playing it 
 
 **Problem.** A narrow rating band improves pairing quality but can leave very high- or low-rated users waiting. A large optimizer may consume the whole wave interval.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Nearest-rating greedy pairing:** take a compatible nearby rating when a player arrives. Decisions are quick, but early choices can consume opponents needed by unusual ratings and ignore the wider waiting set.
 - **Immediate sorted-set claims:** atomically remove a candidate pair from cache. Concurrent matching is straightforward, but the local choice still lacks global compatibility/fairness and durable game creation must recover after a claim failure.
 - **Bounded weighted matching:** build a sparse compatibility graph over a short wave and optimize rating/wait preferences under a deadline. More players' constraints are considered together; batch delay and solver cost require a greedy fallback and durable player claims.
 
-**Choice and rationale.** Use short waves with a sparse graph and a bounded matching budget. Each edge includes rating difference, waiting time, repeat-opponent restrictions and declared preferences. Widen acceptable ranges gradually, within user-visible limits. Short bounded waves fit two-sided compatibility without inventing a bipartite partition for arbitrary chess players. We accept a small matching wait and a possibly suboptimal fallback; no policy can guarantee an opponent where no compatible user exists.
+Use short waves with a sparse graph and a bounded matching budget. Each edge includes rating difference, waiting time, repeat-opponent restrictions and declared preferences. Widen acceptable ranges gradually, within user-visible limits. Short bounded waves fit two-sided compatibility without inventing a bipartite partition for arbitrary chess players. We accept a small matching wait and a possibly suboptimal fallback; no policy can guarantee an opponent where no compatible user exists.
 
 Chess pairing is a general graph problem: either participant can pair with either other eligible participant. A bipartite assignment algorithm such as Hungarian needs a genuine two-sided partition; it is not automatically the correct solver for arbitrary player pairs.
 
@@ -340,13 +340,13 @@ The optimizer runs within the wave budget; if it times out, retain feasible pair
 
 **Problem.** New users have uncertain skill estimates, while inactive users retain old ratings with growing uncertainty.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Fixed-K Elo:** update a rating from expected versus actual results with one step size. It is simple and familiar, but new/inactive players' uncertainty is not represented directly.
 - **Glicko-style uncertainty:** maintain rating deviation and adjust confidence with inactivity/results. Skill estimates adapt to uncertain players; rating-period and uncertainty policies require validation.
 - **Glicko-2:** add volatility to rating and deviation. This fits changing or uncertain skill across time controls; the numerical iteration and period configuration are more involved than Elo and must match published examples.
 
-**Choice and rationale.** Use [Glicko-2](https://www.glicko.net/glicko/glicko2.pdf) with an explicitly configured rating-period policy and separate pools for variants/time controls. Store rating, deviation and volatility; uncertainty increases during inactivity. Validate the implementation against the published examples instead of mixing Elo and Glicko formulas. Glicko-2 fits separate chess pools with new, inactive and evolving players. We accept configured rating periods and implementation complexity; idempotent period/result identities keep replay from changing skill twice.
+Use [Glicko-2](https://www.glicko.net/glicko/glicko2.pdf) with an explicitly configured rating-period policy and separate pools for variants/time controls. Store rating, deviation and volatility; uncertainty increases during inactivity. Validate the implementation against the published examples instead of mixing Elo and Glicko formulas. Glicko-2 fits separate chess pools with new, inactive and evolving players. We accept configured rating periods and implementation complexity; idempotent period/result identities keep replay from changing skill twice.
 
 Record result application and rating changes transactionally with an idempotent period/game identity. Publish profile versions to Redis. High-to-low rank uses reverse rank, and tied ratings follow a stated rule; display provisional users separately if eligibility requires sufficient certainty.
 
@@ -375,13 +375,13 @@ flowchart TB
 
 **Problem.** Engine agreement alone can flag strong legitimate play, and full engine analysis of every position is expensive.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **One accuracy threshold:** flag engine agreement above a cutoff. Compute and explanation are simple, but forced positions and strong legitimate play create false positives.
 - **Cheap behavioral model:** score timing and account/play patterns before expensive analysis. More games can be screened, but a screening score alone lacks sufficient evidence for enforcement.
 - **Staged engine analysis and review:** shortlist games, analyze difficult positions with pinned engine settings and aggregate multi-game evidence for human review. Evidence is stronger and compute is targeted; review delay, appeals and retained analysis state are required.
 
-**Choice and rationale.** Score inexpensive timing and account signals first, then prioritize engine analysis for selected games. Combine position difficulty, move quality, time usage and multi-game patterns into a versioned review record. [Fishnet](https://github.com/lichess-org/fishnet) is an open-source reference for distributed engine work. Staged analysis fits a high-trust game result where a false accusation is costly. We accept delayed enforcement and review work while gameplay remains authoritative; an inexpensive selector is a prioritization signal rather than proof of cheating.
+Score inexpensive timing and account signals first, then prioritize engine analysis for selected games. Combine position difficulty, move quality, time usage and multi-game patterns into a versioned review record. [Fishnet](https://github.com/lichess-org/fishnet) is an open-source reference for distributed engine work. Staged analysis fits a high-trust game result where a false accusation is costly. We accept delayed enforcement and review work while gameplay remains authoritative; an inexpensive selector is a prioritization signal rather than proof of cheating.
 
 Keep enforcement evidence separate from gameplay state. Confirm labels through review and appeals, evaluate precision by skill/time-control cohort, and retain model versions. A delayed analysis pipeline reduces review freshness but must not produce speculative in-game losses.
 

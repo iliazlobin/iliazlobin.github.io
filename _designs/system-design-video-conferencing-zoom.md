@@ -355,7 +355,7 @@ Transport-encrypted meetings can support a trusted cloud recorder. End-to-end en
 
 **Problem.** A group call creates many subscriptions, and users have limited uplink and decoding capacity.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Peer-to-peer mesh:** Send a separate copy from each publisher to every peer. Small calls avoid a forwarding server, but uplink and connection count grow with participants.
 
@@ -363,7 +363,7 @@ Transport-encrypted meetings can support a trusted cloud recorder. End-to-end en
 
 - **Selective forwarding — recommended:** Forward existing encoded streams and select subscriptions/layers per receiver. Server encoding work is avoided; receiver bandwidth and decode limits still require bounded visible tiles and layer choices.
 
-**Choice and rationale.** In a 20-person mesh, sending a 2Mbps camera stream separately to 19 peers requires 38Mbps of upload bandwidth per participant. Selective forwarding sends a bounded set of quality versions to one media server, which distributes them to receivers. We choose it because client upload bandwidth and server encoding capacity are limited. The cost moves to server outbound bandwidth and per-receiver subscription state; mixing remains useful for authorized recording or constrained clients.
+In a 20-person mesh, sending a 2Mbps camera stream separately to 19 peers requires 38Mbps of upload bandwidth per participant. Selective forwarding sends a bounded set of quality versions to one media server, which distributes them to receivers. We choose it because client upload bandwidth and server encoding capacity are limited. The cost moves to server outbound bandwidth and per-receiver subscription state; mixing remains useful for authorized recording or constrained clients.
 
 Media travels in packets carrying sequence numbers and playback timestamps, using [Real-time Transport Protocol (RTP)](https://datatracker.ietf.org/doc/html/rfc3550). These let receivers order packets and align playback. Bound visible video subscriptions so each device stays within its receive-bandwidth and decoding capacity.
 
@@ -393,7 +393,7 @@ class P,S,A,B,C request;
 
 **Problem.** A direct media path sends individual packets without waiting for transport-level retransmission, using **User Datagram Protocol (UDP)**. This suits time-sensitive audio/video. A home router may translate a device's private address to a public address; this is **network address translation (NAT)**. That translation and firewall rules can make some advertised addresses unreachable. Connectivity checks, called [Interactive Connectivity Establishment (ICE)](https://www.rfc-editor.org/rfc/rfc8445.html), find a usable device-to-server path.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Direct transport only:** Use a direct supported media candidate. Relay spending is low, but restrictive NATs or firewalls prevent some participants from connecting.
 
@@ -401,7 +401,7 @@ class P,S,A,B,C request;
 
 - **ICE with relay fallback — recommended:** Check candidate pairs and use a working direct or TURN path. Most sessions can avoid unnecessary relay; candidate setup, relay capacity and connectivity metrics remain required.
 
-**Choice and rationale.** Use ICE with relay fallback because participants use heterogeneous enterprise and mobile networks. We accept connectivity-check setup and provision measured TURN capacity so reachability does not depend on one assumed UDP path.
+Use ICE with relay fallback because participants use heterogeneous enterprise and mobile networks. We accept connectivity-check setup and provision measured TURN capacity so reachability does not depend on one assumed UDP path.
 
 **How it works: connection setup.**
 
@@ -439,7 +439,7 @@ Monitor the control connection and media path separately: either can fail while 
 
 **Problem.** A client can lose a response after a command succeeds, and messages from an old connection can arrive after a reconnect. The service must recognize a repeated request while keeping delayed messages from changing the current session.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Retry each command as a new request:** little retained state, but a repeated recording-start or chat submission can create duplicate work.
 
@@ -447,7 +447,7 @@ Monitor the control connection and media path separately: either can fail while 
 
 - **Stable request IDs and service-checked versions — recommended:** retain command outcomes and check the current connection and server assignment. Retries recover the original result, while obsolete commands are rejected. This requires durable state, atomic updates and a bounded retention policy.
 
-**Choice and rationale.** Meetings frequently reconnect and can outlive a service process. We choose stable request identities plus independent versions so a reconnect preserves the participant, a retry preserves its original operation, and a reassignment takes effect once. PostgreSQL owns the durable records; Redis caches copies for fast routing. Media servers retain established connection state during a temporary cache or placement-controller outage.
+Meetings frequently reconnect and can outlive a service process. We choose stable request identities plus independent versions so a reconnect preserves the participant, a retry preserves its original operation, and a reassignment takes effect once. PostgreSQL owns the durable records; Redis caches copies for fast routing. Media servers retain established connection state during a temporary cache or placement-controller outage.
 
 **How it works.** Each control message carries a unique `command_id`. The current connection version is `session_epoch`; reconnecting advances it. The media-server assignment version is `assignment_epoch`; changing servers advances that separately. New commands must match the current versions, keeping delayed messages from changing the current session. The join response includes both versions so the client can attach them to subsequent control messages.
 
@@ -473,7 +473,7 @@ For chat, a PostgreSQL transaction locks the meeting-local sequence counter, ass
 
 **Problem.** A fast connection and a congested mobile connection can subscribe to the same publisher.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **One fixed quality:** Publish and forward one bitrate/resolution. Operation is simple, but a congested receiver stalls or a fast receiver receives unnecessarily low quality.
 
@@ -481,7 +481,7 @@ For chat, a PostgreSQL transaction locks the meeting-local sequence counter, ass
 
 - **Encoded layers with receiver feedback — recommended:** Select a simulcast or scalable-codec layer per subscription and adjust sender bitrate as needed. Heterogeneous receivers share published layers; publishers spend extra encoding/uplink and transitions need congestion control.
 
-**Choice and rationale.** Use encoded layers with receiver feedback because a meeting contains different devices and bandwidth conditions. We accept layer-management and publisher overhead to preserve audio and useful visible video without individualized server transcoding.
+Use encoded layers with receiver feedback because a meeting contains different devices and bandwidth conditions. We accept layer-management and publisher overhead to preserve audio and useful visible video without individualized server transcoding.
 
 **How it works.** Receiving devices report packet arrivals and losses. The SFU combines these reports with the delay in its outgoing packet queue to estimate each receiver's available bandwidth. It reduces forwarded video bitrate as congestion grows. Receivers briefly hold arriving packets to smooth timing variation; this **jitter buffer** has a fixed delay budget so buffering preserves the playback target.
 
@@ -512,7 +512,7 @@ Require sustained spare bandwidth before upgrading quality; this **hysteresis** 
 
 **Problem.** One region is operationally simple, but users far from that region pay extra propagation delay.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **One meeting region:** Keep all media on one regional forwarding group. Ownership and relay relationships are simple, but distant participants pay additional propagation delay.
 
@@ -520,7 +520,7 @@ Require sustained spare bandwidth before upgrading quality; this **hysteresis** 
 
 - **Regional SFU groups — recommended:** Group nearby participants on a regional set of media servers. Combine their requested tracks so each required stream crosses regions once per receiving group, then distribute it locally. This bounds relay copies, while routing and recovery must preserve subscriptions and server-assignment versions.
 
-**Choice and rationale.** Use regional SFU groups because large meetings can span regions while only selected tracks are visible. We accept cross-region routing state and measured relay bandwidth, keeping small local meetings on the simpler one-region path.
+Use regional SFU groups because large meetings can span regions while only selected tracks are visible. We accept cross-region routing state and measured relay bandwidth, keeping small local meetings on the simpler one-region path.
 
 **How it works.** The meeting service's **placement controller** chooses a media server using participant locations, capacity and data-residency requirements, and records the assignment version. Media servers retain current connection and subscription state so established media can continue during a controller restart.
 
@@ -559,7 +559,7 @@ After a media-server failure, receivers resume restored video subscriptions from
 
 **Problem.** Transport encryption secures each client/server leg. End-to-end encryption additionally protects media payloads from the forwarding service, changing which recording operations are possible.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Transport encryption:** Encrypt each client/server leg while trusted servers can process media. Recording and mixing are available, but the service remains inside the content trust boundary.
 
@@ -567,7 +567,7 @@ After a media-server failure, receivers resume restored video subscriptions from
 
 - **Explicit meeting trust modes — recommended:** Choose and disclose a compatible encryption/recording mode before joining. Capabilities have a clear trust contract; mode negotiation and participant-visible changes add product and key-management work.
 
-**Choice and rationale.** A recorder needs media decryption keys to save readable content. In transport-encrypted mode, a trusted server can record; in E2EE mode, recording requires an authorized participant or client that holds the keys. We choose explicit meeting modes so users can see which devices or services can access the media before joining.
+A recorder needs media decryption keys to save readable content. In transport-encrypted mode, a trusted server can record; in E2EE mode, recording requires an authorized participant or client that holds the keys. We choose explicit meeting modes so users can see which devices or services can access the media before joining.
 
 **How it works.** In E2EE mode, clients encrypt media frames before sending them to the SFU, which uses visible routing metadata to forward them. [Secure Frame (SFrame)](https://www.rfc-editor.org/rfc/rfc9605.html) provides a standardized frame-encryption format. Authorized devices establish shared media keys through a reviewed, [authenticated group-key exchange](https://www.rfc-editor.org/rfc/rfc9420.html#section-1). The meeting service relays encrypted key-exchange messages; the media keys remain with authorized devices and are updated as membership changes.
 

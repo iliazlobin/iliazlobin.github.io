@@ -273,7 +273,7 @@ The user uploads to a signed object-storage URL. A completion request verifies t
 
 **Problem.** Business hours and review decisions change while search replicas are serving requests.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Periodic full rebuild:** Publish a complete business index on a schedule. Snapshots are easy to reproduce, but recent hours or moderation changes wait for the next build.
 
@@ -281,7 +281,7 @@ The user uploads to a signed object-storage URL. A completion request verifies t
 
 - **Ordered primary builds with committed segment replication — recommended:** Apply versioned changes to the index builder and serve complete replicated generations. Query replicas share a recoverable state; indexing lag and segment-publication work remain explicit freshness costs.
 
-**Choice and rationale.** Consume an ordered, replayable change stream and update Nrtsearch documents by business version. Publish completed segment generations to replicas; only advance the durable replay checkpoint after the corresponding index state is committed. A replica uses a complete generation while receiving the next one. Business metadata and reviewed contributions change continuously, while queries need consistent index generations. We accept near-real-time lag and current-field hydration rather than letting each replica independently interpret replayed changes.
+Consume an ordered, replayable change stream and update Nrtsearch documents by business version. Publish completed segment generations to replicas; only advance the durable replay checkpoint after the corresponding index state is committed. A replica uses a complete generation while receiving the next one. Business metadata and reviewed contributions change continuously, while queries need consistent index generations. We accept near-real-time lag and current-field hydration rather than letting each replica independently interpret replayed changes.
 
 If a writer crashes, restore its durable index checkpoint and replay later changes. Track source-to-query visibility lag, replica generations and replay backlog. Critical detail fields can be rechecked in PostgreSQL while an index is catching up.
 
@@ -312,7 +312,7 @@ class H control;
 
 **Problem.** Coordinated reviews can distort ratings, while genuine users can also submit content that violates policy.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **One combined review score:** Mix authenticity and content-policy signals into one decision. Serving is simple, but a genuine off-policy review and a fabricated polite review need different actions and evidence.
 
@@ -320,7 +320,7 @@ class H control;
 
 - **Separate authenticity and policy decisions — recommended:** Use explicit rules and supervised models for each question, with human review for ambiguous or high-impact cases. Actions and labels remain interpretable; separately evaluated models, reviewer criteria and operational queues require more decision state.
 
-**Choice and rationale.** Use separate authenticity and content-policy decisions, with human review for ambiguous or high-impact cases. This distinction matches [Yelp's documented moderation process](https://www.yelp-support.com/article/How-we-moderate-content-at-Yelp?l=enUS). A rating contribution and visible text have different legitimacy requirements. We accept separately versioned judgments so later review can correct the affected contribution or policy action without conflating the two.
+Use separate authenticity and content-policy decisions, with human review for ambiguous or high-impact cases. This distinction matches [Yelp's documented moderation process](https://www.yelp-support.com/article/How-we-moderate-content-at-Yelp?l=enUS). A rating contribution and visible text have different legitimacy requirements. We accept separately versioned judgments so later review can correct the affected contribution or policy action without conflating the two.
 
 Use versioned interaction and behavioural features, exclude advertising purchases from trust decisions, and record the reason and policy version. New-user status is a signal to evaluate, rather than an automatic rejection. Measure false positives, appeals and detection rates across cohorts; rate limits and coordinated-activity checks complement the models.
 
@@ -336,7 +336,7 @@ For example, review R7 version 3 contributes five stars: `rating_sum += 5`, `rat
 
 **Problem.** A large image model on every upload increases processing cost and delays publication.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Heavy model for every upload:** Run full image/OCR analysis consistently. Coverage is uniform, but cost and publication delay grow with all uploads.
 
@@ -346,7 +346,7 @@ For example, review R7 version 3 contributes five stars: `rating_sum += 5`, `rat
 
 - **Bounded screening cascade — recommended:** Validate files, check duplicates and run a cheap screen before heavier image/text analysis or review. Expensive work is focused; early-exit mistakes cap recall and review capacity needs monitoring.
 
-**Choice and rationale.** Run file validation and duplicate checks, followed by a lightweight risk model. Use image classification, OCR and text analysis where the initial signals require them, and route uncertain decisions to review. Photo publication is asynchronous and volume makes uniform heavy inference costly. We accept a tested cascade and pending-review states, measuring complete-pipeline quality rather than only the heavy model.
+Run file validation and duplicate checks, followed by a lightweight risk model. Use image classification, OCR and text analysis where the initial signals require them, and route uncertain decisions to review. Photo publication is asynchronous and volume makes uniform heavy inference costly. We accept a tested cascade and pending-review states, measuring complete-pipeline quality rather than only the heavy model.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#e8f0fe","primaryBorderColor":"#9aa0a6","primaryTextColor":"#202124","secondaryColor":"#e6f4ea","tertiaryColor":"#fef7e0","lineColor":"#5f6368","actorBkg":"#e8f0fe","actorBorder":"#9aa0a6","actorTextColor":"#202124","noteBkgColor":"#fef7e0","noteBorderColor":"#9aa0a6","noteTextColor":"#202124","signalColor":"#5f6368","signalTextColor":"#202124"}}}%%
@@ -379,7 +379,7 @@ A lightweight stage forwards uncertain or high-risk cases to more expensive anal
 
 **Problem.** Keyword matches alone miss user intent, while ranking latency and biased interaction data limit more complex models.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Keyword/geo score only:** Order indexed matches with simple distance and rating features. Serving is fast, but synonyms and detailed intent are weakly represented.
 
@@ -389,7 +389,7 @@ A lightweight stage forwards uncertain or high-risk cases to more expensive anal
 
 - **Indexed candidates with bounded learned ranking — recommended:** Retrieve text-and-geo candidates, batch features and score a measured shortlist, keeping ads separate. Relevance can improve within a budget; candidate omissions and biased impression labels still need evaluation.
 
-**Choice and rationale.** Start with indexed retrieval and a measured ranker; batch feature reads for a bounded candidate set. Train on time-correct impression and interaction data, separating organic and sponsored examples. Profile data loading and feature computation before increasing model-training hardware. Nearby search needs a prompt organic result before optional ad work completes. We accept bounded candidate coverage and exposure-aware training, separating sponsored objectives and labels from organic relevance.
+Start with indexed retrieval and a measured ranker; batch feature reads for a bounded candidate set. Train on time-correct impression and interaction data, separating organic and sponsored examples. Profile data loading and feature computation before increasing model-training hardware. Nearby search needs a prompt organic result before optional ad work completes. We accept bounded candidate coverage and exposure-aware training, separating sponsored objectives and labels from organic relevance.
 
 An independent ad service evaluates eligible sponsored candidates and returns labelled results. Its timeout leaves organic search available. Assign stable impression and click IDs for deduplicated reporting and billing; monitor relevance, ad latency and offline-to-online feature consistency.
 

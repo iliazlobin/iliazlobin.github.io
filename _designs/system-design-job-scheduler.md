@@ -243,13 +243,13 @@ Cancellation uses a conditional update from scheduled to cancelled. A worker cla
 
 **Problem.** Concurrent pollers may find the same due job.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Single leader:** one poller owns due-work selection. Competing claims disappear, but throughput and availability depend on leader capacity and timely failover.
 - **Distributed lock per job:** acquire a separate lock before dispatch. It coordinates pollers, but lock state and job state can diverge across a crash and require another fencing/recovery protocol.
 - **Transactional row claims:** lock eligible rows with SKIP LOCKED and commit their attempt/lease together. Pollers scale without waiting on already claimed rows; transactions must stay short and indexes/claim limits determine scan cost and fairness.
 
-**Choice and rationale.** Use short PostgreSQL transactions with SKIP LOCKED. Claim only as much work as available workers can accept. Transactional claims fit a PostgreSQL-backed scheduler because the job and ownership decision share one authority. We accept database claim throughput as a capacity limit and avoid holding locks while a job runs.
+Use short PostgreSQL transactions with SKIP LOCKED. Claim only as much work as available workers can accept. Transactional claims fit a PostgreSQL-backed scheduler because the job and ownership decision share one authority. We accept database claim throughput as a capacity limit and avoid holding locks while a job runs.
 
 ```sql
 WITH due AS (
@@ -297,13 +297,13 @@ flowchart TB
 
 **Problem.** The job may be stored successfully even when the client receives a timeout.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Compare payloads:** collapse matching request bodies into one job. No explicit client key is needed, but identical work may be intentionally submitted twice and canonicalization mistakes can merge different jobs.
 - **Accept every retry:** create a new job for each request. The API is simple, but a lost response can duplicate expensive work or external effects.
 - **Tenant-scoped idempotency key:** store one validated request hash and job ID under a unique tenant/key constraint. Ambiguous retries recover the original job; mappings need retention and changed input under the same key must be rejected.
 
-**Choice and rationale.** Enforce a unique `(tenant_id, idempotency_key)` constraint and store a hash of the validated request. Concurrent submissions converge on one job; retries read that record and compare its hash. Explicit keys fit intentional repeated jobs and network retries because the client decides which submissions are the same operation. We accept retained mapping state and a documented replay window rather than deriving identity from payload similarity.
+Enforce a unique `(tenant_id, idempotency_key)` constraint and store a hash of the validated request. Concurrent submissions converge on one job; retries read that record and compare its hash. Explicit keys fit intentional repeated jobs and network retries because the client decides which submissions are the same operation. We accept retained mapping state and a documented replay window rather than deriving identity from payload similarity.
 
 Retain the mapping through the promised retry window. Document what happens after that window and keep keys tenant-scoped so a collision cannot expose another tenant's job.
 
@@ -317,13 +317,13 @@ Do not use the payload hash as the job identity. A user can intentionally run id
 
 **Problem.** A worker may crash, lose connectivity or keep running after the scheduler has reassigned its job.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Fixed timeout:** retry once the execution deadline passes. Recovery is simple for tightly bounded tasks, but legitimate long jobs can be reassigned and short crashed jobs wait for the full timeout.
 - **Renewable lease:** healthy workers extend ownership and new attempts replace expired tokens. Recovery adapts to duration; heartbeats and fencing add state, and an old worker may still perform an external side effect.
 - **Durable workflow engine:** persist step history and resume a multi-step execution. Long dependent tasks gain richer recovery, but workflow definitions, history growth and engine operations exceed a simple job runner's needs.
 
-**Choice and rationale.** Use renewable leases and a separate maximum runtime. A recovery transaction checks the expired token, records the attempt outcome, and reschedules the job or marks it failed. Stale workers cannot update the new attempt's state. Renewable leases plus a maximum runtime fit independent jobs of variable duration. We accept at-least-once execution and require downstream idempotency for effects; fenced scheduler completion alone cannot make arbitrary external actions exactly once.
+Use renewable leases and a separate maximum runtime. A recovery transaction checks the expired token, records the attempt outcome, and reschedules the job or marks it failed. Stale workers cannot update the new attempt's state. Renewable leases plus a maximum runtime fit independent jobs of variable duration. We accept at-least-once execution and require downstream idempotency for effects; fenced scheduler completion alone cannot make arbitrary external actions exactly once.
 
 A lease protects scheduler state; an external operation still needs an idempotency key based on the logical job and operation, rather than the attempt ID. After an ambiguous external timeout, query the target's operation status or retry with that same key. Track expired leases, rejected stale results and recovery delay.
 
@@ -337,13 +337,13 @@ The harder case is A having already called an external payment or email service.
 
 **Problem.** An outage can make thousands of jobs retry together.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Fixed delays:** retry every failure after one interval. Scheduling is predictable, but an outage synchronizes many jobs into repeated traffic spikes.
 - **Exponential backoff:** increase delay after consecutive failures. Average pressure falls, but jobs failing together can remain synchronized at each retry round.
 - **Capped backoff with full jitter:** sample each wait within a growing cap and enforce target concurrency/retry budgets. Retries spread over time and preserve recovery capacity; individual completion times become variable and exhausted jobs need an explicit terminal/replay path.
 
-**Choice and rationale.** Use capped backoff with full jitter, per-target concurrency limits and a retry budget, following the [AWS backoff-and-jitter guidance](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/). Jittered capped backoff fits shared dependencies that can fail for many jobs at once. We accept less predictable retry timing and stop within a declared budget to keep recovery traffic from extending the outage.
+Use capped backoff with full jitter, per-target concurrency limits and a retry budget, following the [AWS backoff-and-jitter guidance](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/). Jittered capped backoff fits shared dependencies that can fail for many jobs at once. We accept less predictable retry timing and stop within a declared budget to keep recovery traffic from extending the outage.
 
 ```python
 def retry_delay(attempt, base_seconds=2, cap_seconds=300):

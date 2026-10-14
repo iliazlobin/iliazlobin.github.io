@@ -277,7 +277,7 @@ Preparing the first usable variant before publication gives the first reader a p
 
 **Problem.** One post from an author with millions of followers can dominate the fan-out queue.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Push on write:** Insert each post into follower timelines. Read work is small, but popular authors and inactive followers multiply writes and queue backlog.
 
@@ -285,7 +285,7 @@ Preparing the first usable variant before publication gives the first reader a p
 
 - **Hybrid delivery — recommended:** Push ordinary active-follower work and merge high-fan-out author lists at read time. Work follows usage, but thresholds, backfill and two-source pagination need coordination.
 
-**Choice and rationale.** Use hybrid delivery, choosing thresholds from measured fan-out cost and read latency rather than a fixed celebrity label. Split large follower lists into checkpointed jobs; writing the same post ID twice must preserve one timeline entry. Cache recent high-fan-out author lists and batch hydration. Follower counts and activity vary widely. We accept a hybrid merge path and measured policy thresholds so one large author cannot make every post wait on a massive fan-out job.
+Use hybrid delivery, choosing thresholds from measured fan-out cost and read latency rather than a fixed celebrity label. Split large follower lists into checkpointed jobs; writing the same post ID twice must preserve one timeline entry. Cache recent high-fan-out author lists and batch hydration. Follower counts and activity vary widely. We accept a hybrid merge path and measured policy thresholds so one large author cannot make every post wait on a massive fan-out job.
 
 A transition between push and pull can overlap safely when reads deduplicate by post ID. Monitor oldest pending fan-out event, writes/post, reconstruction load and P99 merge latency. Under overload, reduce backfill and precomputation for inactive users before delaying committed-post reads.
 
@@ -319,7 +319,7 @@ A post from a high-degree author can generate millions of candidate writes; repr
 
 **Problem.** New posts arrive continuously while queries compete with indexing and segment merges.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Batch index rebuild:** Publish periodic complete snapshots. Recovery is simple, but freshness follows the build schedule and newly committed posts wait.
 
@@ -327,7 +327,7 @@ A post from a high-degree author can generate millions of candidate writes; repr
 
 - **Custom real-time index:** Build a specialized recency and memory layout. Hot-post control can improve, but query semantics, replication, rebuilds and recovery become product-specific engineering work.
 
-**Choice and rationale.** Use incremental Elasticsearch indexing with a measured refresh and indexing budget. [Elastic's near-real-time search documentation](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search) explains how refresh exposes new segments. Keep recent time partitions hot and route older queries explicitly. Twitter's [Earlybird paper](https://ieeexplore.ieee.org/document/6228426) is a useful specialized alternative, not a capacity guarantee for this deployment. The design needs continuous post freshness with conventional text-query behavior. We accept measured Elasticsearch indexing and refresh budgets instead of maintaining a custom index before capacity evidence justifies it.
+Use incremental Elasticsearch indexing with a measured refresh and indexing budget. [Elastic's near-real-time search documentation](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search) explains how refresh exposes new segments. Keep recent time partitions hot and route older queries explicitly. Twitter's [Earlybird paper](https://ieeexplore.ieee.org/document/6228426) is a useful specialized alternative, not a capacity guarantee for this deployment. The design needs continuous post freshness with conventional text-query behavior. We accept measured Elasticsearch indexing and refresh budgets instead of maintaining a custom index before capacity evidence justifies it.
 
 Use post ID and version for idempotent index updates. Rebuild a failed shard from a snapshot plus event offsets, and replay deletions as well as creates. Observe indexing lag, shard timeouts, merge pressure and partial-result rate.
 
@@ -358,7 +358,7 @@ Measure each stage. Choose refresh frequency under combined write, search and se
 
 **Problem.** Independent write shards need unique IDs, while timeline pages need deterministic ordering.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Database sequences:** Allocate IDs within a write shard or reserve disjoint ranges. Uniqueness is clear, but cross-shard allocation needs coordination and ranges can leave gaps.
 
@@ -366,7 +366,7 @@ Measure each stage. Choose refresh frequency under combined write, search and se
 
 - **Snowflake-style IDs — recommended:** Combine timestamp, uniquely owned worker and local sequence fields. IDs are compact and ordered by their layout; worker reassignment and clock rollback can cause duplicates unless issuance is fenced.
 
-**Choice and rationale.** Use a Snowflake-style generator with uniquely leased worker IDs, fencing on reassignment and a defined response to clock rollback. Stop that worker's issuance while its clock is behind the last issued timestamp; serve writes through healthy workers. Independent post shards benefit from compact locally generated IDs. We accept worker leases and clock handling, while deterministic pagination still uses its saved cutoff and tie-breaker rather than assuming ID generation alone freezes a timeline.
+Use a Snowflake-style generator with uniquely leased worker IDs, fencing on reassignment and a defined response to clock rollback. Stop that worker's issuance while its clock is behind the last issued timestamp; serve writes through healthy workers. Independent post shards benefit from compact locally generated IDs. We accept worker leases and clock handling, while deterministic pagination still uses its saved cutoff and tie-breaker rather than assuming ID generation alone freezes a timeline.
 
 Timestamp-based IDs do not establish a global causal order. Store the post timestamp separately and use a stable tie-breaker in pagination. The [archived Snowflake repository](https://github.com/twitter-archive/snowflake) provides historical context; generation rate and worker count must be sized for this service.
 
@@ -388,7 +388,7 @@ Page order: stored publication timestamp + post ID tie-breaker
 
 **Problem.** Exact counters for every regional topic can consume substantial memory, while repeated posts can distort the ranking.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Exact keyed counters — recommended initially:** Count bounded author/topic contributions in explicit regional buckets. Semantics and reconciliation are clear; active topic cardinality determines memory and must be capped.
 
@@ -396,7 +396,7 @@ Page order: stored publication timestamp + post ID tie-breaker
 
 - **Sampled events:** Process a recorded fraction of traffic. Ingest work falls, but rare or regional topics have larger sampling error and need inclusion probabilities.
 
-**Choice and rationale.** First use partitioned exact counters over five-minute buckets with a cardinality budget. Count at most one contribution per author/topic/bucket, then sum buckets for recent-activity ranking. That sum measures contributions, not distinct authors across the entire combined window. A cardinality budget makes exact bucket counters a simpler initial quality anchor. We accept bounded retained topics and measure memory before switching to approximation; summed per-bucket contributions are not whole-window distinct-author counts.
+First use partitioned exact counters over five-minute buckets with a cardinality budget. Count at most one contribution per author/topic/bucket, then sum buckets for recent-activity ranking. That sum measures contributions, not distinct authors across the entire combined window. A cardinality budget makes exact bucket counters a simpler initial quality anchor. We accept bounded retained topics and measure memory before switching to approximation; summed per-bucket contributions are not whole-window distinct-author counts.
 
 For regions exceeding the budget, a sketch can identify candidate frequencies alongside an explicit bounded candidate tracker. Validate the final candidates against retained events or exact candidate counters; a sketch alone cannot enumerate every topic or guarantee an exact top-K. Replayed events use stable IDs, expired buckets are removed, and bot policy is applied before contribution counting.
 
@@ -428,7 +428,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Problem.** An event may be delivered more than once, and cached posts may outlive a deletion.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Direct cache increments:** Apply every engagement event as a counter change. Latency is small, but repeated delivery inflates counts and lost cache state has no authoritative repair source.
 
@@ -436,7 +436,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 - **Recount on every read:** Aggregate the durable relationships for each displayed post. Results match their database snapshot, but popular-post reads repeatedly pay substantial aggregation cost.
 
-**Choice and rationale.** Persist engagement state, emit transition events and have consumers deduplicate event IDs before applying deltas. Reconcile cached counts against durable state and return a version or update time when freshness matters. Engagement retries need one logical effect while reads need inexpensive counts. We accept derived-value lag and reconciliation, keeping current deletion and visibility checks separate from the cached display count.
+Persist engagement state, emit transition events and have consumers deduplicate event IDs before applying deltas. Reconcile cached counts against durable state and return a version or update time when freshness matters. Engagement retries need one logical effect while reads need inexpensive counts. We accept derived-value lag and reconciliation, keeping current deletion and visibility checks separate from the cached display count.
 
 Deletion increments the post version and emits a tombstone. Serving checks the authoritative deletion/visibility state before returning content; caches and search consume that versioned change. Track purge lag and replay retention, and rebuild derived views when event gaps exceed the supported replay window.
 

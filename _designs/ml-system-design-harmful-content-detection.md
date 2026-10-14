@@ -255,13 +255,13 @@ Use the last approved screening/model bundle and a bounded queue. If the service
 
 **Problem.** Text and images can be benign separately while conveying a violation together.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Single-modality models:** Score text and images independently and combine their decisions. Encoders can be optimized and cached separately, but a violation expressed through the relationship between an image and its caption can pass both checks.
 - **Late fusion:** Concatenate pooled text and image embeddings before the category heads. This reuses independent encoders and keeps inference relatively compact; pooling can discard the token-to-region relationships needed to understand a difficult meme.
 - **Joint attention for difficult cases — recommended:** Let text tokens and visual tokens interact in the heavier model, after a cheap screen. This captures cross-modal context while bounding expensive inference; screening mistakes still limit total recall, and the heavy path needs its own latency and capacity budget.
 
-**Choice and rationale.** The design needs category-specific moderation of combined text and visual meaning at a bounded serving cost. We accept a two-stage pipeline and evaluate early-exit recall alongside heavy-model quality; joint attention is reserved for cases where that additional work is useful.
+The design needs category-specific moderation of combined text and visual meaning at a bounded serving cost. We accept a two-stage pipeline and evaluate early-exit recall alongside heavy-model quality; joint attention is reserved for cases where that additional work is useful.
 
 Use a multilingual text encoder, an image encoder and category-specific heads. [FLAVA](https://arxiv.org/abs/2112.04482) is a reference for language/vision representations; the final architecture is selected through category-specific evaluation.
 
@@ -298,13 +298,13 @@ For example, benign text over an otherwise benign image may become a prohibited 
 
 **Problem.** Natural traffic contains many legitimate posts. Balanced training batches help the model see rare categories, but also change the apparent class prevalence.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Natural sampling:** Draw training examples from the production distribution. Prevalence is preserved, but rare violation categories contribute few useful gradients and may need far more reviewed traffic.
 - **Class weighting or oversampling:** Give reviewed rare positives more influence in training. This improves their representation in batches, at the cost of repeated-example overfitting and a score distribution that needs calibration on natural traffic.
 - **Targeted training plus representative evaluation — recommended:** Train with reviewed positives and hard legitimate examples, while keeping a separately sampled audit set for quality estimates. This supports rare-category learning and realistic evaluation; it requires label provenance, sampling information and two independently maintained datasets.
 
-**Choice and rationale.** Rare violations need deliberate training coverage, while removal precision and missed-violation rates must reflect the population actually served. The extra review and dataset-management work is justified by keeping those two questions measurable.
+Rare violations need deliberate training coverage, while removal precision and missed-violation rates must reflect the population actually served. The extra review and dataset-management work is justified by keeping those two questions measurable.
 
 [Focal loss](https://arxiv.org/abs/1708.02002) downweights well-classified examples. Evaluate it alongside weighted cross-entropy rather than assuming ordinary cross-entropy always learns a trivial classifier.
 
@@ -331,13 +331,13 @@ Appeals → evidence about the subset that appealed
 
 **Problem.** A calibrated probability estimates risk on a particular distribution. It does not itself guarantee 95% removal precision after traffic changes.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **One global threshold:** Apply one cutoff to every score. Operation is simple, but different categories and languages can have different calibration and error costs, so aggregate precision can conceal mistaken removals in a small cohort.
 - **Automatically adjusted thresholds:** Update cutoffs from recent reviewed decisions. This can respond quickly to change, but sparse or selectively reviewed labels can move a threshold in the wrong direction and overload review queues.
 - **Versioned category thresholds — recommended:** Calibrate scores on independent mature labels and release category-specific action cutoffs with uncertainty and capacity checks. This makes actions auditable and reversible; it adds review gates and responds more slowly where fresh labels are scarce.
 
-**Choice and rationale.** Removal and quarantine have different user impacts and depend on available review capacity. Versioned thresholds let this design balance those costs per category; we accept a slower reviewed release instead of letting noisy recent decisions change enforcement automatically.
+Removal and quarantine have different user impacts and depend on available review capacity. Versioned thresholds let this design balance those costs per category; we accept a slower reviewed release instead of letting noisy recent decisions change enforcement automatically.
 
 ```python
 if required_checks_incomplete:
@@ -373,13 +373,13 @@ Checks incomplete        → explicit incomplete-check policy
 
 **Problem.** Removed posts accumulate fewer views and reports. Training only on surviving content therefore changes which examples and behaviors are observed.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Train on surviving content:** Use the views and reports still visible after enforcement. These labels are easy to collect, but removed content has lost its exposure opportunity, creating a systematically different training population.
 - **Impute missing behavior:** Estimate the reports or views removed content might have received. This can support sensitivity analysis, but the counterfactual depends on assumptions that cannot be verified from the suppressed observations alone.
 - **Independent audits across decisions — recommended:** Sample pre-decision content and retained evidence from allowed, quarantined and removed bands for restricted review. Logged sampling probabilities support population estimates; human review and evidence retention add operational and privacy costs.
 
-**Choice and rationale.** This design needs to measure missed violations and mistaken removals while its safety controls remain active. Independent review provides that evidence, with explicit sampling and retention costs; imputed behavior remains an analytical aid rather than the release-quality signal.
+This design needs to measure missed violations and mistaken removals while its safety controls remain active. Independent review provides that evidence, with explicit sampling and retention costs; imputed behavior remains an analytical aid rather than the release-quality signal.
 
 Evaluation sampling preserves normal safety enforcement. It does not require intentionally exposing users to known harmful content. Record which observations were truncated by enforcement and distinguish missing behavior from zero reports.
 
@@ -397,13 +397,13 @@ Suppose reports fall to zero after a removal. That is censored exposure, not a c
 
 **Problem.** New formats and language patterns can reduce recall before enough labels arrive.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Fixed retraining calendar:** Build reproducible candidates on a regular schedule. Release planning is predictable, but an emerging language pattern can remain poorly detected until the next sufficiently labeled cycle.
 - **Continuous model and threshold changes:** Promote updates as new data arrives. Response is fast, but noisy reports, changing label maturity and incompatible components make regressions harder to isolate and roll back.
 - **Scheduled training with reviewed drift response — recommended:** Keep regular releases and use drift alerts to collect labels and prioritize an incident candidate. This supports controlled adaptation; it requires mature audit evidence and may temporarily increase quarantine or review load.
 
-**Choice and rationale.** Input drift suggests investigation; mature labeled performance establishes quality degradation. New policy descriptions or few-shot models can prioritize review while gold labels accumulate. They need category-specific validation before automated enforcement.
+Input drift suggests investigation; mature labeled performance establishes quality degradation. New policy descriptions or few-shot models can prioritize review while gold labels accumulate. They need category-specific validation before automated enforcement.
 
 **How it works.** Block incompatible schemas and malformed datasets. Shadow evaluation measures latency and decision differences while existing enforcement stays active; controlled rollout measures quality and propagation. Rollback restores the compatible model/policy bundle and leaves the decision audit trail intact.
 

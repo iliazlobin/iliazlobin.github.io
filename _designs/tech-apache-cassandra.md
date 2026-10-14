@@ -230,7 +230,8 @@ Cassandra is eventually consistent. Three repair mechanisms:
 
 ## Usage Patterns & Examples
 
-### 1. Time-Series / Metrics
+### Time-Series / Metrics
+{: id="1-time-series--metrics"}
 
 The canonical Cassandra workload. Append-only, TTL-based expiry, bucketed partition keys.
 
@@ -249,7 +250,8 @@ The partition key combines sensor_id with a time bucket (hour). This spreads wri
 
 **Gotcha:** Using time as the sole partition key creates a **hot last-partition** problem. All current writes land on the "now" partition, pinning one node at full write rate. Always prefix with an entity identifier.
 
-### 2. Feeds / Messaging
+### Feeds / Messaging
+{: id="2-feeds--messaging"}
 
 User-partitioned, clustering for ordering.
 
@@ -267,7 +269,8 @@ Single-row partition reads (SELECT * WHERE user_id = ? ORDER BY message_id DESC 
 
 **Gotcha:** Design for the hot-user scenario upfront. Rate-limit at the application layer. Use a secondary bucket if needed (e.g. user_id + conversation_arc).
 
-### 3. IoT / Sensors
+### IoT / Sensors
+{: id="3-iot--sensors"}
 
 Each device is its own partition key. Append-only, device-as-key.
 
@@ -283,7 +286,8 @@ CREATE TABLE sensor_readings (
 
 **Gotcha: Tombstones from decommissions.** When a device is decommissioned, deleting its history creates tombstones across its entire partition. Each compaction pass must merge through these tombstones, slowing down reads for remaining devices on the same node. Better: TTL at write time; batch-delete via range delete with caution.
 
-### 4. Shopping Carts / Sessions
+### Shopping Carts / Sessions
+{: id="4-shopping-carts--sessions"}
 
 Single-partition, last-writer-wins per column. Good for concurrent edits because each item can be modified independently.
 

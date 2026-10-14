@@ -249,13 +249,13 @@ The service creates snippets only for final hits and returns highlight offsets o
 
 **Problem.** BM25 and vector similarity use different score distributions.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Raw weighted scores:** normalize BM25/similarity and combine them with weights. Inference is cheap, but score distributions vary by query and a weight tuned for one cohort can distort another.
 - **Reciprocal rank fusion:** combine rank positions from each list. No training pipeline or cross-score normalization is needed; magnitude information is lost and fusion cannot recover candidates absent from both retrieval lists.
 - **Learned reranker:** score a bounded union using query/content features and labels. Relevance can improve with representative data, but inference latency, model operations and biased training labels add cost.
 
-**Choice and rationale.** Use reciprocal rank fusion, then evaluate whether a bounded reranker improves relevance enough to justify latency and compute. A candidate absent from one list contributes only from the other. Reciprocal rank fusion fits a first hybrid retrieval path with incompatible score scales and no assumed labeled reranking pipeline. We accept rank-only fusion and bounded candidate recall; a reranker must show sufficient measured relevance gain within the response budget.
+Use reciprocal rank fusion, then evaluate whether a bounded reranker improves relevance enough to justify latency and compute. A candidate absent from one list contributes only from the other. Reciprocal rank fusion fits a first hybrid retrieval path with incompatible score scales and no assumed labeled reranking pipeline. We accept rank-only fusion and bounded candidate recall; a reranker must show sufficient measured relevance gain within the response budget.
 
 ```python
 def rrf(lexical, semantic, k=60):
@@ -294,13 +294,13 @@ flowchart TB
 
 **Problem.** Embedding generation can lag while lexical indexing is ready.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **One blocking worker:** generate embeddings and text updates in one ordered task. Progress is simple, but embedding latency/backlog delays already-ready lexical updates.
 - **Independent versioned consumers:** materialize text and vectors separately from the durable source event. Lexical search remains usable during embedding lag; the API must report separate freshness and both consumers must reject stale versions/tombstones.
 - **Synchronous creation-time indexing:** write searchable indexes before acknowledging a post. Visibility is immediate when healthy, but posting latency and availability become coupled to every index/model dependency.
 
-**Choice and rationale.** Use independent versioned consumers. The [Elasticsearch refresh mechanism](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search) makes new segments searchable; tune refresh intervals under realistic write/query load. Independent consumers fit different text and embedding costs while preserving durable posting availability. We accept temporarily unequal retrieval freshness and measure commit-to-searchable time per path, rather than treating event acknowledgment as search visibility.
+Use independent versioned consumers. The [Elasticsearch refresh mechanism](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search) makes new segments searchable; tune refresh intervals under realistic write/query load. Independent consumers fit different text and embedding costs while preserving durable posting availability. We accept temporarily unequal retrieval freshness and measure commit-to-searchable time per path, rather than treating event acknowledgment as search visibility.
 
 Track commit-to-searchable latency separately for text and vectors, including queue lag and retries. During an embedding backlog, lexical retrieval remains available. Rebuild from a snapshot and replay offset, retaining deletion/version information throughout recovery.
 
@@ -314,13 +314,13 @@ Track the last fully applied source offset and searchable time separately. A con
 
 **Problem.** Every additional shard adds work and another opportunity for a slow response.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Term partitioning:** route queries to term-owned postings. Some lookups touch few owners, but popular terms become hot and multi-term intersections require cross-owner coordination.
 - **Document partitioning:** evaluate the complete query on each document shard and merge results. Query semantics are local and writes distribute; broad queries still fan out to every selected shard and stragglers affect p99.
 - **Time partitions with document shards:** prune date ranges first and search fixed logical shards within them. Recent queries keep a bounded hot set; broad historical ranges expand task count and require deadlines/completeness reporting.
 
-**Choice and rationale.** Use time partitions and fixed logical document shards, with replicated readers and bounded concurrency. Query recent partitions by default; an explicit older date range expands the search scope. A replica adds read capacity, not another logical slice of results. Time-plus-document partitioning fits recent-post defaults and explicit older ranges. We accept bounded concurrency and clearly marked partial results where policy permits; replicas add read capacity, not new result slices.
+Use time partitions and fixed logical document shards, with replicated readers and bounded concurrency. Query recent partitions by default; an explicit older date range expands the search scope. A replica adds read capacity, not another logical slice of results. Time-plus-document partitioning fits recent-post defaults and explicit older ranges. We accept bounded concurrency and clearly marked partial results where policy permits; replicas add read capacity, not new result slices.
 
 Return a partial flag if an eligible shard misses the deadline, and retain authorization checks for all hits. Capacity planning includes internal requests/query, tail latency, index size and refresh/merge pressure; hashing alone does not guarantee equal query cost.
 
@@ -334,13 +334,13 @@ Each shard returns its best candidates and an execution status. The coordinator 
 
 **Problem.** ANN top-K may contain mostly excluded posts, and cached index visibility may be stale.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Post-filter only:** retrieve global top-K, then remove excluded hits. Implementation is easy, but selective author/language filters can leave too few candidates and relevant eligible posts were never retrieved.
 - **Filter-aware retrieval:** apply supported stable filters during lexical/ANN candidate selection. Eligible recall improves, but query cost depends on filter selectivity and indexed visibility can still lag permission changes.
 - **Index per permission group:** isolate searchable populations physically. Retrieval can be precise, but many overlapping/changing groups multiply indexes and propagation/rebuild work.
 
-**Choice and rationale.** Push stable author/date/language filters into retrieval and use supported filter-aware ANN queries. Treat index visibility as a candidate filter; the current post authority makes the final permission decision. If that decision cannot be verified, return fewer results or an availability error. Filter-aware retrieval plus current authority checks fits selective searches and mutable post privacy. We accept batch access-check cost and fewer results when authority is unavailable; stale snippets are filtered before response assembly.
+Push stable author/date/language filters into retrieval and use supported filter-aware ANN queries. Treat index visibility as a candidate filter; the current post authority makes the final permission decision. If that decision cannot be verified, return fewer results or an availability error. Filter-aware retrieval plus current authority checks fits selective searches and mutable post privacy. We accept batch access-check cost and fewer results when authority is unavailable; stale snippets are filtered before response assembly.
 
 Keep cache scopes explicit, prevent unauthorized snippets from entering responses and audit deletion/permission propagation. [TAO's social-graph storage paper](https://www.usenix.org/system/files/conference/atc13/atc13-bronson.pdf) provides context for graph access patterns without implying that search indexes are the permission authority.
 

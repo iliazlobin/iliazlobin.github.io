@@ -261,9 +261,21 @@ category is singular; multiple tags narrow results together. Preserve `q`,
 owns its scrolling: align cards using feed-relative geometry, not ancestor
 offsets. Check the first filtered card after filter, resize and image loading.
 
-Article navigation keeps all six category links above its independently
-scrolling article list. Keep these categories distinct from tags, and maintain
-the current category and current article highlights separately.
+Article navigation has one bounded scrolling rail of grouped article links,
+without category shortcuts back to search. Keep the current article highlighted
+and preserve the reader's scroll position. Desktop has no extra heading; mobile
+uses the native Articles disclosure. Topic tags sit below the title; the owning
+category badge stays with the date and reading time above it. Category filters
+remain available through the header search and listing pages.
+
+Article mastheads retain their parent section: Infrastructure for Infra/Tech,
+Design for the other design categories. The section label is plain text, not a
+second H1 or a filter link; the primary navigation marks the parent section.
+
+Technical article headings are unnumbered; preserve existing section IDs when
+renaming them. Deep dives label alternatives **Options** and explain the chosen
+approach in ordinary prose, without a Choice and rationale label. Keep the
+mechanisms, benefits, costs, failure modes and workload-specific reasoning.
 
 Jekyll builds `/search-index.json` automatically from public design articles,
 posts and the configured `header_pages`. Titles, descriptions, tags and rendered

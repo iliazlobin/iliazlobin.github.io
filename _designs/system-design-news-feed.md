@@ -301,13 +301,13 @@ Hide/mute writes a durable user preference and invalidates its cache. Reports ar
 
 **Problem.** Pure push amplifies a single post into millions of writes, while pure pull performs many author lookups for every feed request.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Push on publish:** write post IDs to active followers' timelines. Candidate reads are fast, but work grows with follower activity and hot authors can create large backlogs.
 - **Pull on read:** query followed authors' recent lists when assembling a feed. Publishing stays cheap, but many followed authors add repeated lookups and merge work to every read.
 - **Hybrid distribution:** push ordinary authors and pull shared recent lists for high-fan-out authors. It controls the skewed extremes; readers must merge/deduplicate sources and distribution-mode transitions require overlap.
 
-**Choice and rationale.** Use hybrid distribution with bounded active-user timelines. Select the cutoff from measured fan-out cost, author posting rate, follower activity and read latency; a 10K-follower threshold is an initial tuning value, not a universal rule. Hybrid distribution fits skewed author popularity and repeated active-user reads. We accept eventual candidate projection and bounded merge work, selecting the cutoff from posting/read cost and activity rather than treating the initial 10K value as a correctness boundary.
+Use hybrid distribution with bounded active-user timelines. Select the cutoff from measured fan-out cost, author posting rate, follower activity and read latency; a 10K-follower threshold is an initial tuning value, not a universal rule. Hybrid distribution fits skewed author popularity and repeated active-user reads. We accept eventual candidate projection and bounded merge work, selecting the cutoff from posting/read cost and activity rather than treating the initial 10K value as a correctness boundary.
 
 Store publication time rather than an expensive permanent personalized score in each fan-out entry. Duplicate distribution of a post ID is idempotent. When an author's distribution mode changes, readers merge both sources during a transition window so a concurrent post remains discoverable.
 
@@ -340,13 +340,13 @@ flowchart TB
 
 **Problem.** Applying the largest model to every candidate increases serving cost and tail latency; over-aggressive filtering loses relevant posts.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Recency/affinity rules:** rank with inexpensive timestamps and relationship features. This is a useful low-latency fallback, but subtle relevance and multi-objective tradeoffs are limited.
 - **One large model:** score every eligible candidate with the detailed ranker. Modeling is straightforward, but inference cost and p99 rise with the full candidate set.
 - **Multi-stage ranking:** cheaply shortlist candidates, batch detailed scores and apply contextual diversity last. Compute stays bounded; an early shortlist can discard a relevant post that later stages cannot recover.
 
-**Choice and rationale.** Use the multi-stage pipeline. Start with up to 1,500 eligible candidates, shortlist approximately 200 and return 20 after detailed scoring and diversity checks. These are tuning limits. [Meta's ranking description](https://engineering.fb.com/2021/01/26/ml-applications/news-feed-ranking/) explains the same broad separation of lightweight selection, detailed scoring and a contextual pass. Multi-stage ranking fits the 1,500-to-200-to-20 candidate budget and interactive deadline. We accept shortlist recall loss and measure it alongside final relevance; fallback rules preserve service when the detailed model is unavailable.
+Use the multi-stage pipeline. Start with up to 1,500 eligible candidates, shortlist approximately 200 and return 20 after detailed scoring and diversity checks. These are tuning limits. [Meta's ranking description](https://engineering.fb.com/2021/01/26/ml-applications/news-feed-ranking/) explains the same broad separation of lightweight selection, detailed scoring and a contextual pass. Multi-stage ranking fits the 1,500-to-200-to-20 candidate budget and interactive deadline. We accept shortlist recall loss and measure it alongside final relevance; fallback rules preserve service when the detailed model is unavailable.
 
 A two-tower model can provide efficient similarity features or retrieval scores. A multitask ranker combines those with fresh user-author and engagement features; the dot product does not replace every contextual feature.
 
@@ -377,13 +377,13 @@ The early score should prioritize recall: a high-quality post removed here canno
 
 **Problem.** Frequent polling wastes requests during idle periods, while persistent connections need reconnect handling and bounded server state.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Polling:** fetch updates at a client interval. Reconnect handling is simple, but idle users waste requests and freshness waits for the next poll.
 - **SSE or WebSocket:** maintain a connection and send versioned refresh hints. Connected users learn of updates promptly; gateways retain bounded connection state and clients must recover missed hints after disconnects.
 - **MQTT:** use a broker and defined mobile session/delivery semantics. Existing MQTT clients can reuse infrastructure, but broker operations and an extra client protocol are unjustified for a simple one-way web hint.
 
-**Choice and rationale.** Use SSE for the web refresh channel and an existing mobile connection channel or platform push for mobile lifecycle needs. Add MQTT only when its operational and client requirements justify it. All of these still depend on network connections; protocol choice alone cannot guarantee delivery during disconnection. SSE fits the one-way web refresh signal with less protocol machinery than full duplex. We accept best-effort hints and reconnect catch-up; mobile delivery uses its established lifecycle channel rather than treating an always-open connection as universally available.
+Use SSE for the web refresh channel and an existing mobile connection channel or platform push for mobile lifecycle needs. Add MQTT only when its operational and client requirements justify it. All of these still depend on network connections; protocol choice alone cannot guarantee delivery during disconnection. SSE fits the one-way web refresh signal with less protocol machinery than full duplex. We accept best-effort hints and reconnect catch-up; mobile delivery uses its established lifecycle channel rather than treating an always-open connection as universally available.
 
 ```mermaid
 flowchart TB
@@ -411,13 +411,13 @@ Gateway memory remains bounded because hints replace older pending hints rather 
 
 **Problem.** Media variants improve delivery but consume processing and storage; hot uploads can overload origin reads.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Transform every read:** produce requested media variants on demand. Prepared storage is small, but repeated popular reads consume CPU and delay first playback.
 - **Prepare all variants:** create every possible size/codec before serving. Reads are predictable, but unused formats multiply processing and storage and delay publication.
 - **Bounded common variants:** prepare a thumbnail and baseline rendition, then add rarer variants asynchronously/on demand. Common reads are fast at bounded cost; uncommon devices may wait and generation/manifest checks remain necessary.
 
-**Choice and rationale.** Prepare feed thumbnails and a useful video rendition before publishing, then add higher-resolution variants asynchronously. Use immutable variant keys, CDN caching and origin request coalescing. [Haystack](https://www.usenix.org/legacy/events/osdi10/tech/full_papers/Beaver.pdf) and [f4](https://www.usenix.org/conference/osdi14/technical-sessions/presentation/muralidhar) are historical references for efficient object storage and warm-data durability. A bounded baseline fits rapid publishing and repeated common feed displays. We accept baseline processing before publication and deferred uncommon quality; immutable keys and coalesced fills prevent popular new uploads from amplifying origin work.
+Prepare feed thumbnails and a useful video rendition before publishing, then add higher-resolution variants asynchronously. Use immutable variant keys, CDN caching and origin request coalescing. [Haystack](https://www.usenix.org/legacy/events/osdi10/tech/full_papers/Beaver.pdf) and [f4](https://www.usenix.org/conference/osdi14/technical-sessions/presentation/muralidhar) are historical references for efficient object storage and warm-data durability. A bounded baseline fits rapid publishing and repeated common feed displays. We accept baseline processing before publication and deferred uncommon quality; immutable keys and coalesced fills prevent popular new uploads from amplifying origin work.
 
 Keep interactive media in an immediately readable storage tier. Archival storage with long restore times is suitable only for content whose product behavior allows that delay. Compression, replication and erasure-coding costs depend on workload and recovery objectives rather than a fixed savings percentage.
 

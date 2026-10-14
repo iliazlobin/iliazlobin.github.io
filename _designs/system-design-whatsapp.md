@@ -262,7 +262,7 @@ Receipts progress monotonically and survive routing retries. Presence uses renew
 
 **Problem.** Either socket endpoint can disappear after the server accepts a message.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Socket delivery before persistence:** Forward directly to an online recipient. Latency is low, but a disconnect after sender success can lose the message with no durable replay source.
 
@@ -272,7 +272,7 @@ Receipts progress monotonically and survive routing retries. Presence uses renew
 
 - **Durable acceptance with immediate forwarding — recommended:** Commit delivery intent first, then push online and replay pending inboxes on reconnect. Reliability and low online latency coexist; duplicated attempts, inbox retention and acknowledgements require state.
 
-**Choice and rationale.** Persist every accepted message and delivery intent, then attempt low-latency forwarding. Replay unfinished fan-out and pending inbox entries after failures. Mobile devices disconnect routinely. We accept the durability write and duplicate-delivery handling so sender acceptance has a recovery guarantee independently of the current socket.
+Persist every accepted message and delivery intent, then attempt low-latency forwarding. Replay unfinished fan-out and pending inbox entries after failures. Mobile devices disconnect routinely. We accept the durability write and duplicate-delivery handling so sender acceptance has a recovery guarantee independently of the current socket.
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#e8f0fe','primaryTextColor':'#202124','primaryBorderColor':'#9aa0a6','lineColor':'#5f6368','secondaryColor':'#e6f4ea','tertiaryColor':'#fef7e0','actorBkg':'#e8f0fe','actorBorder':'#9aa0a6','actorTextColor':'#202124','noteBkgColor':'#fef7e0','noteTextColor':'#202124','noteBorderColor':'#9aa0a6','signalColor':'#5f6368','signalTextColor':'#202124','labelBoxBkgColor':'#fef7e0','labelBoxBorderColor':'#9aa0a6'}}}%%
@@ -304,7 +304,7 @@ On reconnect, the recipient requests inbox entries after its persisted cursor. T
 
 **Problem.** A group message needs delivery to many members, including disconnected clients.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Separate ciphertext per recipient:** Encrypt and upload an individual payload for every member. Recipient keys are isolated, but sender CPU and uplink scale with group size.
 
@@ -314,7 +314,7 @@ On reconnect, the recipient requests inbox entries after its persisted cursor. T
 
 - **Sender-key ciphertext with durable member references — recommended:** Store one group ciphertext under its membership epoch and fan out recoverable references. Payload work is shared; member key distribution, epoch changes and recipient-plan checkpoints still grow with membership.
 
-**Choice and rationale.** Use sender-key encryption and asynchronous per-member delivery for bounded chat groups. Store one ciphertext body with recipient references; checkpoint fan-out progress so a worker can resume after a crash. The cryptographic setup cost still grows with membership. Bounded chat groups need offline recovery without uploading the same body repeatedly. We accept membership-driven key setup and fan-out progress state, preserving the recipient set selected at send time.
+Use sender-key encryption and asynchronous per-member delivery for bounded chat groups. Store one ciphertext body with recipient references; checkpoint fan-out progress so a worker can resume after a crash. The cryptographic setup cost still grows with membership. Bounded chat groups need offline recovery without uploading the same body repeatedly. We accept membership-driven key setup and fan-out progress state, preserving the recipient set selected at send time.
 
 A removed member retains old keys but receives no keys for the new epoch. Validate membership changes and pending sends consistently, and monitor fan-out queue age and per-group throughput. Large broadcast channels can use pull-based delivery with online notifications.
 
@@ -344,7 +344,7 @@ A removal advances membership and the cryptographic sender-key epoch according t
 
 **Problem.** Large files can consume bandwidth and queue capacity intended for message delivery.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Inline media in message transport:** Send the entire encrypted file through the chat gateway. One channel is convenient, but large transfers compete with small messages and reconnect replay.
 
@@ -352,7 +352,7 @@ A removal advances membership and the cryptographic sender-key epoch according t
 
 - **Authorized direct transfer of encrypted objects — recommended:** Upload ciphertext in resumable chunks and send its verified reference/key in the encrypted message. Chat remains small; object completion, integrity and independent retention must be coordinated.
 
-**Choice and rationale.** Use direct signed uploads and downloads of encrypted objects, with a media service authorizing access and checking completion. Transfer and retry chunks independently for large files. Large media should use a bandwidth-oriented path while chat retains prompt small-message delivery. We accept a two-step completion protocol and encrypted-object cleanup policy, preserving endpoint-only content access.
+Use direct signed uploads and downloads of encrypted objects, with a media service authorizing access and checking completion. Transfer and retry chunks independently for large files. Large media should use a bandwidth-oriented path while chat retains prompt small-message delivery. We accept a two-step completion protocol and encrypted-object cleanup policy, preserving endpoint-only content access.
 
 Identical ciphertext can be reused for authorized forwarding. Independently encrypted copies usually have different hashes, so plaintext-level deduplication is unavailable to the server. Scope reuse checks to permitted objects to avoid exposing whether another user uploaded particular content. Garbage collection accounts for delivery retention, references and an orphan grace period.
 
@@ -366,7 +366,7 @@ A download goes directly through the authorized object/CDN path; the client veri
 
 **Problem.** A sender needs to establish a secure session while the recipient is offline, and key compromise should have a bounded effect.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Transport encryption only:** Protect each client/server connection. Networking is simpler, but the server can read message content and endpoint-to-endpoint privacy is absent.
 
@@ -374,7 +374,7 @@ A download goes directly through the authorized object/CDN path; the client veri
 
 - **Audited asynchronous agreement with a ratcheting protocol — recommended:** Use maintained prekey agreement and per-message key evolution, with authenticated device identities. Offline setup and bounded compromise recovery are supported; prekey inventories, device changes and key-state persistence add complexity.
 
-**Choice and rationale.** Use a maintained, audited implementation of the selected end-to-end protocol. [X3DH](https://signal.org/docs/specifications/x3dh/) describes asynchronous prekey-based agreement; the [Double Ratchet specification](https://signal.org/docs/specifications/doubleratchet/) describes per-message key derivation and fresh key agreement. Recipients can be offline and devices can be compromised, so both asynchronous setup and evolving keys matter. We accept audited protocol integration and device-key lifecycle work; no custom cryptographic construction is introduced by this design.
+Use a maintained, audited implementation of the selected end-to-end protocol. [X3DH](https://signal.org/docs/specifications/x3dh/) describes asynchronous prekey-based agreement; the [Double Ratchet specification](https://signal.org/docs/specifications/doubleratchet/) describes per-message key derivation and fresh key agreement. Recipients can be offline and devices can be compromised, so both asynchronous setup and evolving keys matter. We accept audited protocol integration and device-key lifecycle work; no custom cryptographic construction is introduced by this design.
 
 Deleting old message keys protects earlier messages. A compromised symmetric chain can expose later keys until fresh uncompromised key agreement occurs. A new ratchet key is generated on ratchet transitions, rather than for every message.
 

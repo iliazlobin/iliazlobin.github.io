@@ -224,13 +224,13 @@ Hash tags can colocate related keys, such as `user:{42}:profile` and `user:{42}:
 
 **Problem.** Modulo hashing by the current node count remaps many keys during a topology change.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Consistent hashing:** place independent nodes on a hash ring and use virtual nodes to spread key ranges. Only part of the key set moves when membership changes; clients and migration tooling still need a shared membership view, and equal ranges do not ensure equal traffic.
 - **Fixed slots:** hash keys into a stable slot set and assign slot owners separately. Redis Cluster can migrate explicit partitions and direct clients to their owners; clients must handle redirects and multi-key operations are constrained by colocation.
 - **Central proxy:** route every operation through a service that owns topology knowledge. Applications stay simple, but the proxy adds a hop, capacity demand and an availability boundary.
 
-**Choice and rationale.** Fixed slots fit the selected Redis Cluster because its protocol already defines ownership and migration. We accept topology-aware clients and slot-colocation constraints rather than implementing a competing ring or introducing a mandatory routing proxy.
+Fixed slots fit the selected Redis Cluster because its protocol already defines ownership and migration. We accept topology-aware clients and slot-colocation constraints rather than implementing a competing ring or introducing a mandatory routing proxy.
 
 The [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/) defines 16,384 slots and client redirects. Cache the slot map, bound redirect retries and refresh topology after ownership changes.
 
@@ -261,13 +261,13 @@ Moving keys needs destination memory and a rate budget so migration does not exh
 
 **Problem.** A full cache must choose what to remove while continuing to serve requests.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Strict LRU:** maintain exact recency on every access and evict the least recently used key. The policy is intuitive, but bookkeeping consumes CPU and one-off scans can displace repeatedly useful values.
 - **Approximate LRU:** sample candidates and prefer older accesses. It keeps recency behavior with lower overhead; sampling can evict a useful record and remains vulnerable to scan-heavy workloads.
 - **Approximate LFU:** retain decayed access-frequency estimates and prefer less-used keys. Repeated hotspots survive scans better, but counters and decay need tuning and old popularity can delay adaptation to a new hotspot.
 
-**Choice and rationale.** Start with `allkeys-lru` and a measured memory ceiling. Approximate recency bounds bookkeeping for general regenerable records; we accept imperfect eviction and compare `allkeys-lfu` on scan-heavy traces before switching. Source load and byte-weighted value matter alongside hit rate.
+Start with `allkeys-lru` and a measured memory ceiling. Approximate recency bounds bookkeeping for general regenerable records; we accept imperfect eviction and compare `allkeys-lfu` on scan-heavy traces before switching. Source load and byte-weighted value matter alongside hit rate.
 
 [Redis eviction policies](https://redis.io/docs/latest/develop/reference/eviction/) describe the available choices.
 
@@ -290,13 +290,13 @@ Memory pressure?  → choose a value to remove regardless of freshness
 
 **Problem.** A primary can acknowledge a write before its replica receives it.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Asynchronous replication:** acknowledge at the primary and copy to replicas afterward. Regenerable values get a low-latency write path, but promotion can lose an acknowledged update or expose an older value.
 - **Replica acknowledgment with WAIT:** wait for a chosen number of replica acknowledgments. This narrows some replication-loss windows at additional latency and reduced availability; it still does not provide a consensus-backed durability contract.
 - **Consensus-backed authority:** commit writes through a durable replicated decision before acknowledgment. This fits records whose loss changes correctness, but quorum coordination costs more than a disposable cache write.
 
-**Choice and rationale.** Asynchronous replication fits cache values that can be rebuilt from the source store. We accept acknowledged cache loss and enforce freshness on reads; balances, unique allocations and other irreversible decisions stay in a durable authority rather than gaining a misleading guarantee from WAIT.
+Asynchronous replication fits cache values that can be rebuilt from the source store. We accept acknowledged cache loss and enforce freshness on reads; balances, unique allocations and other irreversible decisions stay in a durable authority rather than gaining a misleading guarantee from WAIT.
 
 [WAIT](https://redis.io/docs/latest/commands/wait/) does not make Redis a strongly consistent system. Failover can still lose or restore a stale value depending on the failure.
 
@@ -333,13 +333,13 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Problem.** Adding shards spreads different keys, but a single popular key still maps to one slot.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **More shards:** distribute different keys among more owners. Aggregate capacity rises, but one popular key still belongs to one slot and can saturate that owner.
 - **Short-lived local copies with coalescing:** serve tolerant hot reads near the application and let one fill serve concurrent misses. This absorbs bursts, but local staleness, invalidation and memory budgets must be bounded.
 - **Application-level splitting:** divide a counter or collection across keys and merge at read time. Writes can scale across owners; the merge changes read cost and consistency and is unsuitable for an indivisible value.
 
-**Choice and rationale.** Local copies and single-flight fills fit repeated hot reads without changing the stored value's semantics. We accept a short freshness window and bounded authoritative fallback; write sharding is reserved for operations whose merge rule is explicitly defined.
+Local copies and single-flight fills fit repeated hot reads without changing the stored value's semantics. We accept a short freshness window and bounded authoritative fallback; write sharding is reserved for operations whose merge rule is explicitly defined.
 
 ```python
 value = local_cache.get(key)

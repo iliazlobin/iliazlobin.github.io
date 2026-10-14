@@ -310,13 +310,13 @@ Deletion sets `deleted_at`, hides the conversation immediately and cancels its a
 
 **Problem.** Requests need different amounts of work: a long prompt requires substantial prefill, while an active response needs frequent decode steps. Reserving a full context buffer for every request wastes memory, and a fixed batch retains capacity until its longest response finishes.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Fixed batches:** execute a group until its longest response finishes. The scheduler is simple, but completed short requests leave unused batch capacity and long prompts delay active streams.
 - **Continuous batching:** admit and retire requests between decode iterations, with chunked prefill sharing time with active decoding. This improves utilization and first-token/decode fairness; the scheduler must manage varying attention-memory footprints and prefill budgets.
 - **Separate prefill/decode pools:** send prompt processing and token generation to independently sized workers. Each pool can be tuned for its workload, but attention-state transfer adds bandwidth, handoff latency and another admission boundary.
 
-**Choice and rationale.** Start with continuous batching, chunked prefill and paged attention-cache allocation. [Orca](https://www.usenix.org/conference/osdi22/presentation/yu) and [TensorRT-LLM in-flight batching](https://nvidia.github.io/TensorRT-LLM/batch_manager.html) describe iteration-level scheduling; [PagedAttention](https://arxiv.org/abs/2309.06180) describes noncontiguous cache blocks. Continuous batching with chunked prefill fits a mixed interactive workload without introducing cross-pool attention transfers. We accept more scheduler and cache-block bookkeeping than fixed batches; disaggregation becomes worthwhile only when measured prefill/decode imbalance exceeds its transfer and coordination costs.
+Start with continuous batching, chunked prefill and paged attention-cache allocation. [Orca](https://www.usenix.org/conference/osdi22/presentation/yu) and [TensorRT-LLM in-flight batching](https://nvidia.github.io/TensorRT-LLM/batch_manager.html) describe iteration-level scheduling; [PagedAttention](https://arxiv.org/abs/2309.06180) describes noncontiguous cache blocks. Continuous batching with chunked prefill fits a mixed interactive workload without introducing cross-pool attention transfers. We accept more scheduler and cache-block bookkeeping than fixed batches; disaggregation becomes worthwhile only when measured prefill/decode imbalance exceeds its transfer and coordination costs.
 
 Size attention memory from the selected model configuration:
 
@@ -352,13 +352,13 @@ The runtime maps each sequence's logical attention pages to physical GPU blocks.
 
 **Problem.** A generation can continue while its connection drops, and reconnecting must refer to the same attempt. Slow sockets and gateway failures therefore need a lifecycle separate from GPU execution.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Cancel on disconnect:** stop GPU work as soon as the connection closes. Abandoned requests release capacity promptly, but a brief mobile network interruption ends an otherwise healthy response.
 - **Bounded replay with grace:** retain ordered token events for a short reconnect window and keep generation alive during that grace period. Users recover transient disconnects under the same attempt; abandoned work and Redis memory still consume capacity until the bound expires.
 - **Persist every delta durably:** store each event for longer recovery. A gateway failure loses less stream history, but per-token writes add throughput, storage and recovery complexity even for streams that finish normally.
 
-**Choice and rationale.** Use bounded replay and a 30s disconnect grace period. Assign increasing event IDs within each generation and retain up to 1,000 events per generation in Redis, with a byte limit and a 30s TTL after termination. The worker appends each delta once with a stable sequence ID; retried writes deduplicate that ID. The client ignores events it has already applied. A 30-second grace period fits short interactive reconnections while bounding expensive abandoned GPU work. We accept that recovery after the replay window is limited to the durable generation/message state; every token is not a permanent conversation record.
+Use bounded replay and a 30s disconnect grace period. Assign increasing event IDs within each generation and retain up to 1,000 events per generation in Redis, with a byte limit and a 30s TTL after termination. The worker appends each delta once with a stable sequence ID; retried writes deduplicate that ID. The client ignores events it has already applied. A 30-second grace period fits short interactive reconnections while bounding expensive abandoned GPU work. We accept that recovery after the replay window is limited to the durable generation/message state; every token is not a permanent conversation record.
 
 ```yaml
 id: "generation-123:42"
@@ -402,13 +402,13 @@ If the cursor is older than the retained buffer, return a replay-gap response wi
 
 **Problem.** Every follow-up repeats much of the previous context. Recomputing that prefix increases first-token latency; retaining all historical attention data would eventually exhaust GPU memory.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Recompute every turn:** rebuild attention state from the full context. Recovery and isolation are simple, but repeated conversation prefixes consume prefill work and increase first-token latency.
 - **Immutable prefix blocks:** reuse compatible recent token-prefix blocks and evict them under memory pressure. Follow-ups save prefill work; identity must include preceding tokens, model/tokenizer revision and user isolation, and eviction can still force recomputation.
 - **Persist whole attention caches:** transfer and retain complete model state outside the worker. Some repeated work is avoided, but large state movement competes with serving bandwidth and old caches couple to the exact model configuration.
 
-**Choice and rationale.** Keep an ephemeral, per-user prefix cache. A block's identity includes the preceding-prefix hash, token IDs, model revision, tokenizer configuration and a server-controlled user isolation salt. The preceding hash matters because attention data depends on earlier tokens. Ephemeral per-user blocks fit repeated conversation turns without making GPU state a durable dependency. We accept cache misses and recomputation after eviction or worker loss; the conversation history remains the recovery source.
+Keep an ephemeral, per-user prefix cache. A block's identity includes the preceding-prefix hash, token IDs, model revision, tokenizer configuration and a server-controlled user isolation salt. The preceding hash matters because attention data depends on earlier tokens. Ephemeral per-user blocks fit repeated conversation turns without making GPU state a durable dependency. We accept cache misses and recomputation after eviction or worker loss; the conversation history remains the recovery source.
 
 ```python
 import hashlib
@@ -456,13 +456,13 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Problem.** A request count alone understates load: two long-context generations can consume more memory than many short requests. Unbounded priority queues also give low-priority users unpredictable waits.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Separate tier fleets:** reserve independent workers for free and paid users. Capacity isolation is clear, but idle workers in one tier cannot easily serve another tier's backlog.
 - **Strict priority queues:** always dispatch the highest tier first. Priority behavior is simple, but sustained paid demand can starve lower tiers and request counts conceal long-context cost.
 - **Weighted fair queues:** grant each tier work credits and rotate between users while checking memory and concurrency. Capacity is shared with a positive minimum service share; cost estimation and queue accounting add complexity, and fairness cannot create capacity during overload.
 
-**Choice and rationale.** Use weighted fair admission per model pool, then continuous batching within each worker. Give each tier a positive share and bound both queued work and active generations. Start with proposed per-user caps of two free-tier and ten paid-tier generations; tune those policies from queue delay and GPU-memory measurements. Weighted fair admission fits shared model pools with different service tiers and variable context lengths. We accept estimation error and bounded queue rejection, then tune weights and caps from queue age and memory pressure rather than promising unlimited priority service.
+Use weighted fair admission per model pool, then continuous batching within each worker. Give each tier a positive share and bound both queued work and active generations. Start with proposed per-user caps of two free-tier and ten paid-tier generations; tune those policies from queue delay and GPU-memory measurements. Weighted fair admission fits shared model pools with different service tiers and variable context lengths. We accept estimation error and bounded queue rejection, then tune weights and caps from queue age and memory pressure rather than promising unlimited priority service.
 
 Implement admission with weighted deficit round-robin: each scheduling round adds work credits in proportion to the tier's weight. A request becomes eligible when its estimated prefill/decode cost fits those credits; dispatch subtracts that cost. Rotate between users within each tier. The GPU scheduler separately checks available cache blocks.
 

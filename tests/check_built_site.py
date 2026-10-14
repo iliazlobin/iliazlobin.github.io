@@ -27,14 +27,7 @@ REDIRECTS = {
     "/machine-learning/": "/designs/",
     "/tech/": "/infrastructure/",
 }
-ARTICLE_CATEGORIES = {
-    "system-design": "/designs/?type=system-design",
-    "system-design-ml": "/designs/?type=system-design-ml",
-    "low-level-design": "/designs/?type=low-level-design",
-    "ai": "/designs/?type=ai",
-    "infra": "/infrastructure/?type=infra",
-    "tech": "/infrastructure/?type=tech",
-}
+ARTICLE_CATEGORIES = ("system-design", "system-design-ml", "low-level-design", "ai", "infra", "tech")
 
 
 class Page(HTMLParser):
@@ -42,6 +35,10 @@ class Page(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.resources = []
         self.navigation = []
+        self.current_navigation = []
+        self.section_titles = []
+        self._section_text = None
+        self._section_tag = None
         self.headings = []
         self.articles = []
         self.table_rows = []
@@ -53,8 +50,11 @@ class Page(HTMLParser):
         self.search_dialogs = 0
         self.search_triggers = 0
         self.search_selects = 0
-        self.article_categories = []
-        self.current_categories = []
+        self.category_shortcuts = 0
+        self.article_groups = []
+        self.post_headers = []
+        self.post_categories = []
+        self._post_header = None
         self.project_ids = set()
         self._in_search = False
         self.ids = set()
@@ -65,6 +65,22 @@ class Page(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        classes = attrs.get("class", "").split()
+        if "site-page-title" in classes:
+            self._section_tag = tag
+            self._section_text = []
+        if "post-category" in classes:
+            self.post_categories.append(attrs.get("data-type-filter"))
+        if tag == "header" and "post-header" in classes:
+            self._post_header = []
+            self.post_headers.append(self._post_header)
+        if self._post_header is not None:
+            for name, present in (("metadata", "meta" in classes),
+                                  ("category", "post-category" in classes),
+                                  ("title", tag == "h1"),
+                                  ("tags", "post-tags" in classes)):
+                if present:
+                    self._post_header.append(name)
         if attrs.get("id"):
             self.ids.add(attrs["id"])
         if "data-site-search" in attrs:
@@ -82,10 +98,10 @@ class Page(HTMLParser):
             self.library_links.append(attrs.get("href"))
             if attrs.get("aria-current") == "page":
                 self.current_articles.append(attrs.get("href"))
-        if tag == "a" and "data-article-category" in attrs:
-            self.article_categories.append((attrs["data-article-category"], attrs.get("href")))
-            if attrs.get("aria-current") == "true":
-                self.current_categories.append(attrs["data-article-category"])
+        if "data-article-category" in attrs or "data-document-nav-categories" in attrs:
+            self.category_shortcuts += 1
+        if tag == "ul" and attrs.get("aria-labelledby", "").startswith("document-nav-"):
+            self.article_groups.append(attrs["aria-labelledby"])
         if tag == "a" and "document-skip" in attrs.get("class", "").split():
             self.article_skip_links.append(attrs.get("href"))
         for attribute in ("href", "src", "poster"):
@@ -93,6 +109,8 @@ class Page(HTMLParser):
                 self.resources.append(attrs[attribute])
         if tag == "a" and "page-link" in attrs.get("class", "").split():
             self._navigation_text = []
+            if attrs.get("aria-current"):
+                self.current_navigation.append((attrs.get("href"), attrs["aria-current"]))
         if tag == "h1":
             self._heading_text = []
         if tag == "article":
@@ -105,6 +123,8 @@ class Page(HTMLParser):
             self._cell_text = []
 
     def handle_data(self, data):
+        if self._section_text is not None:
+            self._section_text.append(data)
         if self._navigation_text is not None:
             self._navigation_text.append(data)
         if self._heading_text is not None:
@@ -113,6 +133,12 @@ class Page(HTMLParser):
             self._cell_text.append(data)
 
     def handle_endtag(self, tag):
+        if self._section_text is not None and tag == self._section_tag:
+            self.section_titles.append((tag, "".join(self._section_text).strip()))
+            self._section_text = None
+            self._section_tag = None
+        if tag == "header":
+            self._post_header = None
         if tag == "dialog":
             self._in_search = False
         if tag == "a" and self._navigation_text is not None:
@@ -153,6 +179,15 @@ def check_document_layout(root, errors):
             continue
         document_count += 1
         route = "/" + source.parent.relative_to(root).as_posix() + "/"
+        if len(page.post_categories) != 1 or page.post_categories[0] not in ARTICLE_CATEGORIES:
+            errors.append(f"{source}: expected exactly one known owning article category")
+        infrastructure = page.post_categories == ["infra"] or page.post_categories == ["tech"]
+        section_title = "Infrastructure" if infrastructure else "Design"
+        section_url = "/infrastructure/" if infrastructure else "/designs/"
+        if page.section_titles != [("span", section_title)] or len(page.headings) != 1:
+            errors.append(f"{source}: article masthead must name its section without adding another H1")
+        if page.current_navigation != [(section_url, "location")]:
+            errors.append(f"{source}: article must mark its owning primary navigation section")
         if page.search_dialogs != 1 or page.search_triggers != 1 or page.search_selects:
             errors.append(f"{route}: missing or duplicate universal search UI")
         if page.document_shells != 1 or page.article_navigations != 1:
@@ -161,8 +196,14 @@ def check_document_layout(root, errors):
             errors.append(f"{source}: article navigation must preserve every distinct article URL")
         if page.current_articles != [route]:
             errors.append(f"{source}: expected exactly one current article, got {page.current_articles!r}")
-        if page.article_categories != list(ARTICLE_CATEGORIES.items()) or len(page.current_categories) != 1:
-            errors.append(f"{source}: expected six distinct category links and one current category")
+        if page.category_shortcuts:
+            errors.append(f"{source}: sidebar must contain article groups without category shortcuts")
+        expected_groups = [f"document-nav-{category}" for category in ARTICLE_CATEGORIES]
+        if page.article_groups != expected_groups or any(group not in page.ids for group in expected_groups):
+            errors.append(f"{source}: sidebar must preserve all six accessible article groups")
+        if page.post_headers not in ([["metadata", "category", "title", "tags"]],
+                                    [["metadata", "category", "title"]]):
+            errors.append(f"{source}: header must put category metadata above title and topic tags below it")
         if page.article_skip_links != ["#document-article"]:
             errors.append(f"{source}: missing skip-to-article link")
         if any("post--document" not in classes for classes in posts):
@@ -175,6 +216,9 @@ def check_document_layout(root, errors):
         outline = ArticleOutline()
         outline.feed(source.read_text(encoding="utf-8"))
         errors.extend(f"{source}: {error}" for error in outline.validate())
+        for heading in outline.headings:
+            if re.match(r"(?:\d+(?:\.\d+)*[.)]\s+|D\d+:\s+)", heading["text"]):
+                errors.append(f"{source}: numbered article heading: {heading['text']}")
     if not document_count:
         errors.append("No document articles found")
 

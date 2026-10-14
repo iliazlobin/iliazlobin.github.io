@@ -12,7 +12,8 @@ Uber operates a real-time ride-hailing matching platform at planetary scale: 170
 
 <!--more-->
 
-## 1. Context
+## Context
+{: id="1-context"}
 
 Uber operates a real-time ride-hailing matching platform at planetary scale: 170M monthly active riders, 5M drivers, across 10,000+ cities in 70+ countries. The core workload is 15M daily trips flowing through a matching pipeline that must pair riders with drivers in under 2 seconds at p99, against 900 req/s peaks during rush hour. A firehose of 250K location writes per second from 1M concurrent drivers pinging every 4 seconds powers the real-time geospatial index that makes matching possible. Every ride produces roughly 1.5 MB of raw telemetry, generating 22.5 TB/day of trip data that feeds analytics, surge pricing models, and driver incentives.
 
@@ -22,7 +23,8 @@ The design commits to exactly-once dispatch semantics because a lost or double-b
 
 The environment is multi-cloud (AWS primary, GCP for select services) with regional isolation as a hard requirement after the 2020 AWS us-west-2 outage that degraded matching for roughly 2 hours. The postmortem drove a shift from active-passive to active-active cell-based architecture, with every service independently writable in each region and failover targets of RTO under 5 minutes and RPO under 30 seconds. The infrastructure bill for this architecture runs roughly $30M/year at full scale, with the Redis location cluster alone consuming roughly $510K/month in compute. The cost driver is compute for stateful components (Redis, MSK, Aurora), not data transfer.
 
-## 2. Goals
+## Goals
+{: id="2-goals"}
 
 **Matching throughput:**
 
@@ -51,7 +53,8 @@ The environment is multi-cloud (AWS primary, GCP for select services) with regio
 
 **Out of scope:** driver onboarding and background checks, vehicle registration, insurance claims processing, Uber Eats restaurant management, freight logistics, in-app chat infrastructure, map tile rendering pipeline.
 
-## 3. Architecture
+## Architecture
+{: id="3-architecture"}
 
 ```mermaid
 flowchart LR
@@ -125,7 +128,8 @@ H3 resolution 9 hexagons cover roughly 1 km^2, keeping each sorted set to 50-200
 
 Every ride request carries a `request_id` (UUID v4 generated client-side). The Matching Engine checks `SETNX dispatch:{request_id} pending EX 120` before processing. On dispatch, the driver lock `SETNX dispatch_lock:{driver_id} {request_id} EX 30` prevents double assignment. If the driver does not ACK within 15 seconds, the lock expires and the next-best candidate receives the notification. If two solvers independently produce the same (rider, driver) assignment, the Aurora INSERT on `trip_id` with a UNIQUE constraint on `request_id` rejects the duplicate. The idempotency key flows through the entire pipeline: Kafka `transactional.id = payment-{trip_id}` ensures exactly-once payment capture. An hourly reconciliation batch job cross-checks trip starts with payment captures and resolves orphans via a `payment.rollback` topic.
 
-## 4. Reliability
+## Reliability
+{: id="4-reliability"}
 
 The platform targets 99.99% availability across 3 active-active regions, each internally partitioned into independent metro cells. A cell failure (e.g., NYC Redis OOM) affects only that metro area; the remaining cells in the region continue operating normally.
 
@@ -169,7 +173,8 @@ The platform targets 99.99% availability across 3 active-active regions, each in
 - Complete region loss: promote Global DB secondary, CloudFront origin group failover - 60-120 seconds.
 - Redis cold start: Kafka replay from last checkpoint - roughly 35 minutes.
 
-## 5. Security
+## Security
+{: id="5-security"}
 
 ### IAM least-privilege model
 
@@ -228,7 +233,8 @@ PCI DSS for payment processing: payment card data never touches the general-purp
 
 GDPR/CCPA data subject access requests are automated via a privacy platform service that scans all data stores for a given user_id, aggregates the data, and offers deletion with a 30-day SLA. ScyllaDB TTLs on location data enforce automatic expiry at 90 days. Kafka topics use `retention.ms=7776000000` (90 days) for location data. Aurora trip history uses `deleted_at` soft delete with a periodic async purge job.
 
-## 6. Scalability & Performance
+## Scalability & Performance
+{: id="6-scalability--performance"}
 
 ### Capacity model
 
@@ -307,12 +313,13 @@ The Redis write path is stress-tested independently at 500K writes/s (2x peak) f
 - Let's Encrypt rate limit: 300 new certificate orders per registered domain per week. Not applicable (no custom domains for the platform API).
 - GPU quota (ML training for ETA/surge models): p4d.24xlarge instances. Default quota 0. Action: request 8 x p4d.24xlarge in us-east-1 for model training.
 
-## 7. Cost
+## Cost
+{: id="7-cost"}
 
 > [!TIP]
 > **Verdict** - At roughly $2M/month self-hosted on EC2 (roughly $24M/year core infrastructure plus roughly $6M/year data transfer and buffer), the total lands at roughly $30M/year. Managed equivalents (ElastiCache for Redis, Keyspaces for ScyllaDB, MSK managed, Aurora Serverless v2) would roughly double that to $60M/year. The self-hosted premium buys sub-3ms Redis latency, fine-grained control over ScyllaDB compaction, and roughly $30M/year in savings - roughly 0.5 FTE of SRE time per component is the operational tax. At Uber's revenue scale (roughly $37B in 2023), infrastructure at roughly 0.08% of revenue is within industry norms for a tech-first company.
 
-> ⚠ **The Redis cost cliff** - At $510K/month, the Redis location cluster is the second-largest line item after MSK. The cluster is sized for 250K writes/s with 3.5x peak headroom (350 nodes instead of the 300 needed at steady state). Moving to Dragonfly (multi-threaded, roughly 10x throughput per node) could reduce the node count from 300 to roughly 55 at roughly $100K/month. However, the operational maturity gap (Dragonfly has under 5 years of production history vs Redis's 15+) and the custom tooling built around Redis Cluster (Ringpop hash ring, uReplicator integration) make the migration a hard decision. Deferred to D1 in section 9.
+> ⚠ **The Redis cost cliff** - At $510K/month, the Redis location cluster is the second-largest line item after MSK. The cluster is sized for 250K writes/s with 3.5x peak headroom (350 nodes instead of the 300 needed at steady state). Moving to Dragonfly (multi-threaded, roughly 10x throughput per node) could reduce the node count from 300 to roughly 55 at roughly $100K/month. However, the operational maturity gap (Dragonfly has under 5 years of production history vs Redis's 15+) and the custom tooling built around Redis Cluster (Ringpop hash ring, uReplicator integration) make the migration a hard decision. See the [driver-location storage decision](#d1-self-hosted-redis-cluster-vs-elasticache-vs-dragonfly-for-driver-location).
 
 ### Cost-at-scale table
 
@@ -352,13 +359,14 @@ Total: roughly $0.00045 per ride, or roughly $0.45 per 1,000 rides.
 
 **Reserved Instances vs on-demand for stateful components.** Redis nodes, ScyllaDB nodes, and Aurora instances on 3-year all-upfront RIs save roughly 40% vs on-demand. At full scale, this is roughly $360K/month in savings. Trade-off: capacity commitment locks in the instance family for 3 years, preventing migration to newer instance types (e.g., r7g replacing r6g) without RI conversion.
 
-**Fewer Redis nodes with Dragonfly.** The hard decision D1 in section 9 covers the self-hosted Redis vs Dragonfly trade-off in detail. The cost lever is roughly $400K/month at full scale.
+**Fewer Redis nodes with Dragonfly.** The [driver-location storage decision](#d1-self-hosted-redis-cluster-vs-elasticache-vs-dragonfly-for-driver-location) covers the self-hosted Redis vs Dragonfly trade-off in detail. The cost lever is roughly $400K/month at full scale.
 
 **Fewer ScyllaDB nodes with larger instances.** 5 nodes at i4i.8xlarge (32 vCPU, 256 GB) instead of 9 nodes at i4i.4xlarge. Same aggregate capacity at roughly 15% lower cost due to per-node overhead reduction. Trade-off: coarser node granularity for scaling, larger blast radius on node failure, longer repair times per node.
 
 **CloudFront flat-rate vs PAYG.** At Uber's API traffic volume (not a CDN-heavy workload - the rider/driver app is native, not browser-based), CloudFront serves static assets (app bundles, images, map tiles). PAYG at 100 TB/month egress would cost roughly $8,500/month. The Business plan flat-rate at $200/month saves roughly $8,300/month. This is a no-regret decision.
 
-## 8. Operations
+## Operations
+{: id="8-operations"}
 
 ### Observability
 
@@ -491,9 +499,10 @@ This runbook assumes the 3-region deployment is live and the new region will be 
 
 Total time: 4-6 hours for a read-only region, 6-8 hours including write promotion and full validation.
 
-## 9. Key Decisions & Trade-offs
+## Key Decisions & Trade-offs
+{: id="9-key-decisions--trade-offs"}
 
-### D1: Self-hosted Redis Cluster vs ElastiCache vs Dragonfly for driver location
+### Self-hosted Redis Cluster vs ElastiCache vs Dragonfly for driver location {#d1-self-hosted-redis-cluster-vs-elasticache-vs-dragonfly-for-driver-location}
 
 **Context:** The Location Service sustains 250K writes/s (ZADD) and roughly 27K reads/s (ZRANGEBYSCORE across 7 cells per request) with p99 latency targets of under 5 ms write and under 10 ms read. The Redis cluster is the single most latency-sensitive component in the dispatch pipeline: a 10 ms regression in Redis read latency adds 70 ms to the p99 dispatch (7 cells x 10 ms). At 300 nodes on r6g.4xlarge (128 GB), self-hosted costs roughly $510K/month across 3 regions.
 
@@ -505,7 +514,7 @@ Total time: 4-6 hours for a read-only region, 6-8 hours including write promotio
 
 **Consequences:** 0.5 FTE of SRE time allocated to Redis operations (compaction, resharding, upgrades, failure recovery). Capacity planning at 3.5x peak safety factor (rather than 2x if using ElastiCache's auto-scaling). The self-hosted choice locks in Redis 7.2 for the foreseeable future; migration to Redis 8.0's improved cluster management is a planned multi-quarter project.
 
-### D2: ScyllaDB vs Cassandra vs Docstore for trip history
+### ScyllaDB vs Cassandra vs Docstore for trip history {#d2-scylladb-vs-cassandra-vs-docstore-for-trip-history}
 
 **Context:** Trip history is an append-heavy, time-series workload: 15M trips/day x 1.5 MB/trip = roughly 260 MB/s aggregate write throughput, 22.5 TB/day, 7-year retention. The access pattern is overwhelmingly write-once, read-by-primary-key (trip_id). Cassandra at this scale suffers from JVM GC pauses (under 15 ms p99), compaction storms on size-tiered compaction, and multi-hour anti-entropy repair on 100 TB+ clusters. Uber's own Docstore fork addressed these but is proprietary.
 
@@ -517,7 +526,7 @@ Total time: 4-6 hours for a read-only region, 6-8 hours including write promotio
 
 **Consequences:** ScyllaDB's AGPLv3 license requires attention (the enterprise build is not necessary for the core feature set; the open-source build is sufficient but lacks some enterprise monitoring tools). The CQL interface is wire-compatible with Cassandra, making the migration path from any Cassandra-based system straightforward. ScyllaDB's smaller community (roughly 10% of Cassandra's) means fewer operators, fewer blog posts, fewer Stack Overflow answers - the ops team must develop deeper in-house expertise.
 
-### D3: Active-active cell-based architecture vs active-passive with DR
+### Active-active cell-based architecture vs active-passive with DR {#d3-active-active-cell-based-architecture-vs-active-passive-with-dr}
 
 **Context:** Uber's 2020 AWS us-west-2 outage degraded matching for roughly 2 hours because core services were active-passive: primary in us-west-2, read replicas elsewhere. Failover took 45+ minutes because Cassandra required full anti-entropy repair before accepting writes (multi-hour at 100 TB+), Kafka consumer offsets drifted during cutover, and Redis had to be rebuilt from Kafka replay (35 minutes). The postmortem drove a hard requirement: every service must be independently writable in each region with under 5-minute RTO.
 
@@ -527,7 +536,8 @@ Total time: 4-6 hours for a read-only region, 6-8 hours including write promotio
 
 **Consequences:** 3x the infrastructure for 3x the regions (roughly $30M/year vs roughly $10M/year for single-region). Cross-region data transfer at roughly $3M/year. Operational complexity: conflict resolution for cross-region trip state, eventual consistency for cross-region driver location (under 2-minute sync lag), and coordinated deployments across regions. The benefit: regional failure RTO under 5 minutes, AZ failure RTO under 1 minute, and cell-level failure isolation (a NYC Redis OOM does not affect SF or London).
 
-## 10. References
+## References
+{: id="10-references"}
 
 1. [Uber Engineering Blog](https://www.uber.com/blog/engineering/)
 1. [H3 Hexagonal Hierarchical Spatial Index](https://h3geo.org/)

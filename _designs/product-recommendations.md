@@ -276,13 +276,13 @@ class B,C,D,E request;
 class A data;
 
 ```
-**Options and tradeoffs.**
+**Options.**
 
 - **Popularity or co-purchase lists:** Precompute inexpensive context-based lists. They provide a dependable fallback, but established products dominate and the current user or cart receives limited detailed matching.
 - **One ranker over a large candidate set:** Apply the same detailed scorer to every retrieved product. The path is simple and avoids a light-stage cutoff, but feature reads and inference scale with thousands of candidates per request.
 - **Embedding retrieval with staged ranking — recommended:** Use a shared vector space for coverage, then inexpensive shortlisting and bounded deep scoring. Compute is controlled; recall can be lost in retrieval or shortlisting and all encoders, indexes and rankers must remain compatible.
 
-**Choice and rationale.** **Use two-tower retrieval followed by lightweight and deep ranking.** The user tower and item tower map context and products into a shared vector space. Item vectors are precomputed; a request computes only its context vector and retrieves nearby products. A 100M-item catalog cannot be deeply scored on each request. We accept staged recall loss and multiple serving artifacts, then measure useful-candidate retention at each cutoff alongside conversion and peak inference cost.
+**Use two-tower retrieval followed by lightweight and deep ranking.** The user tower and item tower map context and products into a shared vector space. Item vectors are precomputed; a request computes only its context vector and retrieves nearby products. A 100M-item catalog cannot be deeply scored on each request. We accept staged recall loss and multiple serving artifacts, then measure useful-candidate retention at each cutoff alongside conversion and peak inference cost.
 
 [ScaNN](https://arxiv.org/abs/1908.10396) offers approximate retrieval with a memory/recall trade-off. Measure candidate recall against a higher-quality retrieval baseline before tuning the downstream ranker.
 
@@ -311,13 +311,13 @@ Final selection   current eligibility and diversity      remove invalid items
 
 **Problem.** A user's current-session vector changes frequently, while an index containing the full catalog is rebuilt less often. Updating only one tower can make user and item vectors incompatible.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Rebuild every artifact together:** Publish one fully rebuilt set whenever catalog data changes. Consistency is easy to reason about, but a large index rebuild delays small updates and spends substantial compute.
 - **Update artifacts independently:** Refresh each encoder, ranker and index on its own schedule. Data appears quickly, but vectors from different encoder versions can become incomparable and regress retrieval.
 - **Immutable bundles with compatible overlays — recommended:** Coordinate model-space releases while encoding new products with the active bundle. This separates catalog freshness from model changes; overlays, watermarks and warm rollback bundles add storage and cutover work.
 
-**Choice and rationale.** **Publish a bundle containing both towers, the base index, rankers and feature definitions.** A new product is encoded using the bundle currently serving requests, and its overlay carries that version. Catalog updates are frequent, while a model-space change affects the entire index. We accept overlay reconciliation and duplicate warm artifacts so requests always use compatible user/item towers and fresh eligible product data.
+**Publish a bundle containing both towers, the base index, rankers and feature definitions.** A new product is encoded using the bundle currently serving requests, and its overlay carries that version. Catalog updates are frequent, while a model-space change affects the entire index. We accept overlay reconciliation and duplicate warm artifacts so requests always use compatible user/item towers and fresh eligible product data.
 
 Online session features update within one minute. Training features are joined by their availability at the recommendation time, including delayed events. Shared feature definitions and recorded serving snapshots keep offline evaluation comparable to the live path.
 
@@ -350,13 +350,13 @@ Store each product's content version in the index record. A replayed older catal
 
 **Problem.** A new user has no reliable interaction history. A new product has content but little evidence about clicks or purchases.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Popularity baseline:** Choose established products for the page or region. It works without personal history, but concentrates exposure and gives new products little evidence.
 - **Content-based retrieval:** Represent products from approved attributes and users from current context. New products are searchable immediately; content similarity has limited evidence about purchase intent.
 - **Context baseline with controlled exploration — recommended:** Combine page/cart context and content vectors with a bounded eligible-item exploration allocation. Learning can reach less-exposed products; some slots have lower expected relevance and require exposure-probability logging.
 
-**Choice and rationale.** **Combine context-based popularity with content embeddings, then reserve a bounded exploration budget.** For a new user, use the current page, cart, language and region. For a new product, use its title, category and other approved attributes. The service must work before reliable user or product histories exist. We accept a measured exploration cost and keep eligibility checks authoritative, while purchase outcomes establish whether broader exposure is actually useful.
+**Combine context-based popularity with content embeddings, then reserve a bounded exploration budget.** For a new user, use the current page, cart, language and region. For a new product, use its title, category and other approved attributes. The service must work before reliable user or product histories exist. We accept a measured exploration cost and keep eligibility checks authoritative, while purchase outcomes establish whether broader exposure is actually useful.
 
 Keep missing behavioral features explicit. A product with no purchase history differs from a product that received many impressions and converted poorly.
 
@@ -376,13 +376,13 @@ Evaluate new users and products separately using time-based “first seen” def
 
 **Problem.** Clicks arrive quickly, but a product that attracts clicks may produce few purchases. Purchase labels arrive later and are influenced by whether the product was shown.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Click-only training:** Use abundant early interaction labels. Feedback arrives quickly, but the scorer can favor enticing products that seldom convert or satisfy the customer.
 - **Purchase-only training:** Optimize the transaction outcome directly. Business alignment is clearer, but labels are sparse and delayed, and exposed non-purchases must wait for the attribution window to mature.
 - **Purchase-oriented learning with auxiliary outcomes — recommended:** Use mature purchase evidence and supporting click/cart signals, adding shared heads only when they improve the purchase objective. This shares information; loss-weight competition and target leakage require per-head and purchase-quality checks.
 
-**Choice and rationale.** **Begin with a purchase-oriented ranking objective supported by click and cart features.** Wait for the attribution window before marking an impression as a non-purchase; start with 48 hours and validate that window against the product's actual purchase delay. Conversion is the primary outcome, while clicks and carts provide earlier supporting evidence. We accept delayed purchase labels and evaluate multi-task interference before maintaining additional heads; auxiliary click gains alone do not justify promotion.
+**Begin with a purchase-oriented ranking objective supported by click and cart features.** Wait for the attribution window before marking an impression as a non-purchase; start with 48 hours and validate that window against the product's actual purchase delay. Conversion is the primary outcome, while clicks and carts provide earlier supporting evidence. We accept delayed purchase labels and evaluate multi-task interference before maintaining additional heads; auxiliary click gains alone do not justify promotion.
 
 Deduplicate outcomes and group train/test splits chronologically. Join features as they existed at impression time, excluding future cart changes and purchases. Negative sampling and class weights are recorded in the training manifest.
 
@@ -416,13 +416,13 @@ The proposed purchase-oriented ranker scores relevance using calibrated purchase
 
 **Problem.** Repeatedly showing near-identical products limits discovery. Business constraints such as category diversity or margin also change which items a user sees.
 
-**Options and tradeoffs.**
+**Options.**
 
 - **Pure score order:** Return the highest independently scored products. The learned objective is preserved, but near-duplicates can occupy much of the slate and reduce discovery.
 - **Hard diversity rules:** Enforce fixed category or brand counts. Product requirements are predictable, but abrupt exclusions can remove strongly relevant items and reduce the available set.
 - **Eligibility followed by a bounded diversity reranker — recommended:** Select products using relevance with a small redundancy penalty among already chosen items. Variety becomes explicit; penalty tuning can trade conversion for diversity and adds slate-level evaluation work.
 
-**Choice and rationale.** Users need a useful set of available products rather than many copies of the same choice. We accept a bounded relevance tradeoff, measuring conversion and discovery together instead of treating variety as a universal improvement.
+Users need a useful set of available products rather than many copies of the same choice. We accept a bounded relevance tradeoff, measuring conversion and discovery together instead of treating variety as a universal improvement.
 
 **Apply eligibility first, then a small, explicit diversity penalty.** Maximum marginal relevance is one option: score each next item using its relevance and similarity to products already selected.
 

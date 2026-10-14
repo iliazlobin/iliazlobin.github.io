@@ -12,7 +12,8 @@ Bitly operates a URL shortener at planetary scale: 1M redirect QPS peak, 10B act
 
 <!--more-->
 
-## 1. Context
+## Context
+{: id="1-context"}
 
 Bitly operates a URL shortener at planetary scale: 1M redirect QPS peak, 10B active links across 4 AWS regions in active-active deployment. The workload is read-dominant at roughly 100:1 reads to writes under steady state, surging to 1000:1 during viral spikes. Every click on a short link races through a global CDN before it ever touches an origin server; a 3-layer cache pyramid (in-process LRU, Redis, database) ensures only 0.075% of all redirect requests reach the system of record. The cache funnel is the central organizing idea of the architecture: each layer absorbs traffic with a roughly two-order-of-magnitude reduction, converting a 1M QPS peak at the edge into fewer than 1,000 actual database queries per second.
 
@@ -23,7 +24,8 @@ The cost driver is CloudFront egress, not compute or storage. CloudFront flat-ra
 > [!TIP]
 > **Cache funnel** - 95% of 1M QPS stays in CloudFront. Of the 50K QPS that reach origin, 70% hits the in-process LRU, 95% of the rest hits Valkey, and only ~750 QPS reaches Aurora. Each layer costs progressively more per query but the volume drops by orders of magnitude at each step.
 
-## 2. Goals
+## Goals
+{: id="2-goals"}
 
 **Redirect performance:**
 
@@ -50,7 +52,8 @@ The cost driver is CloudFront egress, not compute or storage. CloudFront flat-ra
 
 **Out of scope:** link-in-bio/QR codes, A/B testing variants, enterprise SSO/RBAC beyond single owner, on-prem/hybrid deployment, GPU inference workloads.
 
-## 3. Architecture
+## Architecture
+{: id="3-architecture"}
 
 ```mermaid
 flowchart LR
@@ -113,9 +116,10 @@ ap-south-1: 150B - 199,999,999,999
 
 Each shorten request calls `INCR counter:next:{region}` on the local Valkey cluster. The returned counter value is added to the region base, encoded to Base62, and left-padded to 7 characters. Code space is 62^7 = 3.52T codes; at 10B total links, utilization is ~0.28%. The Aurora `short_code` PRIMARY KEY constraint catches collisions on Redis failover (the INSERT fails, the service retries). Counter range exhaustion triggers an atomic allocation in Aurora (`SELECT MAX(base) + size FROM counter_ranges WHERE region = ?`) and updates the Redis counter base.
 
-The per-layer QPS, hit rates, and latency for the full redirect funnel are in the section 6 capacity model.
+The per-layer QPS, hit rates, and latency for the full redirect funnel are in the [capacity model](#capacity-model).
 
-## 4. Reliability
+## Reliability
+{: id="4-reliability"}
 
 The service targets 99.99% availability (52.56 min/yr downtime) across all 4 regions in active-active deployment. Every component is deployed across at least 2 AZs per region with automatic failover.
 
@@ -163,7 +167,8 @@ Aurora Global Database provides cross-region physical replication with RPO < 5s 
 - Full database corruption: PITR restore from automated backup - 4-6 hours for a 5 TB database.
 - Complete region loss: promote Global DB secondary, point CloudFront origin group at surviving region - 60-120s.
 
-## 5. Security
+## Security
+{: id="5-security"}
 
 ### IAM least-privilege model
 
@@ -214,7 +219,8 @@ All secrets (database credentials, Valkey auth tokens, MSK SASL/SCRAM credential
 
 ECS tasks fetch secrets at startup via the `secrets` block in the task definition, mapping Secrets Manager ARNs to environment variables. No secrets are baked into container images or task definition JSON.
 
-## 6. Scalability & Performance
+## Scalability & Performance
+{: id="6-scalability--performance"}
 
 ### Capacity model
 
@@ -258,7 +264,7 @@ One authoritative per-unit table. All per-component figures source from this tab
 | AWS WAF | bundled with CloudFront | Business plan rules | 1 global | $0 |
 | **Total** |  |  |  | **~$53,570** |
 
-Notes: Fargate ARM on-demand rates (us-east-1). Aurora I/O-Optimized pricing includes zero per-I/O charges. ElastiCache r7g.large at $0.138/hr/node on-demand. CloudFront Business flat-rate includes WAF rules and data transfer. Safe Browsing API at $0.05/1K queries after 10K/day free tier, with ~90% cache hit on 10M new URLs/day. Observability stack includes self-hosted Grafana v10.4, Prometheus v2.52, Loki v3.0, Tempo v2.5 on ECS Fargate with EBS gp3 storage. Buffer of ~$26,000 for data transfer between regions (MSK MirrorMaker cross-region replication, Aurora Global DB storage replication, inter-region Valkey replication if added) brings total to the ~$80,000/month upper bound. Actual cross-region data transfer costs depend on replication volume and are modeled in section 7.
+Notes: Fargate ARM on-demand rates (us-east-1). Aurora I/O-Optimized pricing includes zero per-I/O charges. ElastiCache r7g.large at $0.138/hr/node on-demand. CloudFront Business flat-rate includes WAF rules and data transfer. Safe Browsing API at $0.05/1K queries after 10K/day free tier, with ~90% cache hit on 10M new URLs/day. Observability stack includes self-hosted Grafana v10.4, Prometheus v2.52, Loki v3.0, Tempo v2.5 on ECS Fargate with EBS gp3 storage. Buffer of ~$26,000 for data transfer between regions (MSK MirrorMaker cross-region replication, Aurora Global DB storage replication, inter-region Valkey replication if added) brings total to the ~$80,000/month upper bound. Actual cross-region data transfer costs depend on replication volume and are modeled under [Cost](#7-cost).
 
 ### Horizontal scaling
 
@@ -285,7 +291,8 @@ The redirect path is load-tested with k6 v0.51 (OSS) using a 50M-key pre-generat
 - Google Safe Browsing quota: 10K queries/day free. At 30M queries/month, request enterprise quota increase and negotiate volume pricing.
 - Route53: no practical quota concern at 1M zones. No action needed.
 
-## 7. Cost
+## Cost
+{: id="7-cost"}
 
 > [!TIP]
 > **Verdict** - At ~$53,600/month core infrastructure with a ~$26,000 inter-region data transfer buffer (total ~$80,000/month ceiling), the design costs approximately $0.00003 per 10K redirects - well under the $0.0001 target. CloudFront flat-rate pricing is the single decision that makes this economically viable: under PAYG, the same architecture would cost $2.6M/month in request charges alone.
@@ -325,7 +332,8 @@ Each redirect costs roughly $0.00000002 when served from CloudFront cache (the $
 
 **Self-managed Valkey on EC2 Spot.** Could reduce cache cost from $10,300/month to ~$3,500/month (EC2 Spot + EBS). Trade-off: no automatic failover (must run Sentinel), operational burden of OS patching, Spot interruption risk during cache rebuild.
 
-## 8. Operations
+## Operations
+{: id="8-operations"}
 
 ### Alerting
 
@@ -448,9 +456,10 @@ This runbook assumes the 4-region deployment is live and the new region will be 
 
 Total time: 4-6 hours for a read-only region, 6-8 hours including write promotion and validation.
 
-## 9. Key Decisions & Trade-offs
+## Key Decisions & Trade-offs
+{: id="9-key-decisions--trade-offs"}
 
-### D1: CloudFront flat-rate vs PAYG pricing
+### CloudFront flat-rate vs PAYG pricing {#d1-cloudfront-flat-rate-vs-payg-pricing}
 
 **Decision:** CloudFront Business plan ($200/month flat-rate). The flat-rate plan bundles data transfer and HTTP requests at a fixed monthly cost, making egress-heavy workloads viable on AWS. Without it, CloudFront PAYG at $0.01/10K requests x 2.6T redirects/month = $2.6M/month just in HTTP request charges, plus $0.085/GB x 520 TB = $44K/month in data transfer. The flat-rate plan eliminates both at a fixed $200/month.
 
@@ -458,7 +467,7 @@ Total time: 4-6 hours for a read-only region, 6-8 hours including write promotio
 
 **Hedged judgment:** CloudFront Business plan limits WAF rules to 50 (vs 75 on Premium at $1,000/month). If the WAF rule count exceeds 50 due to custom rate-limiting and geo-blocking rules, upgrading to Premium adds $800/month but is still negligible relative to the $2.6M/month PAYG alternative. The Business tier is sufficient for Phase 1-2; Premium is a cost lever, not a decision to defer.
 
-### D2: Aurora PostgreSQL with application-level sharding vs DynamoDB
+### Aurora PostgreSQL with application-level sharding vs DynamoDB {#d2-aurora-postgresql-with-application-level-sharding-vs-dynamodb}
 
 **Decision:** Aurora PostgreSQL 16.4 Serverless v2 (I/O-Optimized), 16 application-level shards via `hash(short_code) % 16`. The primary access pattern is a point lookup by primary key (`SELECT long_url FROM links WHERE short_code = ?`), which both databases handle trivially. The decision turns on secondary access patterns: owner queries (list links by `owner_user_id`), custom domain queries (list by `domain`), and bulk exports. Aurora supports these via native B-tree indexes at no additional cost; DynamoDB requires GSIs with write amplification and per-index pricing.
 
@@ -466,7 +475,7 @@ Total time: 4-6 hours for a read-only region, 6-8 hours including write promotio
 
 **Hedged judgment:** Application-level sharding is the trade-off. A hash-based shard key (`sha256(short_code) % 16`) distributes load evenly, but adding a 17th shard requires a resharding migration (dual-write window + backfill). At 10B active links, migrating 16 shards is a planned multi-week operation, not automatic. If the shard count is misestimated early, the cost of resharding is high. Starting with 16 shards is conservative given Bitly's observed link growth; if growth outpaces projections, Aurora's vertical scaling (Serverless v2 up to 32 ACU per shard) absorbs 2-3x growth before horizontal resharding is required.
 
-### D3: 4-layer cache pyramid vs 3-layer (skip in-process LRU)
+### 4-layer cache pyramid vs 3-layer (skip in-process LRU) {#d3-4-layer-cache-pyramid-vs-3-layer-skip-in-process-lru}
 
 **Decision:** 4-layer cache pyramid: CloudFront (L0) → in-process LRU per ECS task (L1) → ElastiCache Valkey (L2) → Aurora PostgreSQL (L3). The in-process LRU absorbs 70% of origin traffic at sub-microsecond latency for zero additional cost (it runs in the ECS task's heap memory, already provisioned for the Go runtime).
 
@@ -474,7 +483,8 @@ Total time: 4-6 hours for a read-only region, 6-8 hours including write promotio
 
 **Hedged judgment:** The LRU adds ~200 MB of heap per task (1M entries x ~200 bytes each). At 200 tasks globally, that's 40 GB of in-process memory storing cache data. This works because Go's garbage collector handles the expirable LRU (hashicorp/golang-lru v2 with TTL). If memory pressure causes GC pauses exceeding 1-2 ms, the LRU size per task can be reduced or the TTL shortened. The risk is that a sudden surge of unique URLs (e.g., a DDoS with random short codes) fills the LRU with cache misses, causing churn without benefit. The per-task LRU hit rate metric would detect this; the mitigation is a circuit breaker that bypasses the LRU for sustained miss rates above 90%.
 
-## 10. References
+## References
+{: id="10-references"}
 
 1. [AWS CloudFront pricing - flat-rate plans](https://aws.amazon.com/cloudfront/pricing/)
 1. [AWS Fargate pricing (ARM/Graviton)](https://aws.amazon.com/fargate/pricing/)
