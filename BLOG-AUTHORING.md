@@ -247,14 +247,28 @@ generated SVGs with the article changes.
 
 ## Site-wide search
 
-The shared header opens a native search dialog with Ctrl/Cmd+K. Categories match
-any selected category; tags must all match. Inline filters such as `type:tech`
-and `tag:"Data Pipelines"` use the same filtering rules as the visible controls.
-Search state is independent of the Design/Portfolio listing filters.
+The shared header opens a native search dialog with Ctrl/Cmd+K. One combobox
+offers section, category and tag autocomplete; selected filters become removable
+chips. Sections (Portfolio, Design, Infra) contain records with one owning
+category and many tags. Selected categories/sections match any; tags must all
+match. Inline filters such as `in:infra type:tech tag:"Data Pipelines"` use the
+same rules. Search state is independent of listing filters.
+
+Design, Infrastructure and Portfolio listings use one compact search row with
+category/tag autocomplete, removable chips and a result count. The listing
+category is singular; multiple tags narrow results together. Preserve `q`,
+`type`, `tag` URLs and native card/fragment links. On desktop, the result feed
+owns its scrolling: align cards using feed-relative geometry, not ancestor
+offsets. Check the first filtered card after filter, resize and image loading.
+
+Article navigation keeps all six category links above its independently
+scrolling article list. Keep these categories distinct from tags, and maintain
+the current category and current article highlights separately.
 
 Jekyll builds `/search-index.json` automatically from public design articles,
 posts and the configured `header_pages`. Titles, descriptions, tags and rendered
-article sections are searchable, including Portfolio project anchors. Set
+article sections are searchable. Portfolio projects are individual records with
+their own category, tags and stable anchors, rather than one combined page. Set
 `search_disabled: true` to omit content; unpublished records and redirects are
 also excluded. Keep heading IDs stable so section results remain valid.
 
@@ -267,7 +281,7 @@ matching. The shared build checker verifies corpus coverage and destination IDs.
 node --test tests/search-core.test.mjs tests/site-search.test.mjs
 ```
 
-Verify native result links, category/tag removal, Enter/Escape/Tab behavior,
+Verify native result links, category/tag/section removal, Enter/Escape/Tab behavior,
 focus/scroll restoration, and narrow/short viewports in Chrome after changes.
 
 ## Publication checks
@@ -288,6 +302,6 @@ bundle exec jekyll build
 python3 tests/check_built_site.py _site
 ```
 
-The build check covers the five-tab navigation, reviewed article routes, internal
+The build check covers the six-tab navigation, reviewed article routes, internal
 links/assets, legacy index redirects, and the downloadable résumé. Diagram syntax,
 desktop/mobile layout, and interactive filters also need browser verification.

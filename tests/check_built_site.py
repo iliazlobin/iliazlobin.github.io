@@ -27,6 +27,14 @@ REDIRECTS = {
     "/machine-learning/": "/designs/",
     "/tech/": "/infrastructure/",
 }
+ARTICLE_CATEGORIES = {
+    "system-design": "/designs/?type=system-design",
+    "system-design-ml": "/designs/?type=system-design-ml",
+    "low-level-design": "/designs/?type=low-level-design",
+    "ai": "/designs/?type=ai",
+    "infra": "/infrastructure/?type=infra",
+    "tech": "/infrastructure/?type=tech",
+}
 
 
 class Page(HTMLParser):
@@ -44,6 +52,11 @@ class Page(HTMLParser):
         self.article_skip_links = []
         self.search_dialogs = 0
         self.search_triggers = 0
+        self.search_selects = 0
+        self.article_categories = []
+        self.current_categories = []
+        self.project_ids = set()
+        self._in_search = False
         self.ids = set()
         self._navigation_text = None
         self._heading_text = None
@@ -56,6 +69,9 @@ class Page(HTMLParser):
             self.ids.add(attrs["id"])
         if "data-site-search" in attrs:
             self.search_dialogs += 1
+            self._in_search = True
+        if tag == "select" and self._in_search:
+            self.search_selects += 1
         if "data-open-site-search" in attrs:
             self.search_triggers += 1
         if "data-document-shell" in attrs:
@@ -66,6 +82,10 @@ class Page(HTMLParser):
             self.library_links.append(attrs.get("href"))
             if attrs.get("aria-current") == "page":
                 self.current_articles.append(attrs.get("href"))
+        if tag == "a" and "data-article-category" in attrs:
+            self.article_categories.append((attrs["data-article-category"], attrs.get("href")))
+            if attrs.get("aria-current") == "true":
+                self.current_categories.append(attrs["data-article-category"])
         if tag == "a" and "document-skip" in attrs.get("class", "").split():
             self.article_skip_links.append(attrs.get("href"))
         for attribute in ("href", "src", "poster"):
@@ -77,6 +97,8 @@ class Page(HTMLParser):
             self._heading_text = []
         if tag == "article":
             self.articles.append(attrs.get("class", "").split())
+            if "portfolio-item" in attrs.get("class", "").split() and attrs.get("id"):
+                self.project_ids.add(attrs["id"])
         if tag == "tr":
             self._row = []
         if tag in ("td", "th") and self._row is not None:
@@ -91,6 +113,8 @@ class Page(HTMLParser):
             self._cell_text.append(data)
 
     def handle_endtag(self, tag):
+        if tag == "dialog":
+            self._in_search = False
         if tag == "a" and self._navigation_text is not None:
             self.navigation.append("".join(self._navigation_text).strip())
             self._navigation_text = None
@@ -129,7 +153,7 @@ def check_document_layout(root, errors):
             continue
         document_count += 1
         route = "/" + source.parent.relative_to(root).as_posix() + "/"
-        if page.search_dialogs != 1 or page.search_triggers != 1:
+        if page.search_dialogs != 1 or page.search_triggers != 1 or page.search_selects:
             errors.append(f"{route}: missing or duplicate universal search UI")
         if page.document_shells != 1 or page.article_navigations != 1:
             errors.append(f"{source}: missing or duplicate documentation shell/navigation")
@@ -137,6 +161,8 @@ def check_document_layout(root, errors):
             errors.append(f"{source}: article navigation must preserve every distinct article URL")
         if page.current_articles != [route]:
             errors.append(f"{source}: expected exactly one current article, got {page.current_articles!r}")
+        if page.article_categories != list(ARTICLE_CATEGORIES.items()) or len(page.current_categories) != 1:
+            errors.append(f"{source}: expected six distinct category links and one current category")
         if page.article_skip_links != ["#document-article"]:
             errors.append(f"{source}: missing skip-to-article link")
         if any("post--document" not in classes for classes in posts):
@@ -186,13 +212,14 @@ def check_search_index(root, errors):
         return 0
     urls = set()
     article_urls = set()
+    project_ids = set()
     for entry in entries:
-        if not isinstance(entry, dict) or not all(isinstance(entry.get(key), str) for key in ("url", "title", "category", "html")):
+        if not isinstance(entry, dict) or not all(isinstance(entry.get(key), str) for key in ("url", "title", "description", "category", "categoryLabel", "section", "html")) or not isinstance(entry.get("tags"), list) or not all(isinstance(tag, str) for tag in entry.get("tags", [])):
             errors.append("Search index entry is missing typed metadata/content")
             continue
         url = entry["url"]
         parsed = urlsplit(url)
-        if not url.startswith("/") or parsed.netloc or parsed.scheme or url in urls:
+        if not url.startswith("/") or parsed.netloc or parsed.scheme or parsed.query or url in urls:
             errors.append(f"Search index has a duplicate or nonlocal URL: {url!r}")
             continue
         urls.add(url)
@@ -202,8 +229,17 @@ def check_search_index(root, errors):
             continue
         page = Page()
         page.feed(target.read_text(encoding="utf-8"))
+        if parsed.fragment and unquote(parsed.fragment) not in page.ids:
+            errors.append(f"Search index fragment has no destination: {url}")
         if any("post--document" in classes for classes in page.articles):
             article_urls.add(parsed.path)
+            expected_section = "infra" if entry["category"] in ("infra", "tech") else "design"
+            if entry["category"] not in ARTICLE_CATEGORIES or entry["section"] != expected_section:
+                errors.append(f"Search article has invalid category/section ownership: {url}")
+        if parsed.path == "/portfolio/" and parsed.fragment:
+            project_ids.add(unquote(parsed.fragment))
+            if entry["section"] != "portfolio" or entry["category"] not in ("full-stack", "ai-ml", "infra", "research"):
+                errors.append(f"Search project has invalid category/section ownership: {url}")
         for anchor in re.findall(r'<h[1-6]\b[^>]*\bid=["\']([^"\']+)', entry["html"], re.I):
             if anchor not in page.ids:
                 errors.append(f"Search index heading has no destination: {url}#{anchor}")
@@ -215,6 +251,10 @@ def check_search_index(root, errors):
     for url in ("/", "/resume/", "/portfolio/", "/designs/", "/infrastructure/", "/advisory/"):
         if url not in urls:
             errors.append(f"Universal search is missing a main page: {url}")
+    portfolio = Page()
+    portfolio.feed(route_file(root, "/portfolio/").read_text(encoding="utf-8"))
+    if project_ids != portfolio.project_ids:
+        errors.append("Universal search must index every Portfolio project exactly once")
     return len(entries)
 
 
@@ -230,7 +270,7 @@ def check_site(root):
         page.feed(source.read_text(encoding="utf-8"))
         if page.navigation != NAVIGATION:
             errors.append(f"{route}: unexpected navigation {page.navigation!r}")
-        if page.search_dialogs != 1 or page.search_triggers != 1:
+        if page.search_dialogs != 1 or page.search_triggers != 1 or page.search_selects:
             errors.append(f"{route}: missing or duplicate universal search UI")
         if heading not in page.headings:
             errors.append(f"{route}: missing heading {heading!r}")
