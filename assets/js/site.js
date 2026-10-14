@@ -216,7 +216,9 @@
       } else if (first && window.scrollY > mobileCardTop(first)) {
         // Filtering while the mobile controls are sticky must not leave the
         // first matching card above/behind the header and search controls.
-        window.scrollTo({ top: mobileCardTop(first), behavior: "auto" });
+        // 'auto' inherits the page's CSS smooth scrolling. A filter reset must
+        // settle immediately, before the next narrowed layout is measured.
+        window.scrollTo({ top: mobileCardTop(first), behavior: "instant" });
       }
       markActive(first);
     }

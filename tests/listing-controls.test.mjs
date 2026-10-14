@@ -267,7 +267,23 @@ test('mobile rail navigation and obscured filtered results account for the measu
   assert.equal(dom.cards[2].getBoundingClientRect().top, 136);
   dom.field.value = 'agent'; dom.field.emit('input');
   assert.equal(dom.cards[0].getBoundingClientRect().top, 136);
-  assert.equal(dom.view.lastScroll.behavior, 'auto');
+  assert.equal(dom.view.lastScroll.behavior, 'instant');
+});
+
+test('a narrowed mobile reset cannot inherit CSS smooth scrolling or document scroll anchoring', () => {
+  const dom = fixture({ desktop: false, scrollY: 300 }); dom.setupFilter(); dom.setupBrowser(); dom.frame();
+  dom.rail.children[2].emit('click');
+  dom.field.value = 'hermes'; dom.field.emit('input');
+  assert.equal(dom.count.textContent, '1 project');
+  assert.equal(dom.cards[0].getBoundingClientRect().top, 136);
+  assert.equal(dom.view.lastScroll.behavior, 'instant');
+  // Unlike 'auto', 'instant' does not inherit html's smooth behavior. Native
+  // anchoring is excluded outside the desktop media block, so mobile has it too.
+  const css = read('assets/css/portfolio.css');
+  const body = css.match(/body\.design-browser-page\s*\{([^}]+)\}/);
+  assert.match(body[1], /overflow-anchor:\s*none/);
+  assert.ok(body.index < css.indexOf('@media (min-width: 901px)'));
+  assert.match(read('assets/css/site.css'), /scroll-behavior:\s*smooth/);
 });
 
 test('filtering at the top of a mobile listing does not scroll past visible controls or rail', () => {

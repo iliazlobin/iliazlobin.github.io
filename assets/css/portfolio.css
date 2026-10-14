@@ -39,6 +39,10 @@
 
 /* Desktop lists are a viewport-sized browser, not a page of moving rails.
    The long navigation list can be scrolled separately when needed. */
+/* Mobile uses the document scroller. Exclude this controlled listing page's
+   content from native scroll anchoring, which can undo a filtered reset when
+   removed cards shorten the document. Other page types keep native anchoring. */
+body.design-browser-page { overflow-anchor: none; }
 .design-browser .portfolio-feed:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .design-browser .portfolio-item { scroll-margin-top: calc(var(--site-header-height) + var(--design-controls-height, 64px) + 1rem); }
 /* Panel-owned navigation measures visible card geometry. Reveal/hover lifts
