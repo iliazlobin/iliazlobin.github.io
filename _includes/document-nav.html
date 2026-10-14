@@ -3,10 +3,12 @@
   <details class="document-nav-panel" open>
     <summary>Browse articles</summary>
     <nav aria-label="Article navigation">
-      <div class="document-nav-indexes">
-        <a href="{{ '/designs/' | relative_url }}">All designs</a>
-        <a href="{{ '/infrastructure/' | relative_url }}">Infrastructure &amp; tech</a>
+      <div class="document-nav-categories" role="group" aria-label="Article categories">
+        {%- for group in site.data.document_navigation -%}
+        <a href="{{ group.index | relative_url }}?type={{ group.category | url_encode }}" data-article-category="{{ group.category | escape }}"{% if group.category == page.category %} aria-current="true"{% endif %}>{{ group.label | escape }}</a>
+        {%- endfor -%}
       </div>
+      <div class="document-nav-articles" data-document-nav-articles>
       {%- for group in site.data.document_navigation -%}
         {%- assign group_articles = site.designs | where: 'category', group.category | sort: 'title' -%}
         {%- if group_articles.size > 0 -%}
@@ -20,6 +22,7 @@
         </div>
         {%- endif -%}
       {%- endfor -%}
+      </div>
     </nav>
   </details>
 </aside>
