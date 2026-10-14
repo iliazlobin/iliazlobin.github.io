@@ -21,8 +21,9 @@ const MAX_QUERY = 512, MAX_HTML = 1_000_000, MAX_DOCUMENTS = 2_000;
 const collapse = value => String(value ?? '').replace(/\s+/g, ' ').trim();
 const normalize = value => collapse(value).normalize('NFKC').toLocaleLowerCase('en');
 const unique = values => [...new Set(values)];
-const categoryValue = value => CATEGORY_ALIASES[normalize(value)] ?? null;
-const sectionValue = value => SECTION_ALIASES[normalize(value)] ?? null;
+const aliasValue = (aliases, value) => Object.hasOwn(aliases, normalize(value)) ? aliases[normalize(value)] : null;
+const categoryValue = value => aliasValue(CATEGORY_ALIASES, value);
+const sectionValue = value => aliasValue(SECTION_ALIASES, value);
 const inferredSection = entry => sectionValue(entry.section) || (entry.url?.startsWith('/portfolio/') ? 'portfolio' :
   ['sd', 'ml', 'ld', 'ai'].includes(categoryValue(entry.category)) ? 'design' :
     ['infra', 'tech'].includes(categoryValue(entry.category)) ? 'infra' :
@@ -293,15 +294,30 @@ export function getSearchFacets(prepared, state = {}) {
   };
 }
 
+// Completion happens while typing, so a quoted token need not be closed yet.
+// Whitespace inside that token stays part of its value; quoted prose never
+// exposes an embedded tag:/type: string as a separate operator.
+function completionToken(query) {
+  let start = null, quote = null;
+  for (let index = 0; index < query.length; index++) {
+    const character = query[index];
+    if (quote) { if (character === quote) quote = null; }
+    else if (/\s/.test(character)) { start = null; continue; }
+    else if (character === '"' || character === "'") quote = character;
+    if (start === null) start = index;
+  }
+  return start === null ? { tail: '', prefix: query.trimEnd() } :
+    { tail: query.slice(start), prefix: query.slice(0, start).trimEnd() };
+}
+
 /** A trailing query token can be completed into a filter; previous free text is retained. */
 export function getSearchSuggestions(prepared, state = {}, limit = 9) {
-  const query = String(state.query || '').slice(0, MAX_QUERY), tokens = query.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+  const query = String(state.query || '').slice(0, MAX_QUERY);
   const cap = Number.isFinite(Number(limit)) ? Math.max(0, Math.min(24, Math.floor(Number(limit)))) : 9;
-  const tail = /\s$/.test(query) ? '' : tokens.at(-1) || '';
+  const { tail, prefix } = completionToken(query);
   const match = tail.match(/^(type|category|tag|in|section):(.*)$/i);
   const kind = match ? ['type', 'category'].includes(match[1].toLowerCase()) ? 'categories' : match[1].toLowerCase() === 'tag' ? 'tags' : 'sections' : null;
   const needle = normalize((match ? match[2] : tail).replace(/^["']|["']$/g, '')).replace(/[-/]/g, ' ');
-  const prefix = tail ? query.slice(0, query.lastIndexOf(tail)).trimEnd() : query.trimEnd();
   const base = { ...state, query: prefix }, facets = getSearchFacets(prepared, base), selected = searchState(state);
   const result = [];
   for (const group of ['sections', 'categories', 'tags']) {

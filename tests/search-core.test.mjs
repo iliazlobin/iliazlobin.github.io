@@ -28,6 +28,19 @@ test('inline type/tag filters are case-insensitive, deduplicated and quoted', ()
   assert.deepEqual(parseSearchQuery('tag:\'Data Pipelines\' redis'), { text: 'redis', categories: [], tags: ['data pipelines'], sections: [] });
 });
 
+test('prototype property names are unknown category/section values, not inherited aliases', () => {
+  for (const value of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+    for (const kind of ['type', 'category', 'in', 'section']) {
+      const query = `${kind}:${value}`;
+      assert.deepEqual(parseSearchQuery(query), { text: query, categories: [], tags: [], sections: [] });
+    }
+    assert.equal(prepareDocuments([{ url: '/unsafe-category/', title: 'Unknown', category: value }]).length, 0);
+  }
+  const documents = fixture();
+  assert.equal(searchDocuments(documents, { query: 'type:__proto__' }).total, 0);
+  assert.equal(searchDocuments(documents, { query: 'in:constructor' }).total, 0);
+});
+
 test('sections are independent of a single category and all tags remain conjunctive', () => {
   const documents = prepareDocuments([
     { url: '/portfolio/', title: 'Portfolio', section: 'portfolio', category: 'page', html: '' },
@@ -62,6 +75,27 @@ test('autocomplete completes only the trailing token, with grouped accurate filt
   assert.equal(getSearchSuggestions(documents, { query: 'no-matching-facet' }).length, 0);
   assert.equal(getSearchSuggestions(documents, { query: '"before tag:caching after"' }).length, 0);
   assert.ok(getSearchSuggestions(documents, {}).length <= 9);
+});
+
+test('autocomplete completes open single/double quoted operators without consuming preceding query text', () => {
+  const documents = prepareDocuments([
+    { url: '/designs/fraud/', title: 'ML: Fraud', category: 'ml', section: 'design', tags: ['Machine Learning', 'Data Pipelines'], html: '<p>Payment scoring models.</p>' },
+    { url: '/designs/redis/', title: 'TECH: Redis', category: 'tech', section: 'infra', tags: ['Data Pipelines'], html: '<p>Payment events.</p>' }
+  ]);
+  for (const quote of ['"', "'"]) {
+    const tag = getSearchSuggestions(documents, { query: `payment in:design tag:${quote}Data P` });
+    assert.deepEqual(tag, [{ kind: 'tags', value: 'data pipelines', label: 'Data Pipelines', count: 1, query: 'payment in:design' }]);
+    assert.equal(getSearchSuggestions(documents, { query: `category:${quote}Machine L` })[0].value, 'ml');
+    assert.equal(getSearchSuggestions(documents, { query: `category:${quote}Machine L${quote}` })[0].value, 'ml');
+    assert.equal(getSearchSuggestions(documents, { query: `in:${quote}Des` })[0].value, 'design');
+    assert.equal(getSearchSuggestions(documents, { query: `payment tag:${quote}Data ` })[0].count, 2, 'open quote keeps trailing spaces in the typed token');
+    assert.equal(getSearchSuggestions(documents, { query: `${quote}prose tag:Data P` }).length, 0, 'operator-like text inside a quoted phrase is ordinary text');
+    assert.equal(getSearchSuggestions(documents, { query: `${quote}prose tag:Data P${quote}` }).length, 0);
+  }
+  assert.equal(getSearchSuggestions(documents, { query: 'payment unknown:"Data P' }).length, 0);
+  assert.equal(getSearchSuggestions(documents, { query: 'no-match tag:"Data P' }).length, 0, 'counts retain preceding free-text constraints');
+  assert.equal(getSearchSuggestions(documents, { query: 'payment tag:"Data P', tags: ['data pipelines'] }).length, 0, 'selected tags do not reappear');
+  assert.equal(parseSearchQuery('payment tag:"Data P').tags.length, 0, 'completion does not change committed filter parsing');
 });
 
 test('titles and exact tags outrank body mentions while the body remains searchable', () => {
