@@ -165,6 +165,33 @@ test('unknown categories/tags are ignored while text queries keep count, rail an
   dom.clear.emit('click'); assert.equal(dom.count.textContent, '3 projects');
 });
 
+test('multiple tags consistently narrow results with AND, and removing a chip broadens the same query', () => {
+  const dom = fixture({ query: '?type=ai-ml&tag=AI%20Agents,Docker&q=agent' }); dom.setupFilter();
+  assert.equal(dom.count.textContent, '1 project');
+  assert.equal(dom.cards[0].style.display, '');
+  assert.equal(dom.cards[1].style.display, 'none'); assert.equal(dom.cards[2].style.display, 'none');
+  dom.tokens.children[2].querySelector('button').emit('click');
+  assert.equal(dom.view.location.searchParams.get('tag'), 'AI Agents');
+  assert.equal(dom.view.location.searchParams.get('type'), 'ai-ml');
+  assert.equal(dom.view.location.searchParams.get('q'), 'agent');
+  assert.equal(dom.count.textContent, '2 projects'); assert.equal(dom.cards[2].style.display, '');
+  const empty = fixture({ query: '?tag=Networking,Developer%20Tools' }); empty.setupFilter();
+  assert.equal(empty.count.textContent, '0 projects');
+  assert.equal(empty.tokens.children.length, 2);
+  empty.clear.emit('click'); assert.equal(empty.count.textContent, '3 projects');
+});
+
+test('listing input leaves Ctrl/Cmd+K unhandled for the global search shortcut', () => {
+  const dom = fixture({ query: '?type=ai-ml&tag=Docker&q=agent' }); dom.setupFilter();
+  const initial = dom.view.location.href;
+  for (const modifier of ['ctrlKey', 'metaKey']) {
+    let prevented = false;
+    dom.field.emit('keydown', { key: 'k', [modifier]: true, preventDefault() { prevented = true; } });
+    assert.equal(prevented, false);
+    assert.equal(dom.view.location.href, initial); assert.equal(dom.field.value, 'agent');
+  }
+});
+
 test('desktop rail navigation derives scroll position from panel geometry rather than a positioned ancestor', () => {
   const dom = fixture({ feedScroll: 80 }); dom.setupBrowser(); dom.frame();
   dom.rail.children[2].emit('click');

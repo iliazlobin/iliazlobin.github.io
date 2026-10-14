@@ -279,8 +279,8 @@
   }
 
   /* ---------------------------------------------------------------------
-     5) Topic tags use OR matching. On content lists, type and text
-        search further narrow the results (AND). State syncs to the URL.
+     5) Every selected topic tag must match. A listing's single category
+        and text query narrow the results further. State syncs to the URL.
      --------------------------------------------------------------------- */
   function setupBlogFilter() {
     var root = document.querySelector("[data-blog-filter]");
@@ -366,8 +366,7 @@
       if (!searchWords.every(function (word) { return text.indexOf(word) > -1; })) return false;
       if (!selected.length) return true;
       var tags = (card.getAttribute("data-tags") || "").split("|");
-      for (var i = 0; i < selected.length; i++) { if (tags.indexOf(selected[i]) > -1) return true; }
-      return false;
+      return selected.every(function (name) { return tags.indexOf(name) > -1; });
     }
 
     function applyFilter() {
