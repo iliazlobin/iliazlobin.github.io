@@ -31,7 +31,7 @@ test('Advisory headline is compact, naturally wrapping and untruncated', () => {
 test('Only Advisory owns the reduced top gap and its page stylesheet', () => {
   const css = read('assets/css/advisory.css');
   assert.match(css, /\.page-content:has\(\.advisory\)\s*\{\s*padding-top:\s*clamp\(1\.5rem, 3vw, 2rem\);\s*\}/);
-  assert.match(css, /\.advisory\s*\{\s*max-width:\s*800px;\s*margin:\s*0 0 2rem;/);
+  assert.match(css, /\.advisory\s*\{\s*max-width:\s*640px;\s*margin:\s*0 0 2rem;/);
   assert.match(read('advisory.md'), /assets\/css\/advisory\.css/);
   for (const page of ['index.md', 'resume.md', 'portfolio.md', 'designs.md', 'infrastructure.md']) {
     assert.doesNotMatch(read(page), /assets\/css\/advisory\.css/);

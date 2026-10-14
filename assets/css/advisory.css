@@ -2,7 +2,7 @@
   padding-top: clamp(1.5rem, 3vw, 2rem);
 }
 .advisory {
-  max-width: 800px;
+  max-width: 640px;
   margin: 0 0 2rem;
 }
 .advisory .advisory-headline {
