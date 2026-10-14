@@ -50,6 +50,14 @@ export function isZoomableMedia(media) {
   return media.complete && media.naturalWidth >= 48 && media.naturalHeight >= 48;
 }
 
+// Linked portfolio thumbnails zoom on an ordinary click; their original links
+// remain available without JS and for modified/middle-click navigation.
+export function shouldOpenMediaZoom(media, event) {
+  if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return false;
+  if (event.target.closest('button')) return false;
+  return !event.target.closest('a') || Boolean(media.closest('.portfolio-item .thumb'));
+}
+
 function sizeOf(media) {
   if (media.tagName.toLowerCase() === 'svg') {
     const box = media.viewBox?.baseVal;
@@ -178,6 +186,13 @@ export function setupMediaZoom(root = document) {
   const enhance = media => {
     if (enhanced.has(media) || !isZoomableMedia(media)) return;
     let host = media.closest('.mermaid, .thumb');
+    let linkedThumb = null;
+    if (host?.tagName.toLowerCase() === 'a') {
+      // Keep the link intact, but place the independent zoom button outside it.
+      linkedThumb = host;
+      host = doc.createElement('span'); host.className = 'media-zoom-host media-zoom-card';
+      linkedThumb.before(host); host.append(linkedThumb);
+    }
     if (!host) {
       host = doc.createElement('span'); host.className = 'media-zoom-host media-zoom-inline';
       const original = media.closest('a') || media;
@@ -188,12 +203,13 @@ export function setupMediaZoom(root = document) {
     trigger.className = 'media-zoom-trigger'; trigger.setAttribute('aria-haspopup', 'dialog'); host.append(trigger);
     media.classList.add('media-zoom-target');
     const click = event => {
-      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.target.closest('a, button')) return;
+      if (!shouldOpenMediaZoom(media, event)) return;
+      event.preventDefault();
       open(media, trigger, label);
     };
     media.addEventListener('click', click); enhanced.add(media);
     cleanups.push(() => { media.removeEventListener('click', click); media.classList.remove('media-zoom-target'); trigger.remove();
-      if (host.classList.contains('media-zoom-inline')) host.replaceWith(...host.childNodes); else host.classList.remove('media-zoom-host'); });
+      if (linkedThumb || host.classList.contains('media-zoom-inline')) host.replaceWith(...host.childNodes); else host.classList.remove('media-zoom-host'); });
   };
   const scan = () => root.querySelectorAll('.post-content .mermaid > svg, .post-content img, .portfolio-item .thumb img').forEach(enhance);
   const observer = new win.MutationObserver(records => {

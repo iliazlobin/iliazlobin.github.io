@@ -33,3 +33,21 @@ class ArticleOutlineTests(unittest.TestCase):
     def test_unlinkable_raw_heading_and_code_content_are_ignored(self):
         page = self.parse('<div class="post-content"><h2>Unlinkable</h2><pre>&lt;h2 id="code"&gt;</pre></div>')
         self.assertEqual(page.validate(), [])
+
+    def test_explicit_outline_label_preserves_full_visible_heading(self):
+        page = self.parse('<aside data-article-toc><nav aria-label="On this page"><ol>'
+                          '<li><a href="#focus">Overview &amp; scope</a><ol>'
+                          '<li><a href="#detail">Detail</a></li></ol></li></ol></nav></aside>'
+                          '<div class="post-content"><h2 id="focus" data-toc-label="Overview &amp; scope">'
+                          '<span>Technical Leadership</span> and <span>Cloud Architecture</span></h2>'
+                          '<h3 id="detail">Detail</h3></div>')
+        self.assertEqual(page.validate(), [])
+        self.assertEqual(page.headings[0]["text"], "Technical Leadership and Cloud Architecture")
+
+    def test_short_label_does_not_allow_wrong_native_target_or_hierarchy(self):
+        page = self.parse('<aside data-article-toc><nav aria-label="On this page"><ol>'
+                          '<li><a href="#other">Overview</a></li>'
+                          '<li><a href="#detail">Detail</a></li></ol></nav></aside>'
+                          '<div class="post-content"><h2 id="focus" data-toc-label="Overview">Full headline</h2>'
+                          '<h3 id="detail">Detail</h3></div>')
+        self.assertTrue(page.validate())

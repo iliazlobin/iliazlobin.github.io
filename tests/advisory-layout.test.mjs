@@ -6,7 +6,7 @@ const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8'
 
 test('Advisory retains every headline phrase and its existing semantic relationship', () => {
   const page = read('advisory.md');
-  const headline = page.match(/<h2 id="advisory-focus" class="advisory-headline">([\s\S]*?)<\/h2>/)[1];
+  const headline = page.match(/<h2 id="advisory-focus" class="advisory-headline" data-toc-label="Overview">([\s\S]*?)<\/h2>/)[1];
   assert.deepEqual([...headline.matchAll(/<span>(.*?)<\/span>/g)].map(([, text]) => text), [
     'Technical Leadership &amp; Professional Growth',
     'Systems Designs &amp; Cloud Architecture',
@@ -28,10 +28,13 @@ test('Advisory headline is compact, naturally wrapping and untruncated', () => {
   assert.doesNotMatch(css, /(?:^|[;{])\s*(?:height|white-space|overflow|line-clamp)\s*:/m);
 });
 
-test('Only Advisory owns the reduced top gap and its page stylesheet', () => {
+test('Advisory inherits the shared reading width and owns only its top gap and stylesheet', () => {
   const css = read('assets/css/advisory.css');
   assert.match(css, /\.page-content:has\(\.advisory\)\s*\{\s*padding-top:\s*clamp\(1\.5rem, 3vw, 2rem\);\s*\}/);
-  assert.match(css, /\.advisory\s*\{\s*max-width:\s*640px;\s*margin:\s*0 0 2rem;/);
+  assert.match(css, /\.advisory\s*\{\s*margin:\s*0 0 2rem;/);
+  assert.doesNotMatch(css, /max-width:/);
+  assert.match(read('assets/css/article-toc.css'), /max-width:\s*var\(--site-reading-width\)/);
+  assert.doesNotMatch(css, /text-align:\s*center/);
   assert.match(read('advisory.md'), /assets\/css\/advisory\.css/);
   for (const page of ['index.md', 'resume.md', 'portfolio.md', 'designs.md', 'infrastructure.md']) {
     assert.doesNotMatch(read(page), /assets\/css\/advisory\.css/);

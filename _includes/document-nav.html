@@ -1,10 +1,12 @@
+{%- assign current_group = site.data.document_navigation | where: 'category', page.category | first -%}
+{%- assign section_groups = site.data.document_navigation | where: 'section', current_group.section -%}
 <aside class="document-nav" data-document-nav aria-label="Article library">
   <a class="document-skip" href="#document-article">Skip to article</a>
   <details class="document-nav-panel" open>
     <summary>Articles</summary>
     <nav aria-label="Article navigation">
       <div class="document-nav-articles" data-document-nav-articles>
-      {%- for group in site.data.document_navigation -%}
+      {%- for group in section_groups -%}
         {%- assign group_articles = site.designs | where: 'category', group.category | sort: 'title' -%}
         {%- if group_articles.size > 0 -%}
         <div class="document-nav-group">

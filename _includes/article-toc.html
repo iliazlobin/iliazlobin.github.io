@@ -24,6 +24,9 @@
       {%- assign toc_heading = toc_part | split: toc_closing | first -%}
       {%- assign toc_opening_length = toc_opening | size | plus: 1 -%}
       {%- assign toc_label = toc_heading | slice: toc_opening_length, toc_heading.size | strip_html | strip_newlines | strip -%}
+      {%- if toc_attributes contains ' data-toc-label="' -%}
+        {%- assign toc_label = toc_attributes | split: ' data-toc-label="' | last | split: '"' | first -%}
+      {%- endif -%}
       {%- if toc_count == 0 -%}
         <ol class="article-toc-list" role="list">
         {%- assign toc_levels = toc_level | append: '' -%}

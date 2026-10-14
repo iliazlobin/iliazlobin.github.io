@@ -84,7 +84,7 @@ test('missing markup is harmless and cleanup removes all controller listeners', 
   assert.equal(dom.events.size + dom.clicks.size + dom.mediaEvents.size, 0);
 });
 
-test('only documents gain three native-scroll regions, complete canonical links and print isolation', () => {
+test('only documents gain three native-scroll regions, complete section links and print isolation', () => {
   const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
   const layout = read('_layouts/post.html'), css = read('assets/css/article-toc.css'), include = read('_includes/document-nav.html');
   assert.match(layout, /if page\.collection == 'designs' %}\s*<div class="document-shell" data-document-shell>/);
@@ -107,15 +107,16 @@ test('article groups retain distinct category ownership without category shortcu
   const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
   const groups = read('_data/document_navigation.yml').split(/(?=^- category: )/m).filter(Boolean).map(record => ({
     category: record.match(/^- category: (.+)$/m)?.[1],
+    section: record.match(/^  section: (.+)$/m)?.[1],
     label: record.match(/^  label: (.+)$/m)?.[1],
   }));
   assert.deepEqual(groups, [
-    { category: 'system-design', label: 'System design' },
-    { category: 'system-design-ml', label: 'Machine learning' },
-    { category: 'low-level-design', label: 'Low-level design' },
-    { category: 'ai', label: 'Agentic AI' },
-    { category: 'infra', label: 'Infrastructure' },
-    { category: 'tech', label: 'Technologies' },
+    { category: 'system-design', section: 'design', label: 'System design' },
+    { category: 'system-design-ml', section: 'design', label: 'Machine learning' },
+    { category: 'low-level-design', section: 'design', label: 'Low-level design' },
+    { category: 'ai', section: 'design', label: 'Agentic AI' },
+    { category: 'infra', section: 'infrastructure', label: 'Infrastructure' },
+    { category: 'tech', section: 'infrastructure', label: 'Technologies' },
   ]);
   assert.equal(new Set(groups.map(group => group.category)).size, groups.length);
   const categories = new Set(groups.map(group => group.category));
@@ -126,6 +127,10 @@ test('article groups retain distinct category ownership without category shortcu
     assert.ok(categories.has(owners[0][1].trim()), `${name} must have a known category`);
   }
   const include = read('_includes/document-nav.html');
+  assert.match(include, /assign current_group = site\.data\.document_navigation \| where: 'category', page\.category \| first/);
+  assert.match(include, /assign section_groups = site\.data\.document_navigation \| where: 'section', current_group\.section/);
+  assert.match(include, /for group in section_groups/);
+  assert.doesNotMatch(include, /for group in site\.data\.document_navigation/);
   assert.match(include, /id="document-nav-{{ group.category }}" class="document-nav-group-title">{{ group.label \| escape }}/);
   assert.match(include, /<ul aria-labelledby="document-nav-{{ group.category }}">/);
   assert.doesNotMatch(include, /data-article-category|document-nav-categories|group.index|All designs|Infrastructure &amp; tech|document-nav-indexes|page.tags/);

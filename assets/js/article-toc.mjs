@@ -56,7 +56,7 @@ export function setupArticleToc(article, view = window) {
       }
     }
     const current = entries.find(entry => entry.id === activeId)?.link;
-    const nav = toc.querySelector("nav");
+    const nav = article.querySelector("[data-toc-scroll]") || toc.querySelector("nav");
     if (desktop.matches && current && nav) {
       const linkBox = current.getBoundingClientRect();
       const navBox = nav.getBoundingClientRect();
@@ -111,5 +111,55 @@ export function setupArticleToc(article, view = window) {
     summary?.removeEventListener("click", onToggle);
     toc.removeEventListener("click", onNavigate);
     observer?.disconnect();
+  } };
+}
+
+/** Keep optional sidebar details usable without JS and compact on narrow screens. */
+export function setupSidePanels(root, view = window) {
+  const panels = Array.from(root?.querySelectorAll("details[data-side-panel]") || []);
+  if (!panels.length) return null;
+  const desktop = view.matchMedia("(min-width: 1240px)");
+  const summaries = panels.map(panel => panel.querySelector("summary")).filter(Boolean);
+  function revealFragment() {
+    let id;
+    try { id = decodeURIComponent((view.location?.hash || "").slice(1)); }
+    catch { return; }
+    const target = id && root.ownerDocument?.getElementById(id);
+    if (target) for (const panel of panels) if (panel.contains(target)) panel.open = true;
+  }
+  function sync() {
+    for (const panel of panels) panel.open = desktop.matches;
+    revealFragment();
+    for (const summary of summaries) {
+      summary.tabIndex = desktop.matches ? -1 : 0;
+      if (desktop.matches) summary.setAttribute("aria-disabled", "true");
+      else summary.removeAttribute("aria-disabled");
+    }
+  }
+  function onToggle(event) { if (desktop.matches) event.preventDefault(); }
+  let printState = null;
+  function beforePrint() {
+    if (printState) return;
+    printState = panels.map(panel => panel.open);
+    for (const panel of panels) panel.open = true;
+  }
+  function afterPrint() {
+    if (!printState) return;
+    panels.forEach((panel, index) => { panel.open = printState[index]; });
+    printState = null;
+  }
+  sync();
+  desktop.addEventListener("change", sync);
+  view.addEventListener("beforeprint", beforePrint);
+  view.addEventListener("afterprint", afterPrint);
+  view.addEventListener("hashchange", revealFragment);
+  for (const summary of summaries) summary.addEventListener("click", onToggle);
+  return { destroy() {
+    desktop.removeEventListener("change", sync);
+    view.removeEventListener("beforeprint", beforePrint);
+    view.removeEventListener("afterprint", afterPrint);
+    view.removeEventListener("hashchange", revealFragment);
+    afterPrint();
+    for (const summary of summaries) summary.removeEventListener("click", onToggle);
   } };
 }

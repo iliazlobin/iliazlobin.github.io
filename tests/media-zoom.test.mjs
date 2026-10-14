@@ -1,7 +1,39 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { fitView, zoomView, panView, gestureView, wheelScale, isZoomableMedia } from '../assets/js/media-zoom.mjs';
+import { fitView, zoomView, panView, gestureView, wheelScale, isZoomableMedia, shouldOpenMediaZoom } from '../assets/js/media-zoom.mjs';
+
+// A small ancestor fixture distinguishes actual portfolio thumbnails from
+// unrelated article links, rather than returning the same node for every selector.
+class ClickTarget {
+  constructor(tag, classes = [], parent = null) { this.tag = tag; this.classes = new Set(classes); this.parent = parent; }
+  matches(selector) {
+    return selector.split(',').some(part => {
+      const ancestors = part.trim().split(/\s+/);
+      const leaf = ancestors.pop();
+      const tag = leaf.match(/^[a-z]+/i)?.[0];
+      if (tag && tag.toLowerCase() !== this.tag) return false;
+      if ([...leaf.matchAll(/\.([\w-]+)/g)].some(([, name]) => !this.classes.has(name))) return false;
+      let parent = this.parent;
+      for (const ancestor of ancestors.reverse()) {
+        while (parent && !parent.matches(ancestor)) parent = parent.parent;
+        if (!parent) return false;
+        parent = parent.parent;
+      }
+      return true;
+    });
+  }
+  closest(selector) { return this.matches(selector) ? this : this.parent?.closest(selector) || null; }
+}
+
+const primaryClick = (target, overrides = {}) => ({ target, button: 0, ctrlKey: false, metaKey: false,
+  altKey: false, shiftKey: false, defaultPrevented: false, ...overrides });
+
+function clickableMedia({ linked = false, thumbnail = false, portfolio = false } = {}) {
+  const card = new ClickTarget('article', portfolio ? ['portfolio-item'] : []);
+  const host = new ClickTarget(linked ? 'a' : 'div', thumbnail ? ['thumb'] : [], card);
+  return new ClickTarget('img', [], host);
+}
 
 test('fit preserves aspect ratio, avoids unnecessary enlargement and recenters', () => {
   const view = fitView(1600, 800, 800, 600);
@@ -80,6 +112,38 @@ test('discovery excludes decorative, broken and not-yet-loaded media', () => {
   assert.equal(isZoomableMedia(media({ tagName: 'svg', closest: selector => selector === '.post-content .mermaid' ? {} : null })), true);
 });
 
+test('ordinary picture clicks share zoom for unlinked media and linked portfolio thumbnails', () => {
+  for (const options of [{}, { thumbnail: true, portfolio: true }, { linked: true, thumbnail: true, portfolio: true }]) {
+    const media = clickableMedia(options);
+    assert.equal(shouldOpenMediaZoom(media, primaryClick(media)), true, JSON.stringify(options));
+  }
+});
+
+test('article links and unrelated anchors retain their native primary-click navigation', () => {
+  for (const options of [{ linked: true }, { linked: true, thumbnail: true }, { linked: true, portfolio: true }]) {
+    const media = clickableMedia(options);
+    assert.equal(shouldOpenMediaZoom(media, primaryClick(media)), false, JSON.stringify(options));
+  }
+});
+
+test('modified and non-primary clicks retain native behavior for every zoomable picture kind', () => {
+  for (const options of [{}, { linked: true, thumbnail: true, portfolio: true }]) {
+    const media = clickableMedia(options);
+    for (const button of [1, 2]) assert.equal(shouldOpenMediaZoom(media, primaryClick(media, { button })), false);
+    for (const flag of ['ctrlKey', 'metaKey', 'altKey', 'shiftKey', 'defaultPrevented']) {
+      assert.equal(shouldOpenMediaZoom(media, primaryClick(media, { [flag]: true })), false, flag);
+    }
+  }
+});
+
+test('button descendants are not intercepted as picture clicks', () => {
+  const media = clickableMedia({ linked: true, thumbnail: true, portfolio: true });
+  const button = new ClickTarget('button', [], media.parent);
+  const icon = new ClickTarget('svg', [], button);
+  assert.equal(shouldOpenMediaZoom(media, primaryClick(button)), false);
+  assert.equal(shouldOpenMediaZoom(media, primaryClick(icon)), false);
+});
+
 test('shared setup preserves link navigation, asynchronous diagrams and modal cleanup', () => {
   const source = readFileSync(new URL('../assets/js/media-zoom.mjs', import.meta.url), 'utf8');
   const css = readFileSync(new URL('../assets/css/media-zoom.css', import.meta.url), 'utf8');
@@ -89,7 +153,8 @@ test('shared setup preserves link navigation, asynchronous diagrams and modal cl
   assert.match(source, /createElement\('dialog'\)/);
   assert.match(source, /dialog\.showModal\(\)/);
   assert.match(source, /aria-labelledby/);
-  assert.match(source, /event\.target\.closest\('a, button'\)/);
+  assert.match(source, /if \(!shouldOpenMediaZoom\(media, event\)\) return;\s*event\.preventDefault\(\);\s*open\(media, trigger, label\);/);
+  assert.match(source, /event\.target\.closest\('button'\)/);
   assert.match(source, /revokeObjectURL/);
   assert.match(source, /new win\.XMLSerializer/);
   assert.doesNotMatch(source, /innerHTML|fetch\(|\.onclick\s*=/);
@@ -100,4 +165,18 @@ test('shared setup preserves link navigation, asynchronous diagrams and modal cl
   assert.match(css, /\.media-zoom-trigger\s*\{[^}]*z-index: 3;/);
   assert.match(css, /touch-action: none/);
   assert.match(css, /@media print/);
+});
+
+test('linked thumbnails retain the original anchor and place independent zoom controls outside it', () => {
+  const source = readFileSync(new URL('../assets/js/media-zoom.mjs', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../assets/css/media-zoom.css', import.meta.url), 'utf8');
+  assert.match(source, /host\?\.tagName\.toLowerCase\(\) === 'a'/);
+  assert.match(source, /host\.className = 'media-zoom-host media-zoom-card'/);
+  assert.match(source, /linkedThumb\.before\(host\); host\.append\(linkedThumb\);/);
+  assert.match(source, /host\.append\(trigger\)/);
+  assert.doesNotMatch(source, /(?:media|linkedThumb)\.href\s*=/);
+  assert.doesNotMatch(source, /(?:media|linkedThumb)\.setAttribute\(['"]href/);
+  assert.match(source, /if \(linkedThumb \|\| host\.classList\.contains\('media-zoom-inline'\)\) host\.replaceWith\(\.\.\.host\.childNodes\)/);
+  assert.match(css, /\.media-zoom-card\s*\{[^}]*min-width:\s*0/);
+  assert.match(css, /\.media-zoom-card > \.thumb\s*\{[^}]*height:\s*100%/);
 });

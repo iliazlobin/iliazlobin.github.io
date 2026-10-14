@@ -20,6 +20,7 @@
   --shadow-lg:     0 8px 30px rgba(16,24,40,.12);
   --maxw:          820px;
   --site-shell-width: 1340px;
+  --site-reading-width: 800px;
   --site-gutter:    30px;
   /* No-JS fallback; the header observer supplies its actual wrapped height. */
   --site-header-height: 64px;

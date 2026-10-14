@@ -28,6 +28,11 @@ REDIRECTS = {
     "/tech/": "/infrastructure/",
 }
 ARTICLE_CATEGORIES = ("system-design", "system-design-ml", "low-level-design", "ai", "infra", "tech")
+ARTICLE_SECTIONS = {
+    "Design": ("system-design", "system-design-ml", "low-level-design", "ai"),
+    "Infrastructure": ("infra", "tech"),
+}
+PERSONAL_PAGE_ROUTES = ("/", "/resume/", "/advisory/")
 
 
 class Page(HTMLParser):
@@ -43,7 +48,17 @@ class Page(HTMLParser):
         self.articles = []
         self.table_rows = []
         self.document_shells = 0
+        self.personal_page_shells = 0
+        self.personal_page_rails = []
+        self.personal_profile_rails = []
+        self.profile_ids = set()
+        self.page_rail_ids = set()
+        self._profile_depth = 0
+        self._page_rail_depth = 0
         self.article_navigations = 0
+        self.outlines = 0
+        self.outline_panels = []
+        self.resume_downloads = []
         self.library_links = []
         self.current_articles = []
         self.article_skip_links = []
@@ -66,6 +81,11 @@ class Page(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         classes = attrs.get("class", "").split()
+        if tag == "aside":
+            if self._profile_depth or "page-profile-rail" in classes:
+                self._profile_depth += 1
+            if self._page_rail_depth or "page-side-rail" in classes:
+                self._page_rail_depth += 1
         if "site-page-title" in classes:
             self._section_tag = tag
             self._section_text = []
@@ -83,6 +103,10 @@ class Page(HTMLParser):
                     self._post_header.append(name)
         if attrs.get("id"):
             self.ids.add(attrs["id"])
+            if self._profile_depth:
+                self.profile_ids.add(attrs["id"])
+            if self._page_rail_depth:
+                self.page_rail_ids.add(attrs["id"])
         if "data-site-search" in attrs:
             self.search_dialogs += 1
             self._in_search = True
@@ -92,6 +116,22 @@ class Page(HTMLParser):
             self.search_triggers += 1
         if "data-document-shell" in attrs:
             self.document_shells += 1
+            if "document-shell--page" in classes:
+                self.personal_page_shells += 1
+        if "page-side-rail" in classes:
+            self.personal_page_rails.append(("data-toc-scroll" in attrs,
+                                             attrs.get("aria-label")))
+        if "page-profile-rail" in classes:
+            self.personal_profile_rails.append(("data-page-profile" in attrs,
+                                                attrs.get("aria-label")))
+        if "data-article-toc" in attrs:
+            self.outlines += 1
+        if tag == "details" and "article-toc-panel" in classes:
+            self.outline_panels.append("open" in attrs)
+        if tag == "a" and "resume-download" in classes:
+            self.resume_downloads.append((attrs.get("href"), attrs.get("type"),
+                                          attrs.get("download"), attrs.get("aria-label"),
+                                          attrs.get("title")))
         if tag == "nav" and attrs.get("aria-label") == "Article navigation":
             self.article_navigations += 1
         if tag == "a" and "data-article-link" in attrs:
@@ -133,6 +173,11 @@ class Page(HTMLParser):
             self._cell_text.append(data)
 
     def handle_endtag(self, tag):
+        if tag == "aside":
+            if self._profile_depth:
+                self._profile_depth -= 1
+            if self._page_rail_depth:
+                self._page_rail_depth -= 1
         if self._section_text is not None and tag == self._section_tag:
             self.section_titles.append((tag, "".join(self._section_text).strip()))
             self._section_text = None
@@ -165,12 +210,15 @@ def route_file(root, route):
 def check_document_layout(root, errors):
     document_count = 0
     sources = list((root / "designs").glob("*/index.html"))
-    expected_articles = set()
+    articles_by_category = {category: set() for category in ARTICLE_CATEGORIES}
     for source in sources:
         candidate = Page()
         candidate.feed(source.read_text(encoding="utf-8"))
-        if any("post" in classes for classes in candidate.articles):
-            expected_articles.add("/" + source.parent.relative_to(root).as_posix() + "/")
+        if (any("post" in classes for classes in candidate.articles)
+                and len(candidate.post_categories) == 1
+                and candidate.post_categories[0] in articles_by_category):
+            articles_by_category[candidate.post_categories[0]].add(
+                "/" + source.parent.relative_to(root).as_posix() + "/")
     for source in sources:
         page = Page()
         page.feed(source.read_text(encoding="utf-8"))
@@ -184,6 +232,9 @@ def check_document_layout(root, errors):
         infrastructure = page.post_categories == ["infra"] or page.post_categories == ["tech"]
         section_title = "Infrastructure" if infrastructure else "Design"
         section_url = "/infrastructure/" if infrastructure else "/designs/"
+        section_categories = ARTICLE_SECTIONS[section_title]
+        expected_articles = set().union(*(articles_by_category[category]
+                                          for category in section_categories))
         if page.section_titles != [("span", section_title)] or len(page.headings) != 1:
             errors.append(f"{source}: article masthead must name its section without adding another H1")
         if page.current_navigation != [(section_url, "location")]:
@@ -193,14 +244,15 @@ def check_document_layout(root, errors):
         if page.document_shells != 1 or page.article_navigations != 1:
             errors.append(f"{source}: missing or duplicate documentation shell/navigation")
         if len(page.library_links) != len(expected_articles) or set(page.library_links) != expected_articles:
-            errors.append(f"{source}: article navigation must preserve every distinct article URL")
+            errors.append(f"{source}: article navigation must contain every {section_title} article URL and no other section")
         if page.current_articles != [route]:
             errors.append(f"{source}: expected exactly one current article, got {page.current_articles!r}")
         if page.category_shortcuts:
             errors.append(f"{source}: sidebar must contain article groups without category shortcuts")
-        expected_groups = [f"document-nav-{category}" for category in ARTICLE_CATEGORIES]
+        expected_groups = [f"document-nav-{category}" for category in section_categories
+                           if articles_by_category[category]]
         if page.article_groups != expected_groups or any(group not in page.ids for group in expected_groups):
-            errors.append(f"{source}: sidebar must preserve all six accessible article groups")
+            errors.append(f"{source}: sidebar must preserve only the accessible {section_title} article groups")
         if page.post_headers not in ([["metadata", "category", "title", "tags"]],
                                     [["metadata", "category", "title"]]):
             errors.append(f"{source}: header must put category metadata above title and topic tags below it")
@@ -222,7 +274,7 @@ def check_document_layout(root, errors):
     if not document_count:
         errors.append("No document articles found")
 
-    for route in ("/", "/resume/", "/portfolio/", "/blog/", "/designs/", "/infrastructure/"):
+    for route in ("/portfolio/", "/blog/", "/designs/", "/infrastructure/"):
         source = route_file(root, route)
         if source.is_file():
             html = source.read_text(encoding="utf-8")
@@ -242,6 +294,64 @@ def check_document_layout(root, errors):
     if rows != [["Feed read availability", expected, "99.95% monthly"]]:
         errors.append(f"News Feed availability table is malformed: {rows!r}")
     return document_count
+
+
+def check_personal_page_layout(root, errors):
+    """Personal pages share the native outline without becoming design articles."""
+    preserved_ids = {
+        "/": ("career-focus", "professional-interests", "outside-of-work"),
+        "/resume/": ("summary", "professional-experience", "education",
+                     "professional-certifications", "talks",
+                     "top-personal-projects-aiml-engineer--architect"),
+        "/advisory/": ("advisory-focus",),
+    }
+    for route in PERSONAL_PAGE_ROUTES:
+        source = route_file(root, route)
+        if not source.is_file():
+            continue  # The route check reports a missing page separately.
+        html = source.read_text(encoding="utf-8")
+        page = Page()
+        page.feed(html)
+        if page.document_shells != 1 or page.personal_page_shells != 1:
+            errors.append(f"{route}: expected one scoped personal-page document shell")
+        if page.personal_page_rails != [(True, "Page navigation and details")]:
+            errors.append(f"{route}: expected one named shared scrolling page rail")
+        expected_profile = [(True, "Contact and qualifications")] if route == "/resume/" else []
+        if page.personal_profile_rails != expected_profile:
+            errors.append(f"{route}: only Resume must retain its separate left qualifications rail")
+        posts = [classes for classes in page.articles if "post" in classes]
+        if len(posts) != 1 or not {"post--page", "post--document"}.issubset(posts[0]):
+            errors.append(f"{route}: personal content must use the shared main document column")
+        if page.article_navigations or page.library_links or page.article_skip_links:
+            errors.append(f"{route}: personal pages must not acquire the technical article library")
+        if page.outlines != 1 or page.outline_panels != [True]:
+            errors.append(f"{route}: expected one native initially open outline for no-JS readers")
+        if page.headings != [ROUTES[route]]:
+            errors.append(f"{route}: retain one main page heading, got {page.headings!r}")
+        styles = [urlsplit(resource).path for resource in page.resources if ".css" in resource]
+        if styles.count("/assets/css/article-toc.css") != 1:
+            errors.append(f"{route}: expected one shared document outline stylesheet")
+        if len(re.findall(r"setupArticleToc\(", html)) != 1 or not re.search(r"document\.querySelector\([\"']\[data-document-shell\][\"']\)", html):
+            errors.append(f"{route}: expected the shared outline enhancement once")
+        if not re.search(r"/assets/js/article-toc\.mjs\?v=\d+", html):
+            errors.append(f"{route}: outline module must retain the versioned shared asset URL")
+        outline = ArticleOutline()
+        outline.feed(html)
+        errors.extend(f"{route}: {error}" for error in outline.validate())
+        if not outline.headings or any(not heading["id"] for heading in outline.headings):
+            errors.append(f"{route}: visible outline headings need stable native fragment targets")
+        if any(anchor not in page.ids for anchor in preserved_ids[route]):
+            errors.append(f"{route}: existing section fragment IDs were removed")
+        if route == "/resume/":
+            expected_download = ("/assets/documents/ilia-zlobin-resume.pdf", "application/pdf",
+                                 "Ilia-Zlobin-Resume.pdf", "Download Resume PDF", "Download Resume PDF")
+            if page.resume_downloads != [expected_download]:
+                errors.append(f"{route}: retain the named native Resume PDF download")
+            qualification_ids = {"contact", "education", "professional-certifications"}
+            if not qualification_ids.issubset(page.profile_ids) or qualification_ids & page.page_rail_ids:
+                errors.append(f"{route}: contact and qualifications must stay in the left rail, not the right outline")
+            if any(item["id"] in ("education", "professional-certifications") for item in outline.links):
+                errors.append(f"{route}: body outline must not misclassify left-rail qualifications as body sections")
 
 
 def check_search_index(root, errors):
@@ -275,7 +385,7 @@ def check_search_index(root, errors):
         page.feed(target.read_text(encoding="utf-8"))
         if parsed.fragment and unquote(parsed.fragment) not in page.ids:
             errors.append(f"Search index fragment has no destination: {url}")
-        if any("post--document" in classes for classes in page.articles):
+        if parsed.path.startswith("/designs/") and any("post--document" in classes for classes in page.articles):
             article_urls.add(parsed.path)
             expected_section = "infra" if entry["category"] in ("infra", "tech") else "design"
             if entry["category"] not in ARTICLE_CATEGORIES or entry["section"] != expected_section:
@@ -284,6 +394,19 @@ def check_search_index(root, errors):
             project_ids.add(unquote(parsed.fragment))
             if entry["section"] != "portfolio" or entry["category"] not in ("full-stack", "ai-ml", "infra", "research"):
                 errors.append(f"Search project has invalid category/section ownership: {url}")
+        if parsed.path == "/resume/":
+            if entry["category"] != "page" or entry["section"] != "resume":
+                errors.append("Resume must retain page ownership in universal search")
+            qualification_ids = ("education", "professional-certifications")
+            indexed = Page()
+            indexed.feed(entry["html"])
+            if any(anchor not in indexed.ids for anchor in qualification_ids):
+                errors.append("Universal search must retain Resume qualification section targets")
+            qualification_terms = ("Bachelor's degree", "St. Petersburg State Transport University",
+                                   "Cloud Architect", "Solutions Architect", "DevOps Engineer",
+                                   "Certified Kubernetes Administrator")
+            if any(term not in entry["html"] for term in qualification_terms):
+                errors.append("Universal search lost Resume education or certification content")
         for anchor in re.findall(r'<h[1-6]\b[^>]*\bid=["\']([^"\']+)', entry["html"], re.I):
             if anchor not in page.ids:
                 errors.append(f"Search index heading has no destination: {url}#{anchor}")
@@ -337,6 +460,7 @@ def check_site(root):
         errors.append("Missing or invalid resume PDF")
 
     document_count = check_document_layout(root, errors)
+    check_personal_page_layout(root, errors)
     search_count = check_search_index(root, errors)
 
     if errors:

@@ -2,7 +2,11 @@
 .media-zoom-host { position: relative; }
 .media-zoom-inline { display: block; width: fit-content; max-width: 100%; }
 .media-zoom-inline > img { display: block; }
+.media-zoom-card { display: block; min-width: 0; }
+.media-zoom-card > .thumb { height: 100%; box-sizing: border-box; }
+.media-zoom-card > .thumb::after { pointer-events: none; }
 .media-zoom-target:not(a *) { cursor: zoom-in; }
+.portfolio-item .thumb .media-zoom-target { cursor: zoom-in; }
 .media-zoom-trigger {
   position: absolute; top: .5rem; right: .5rem; z-index: 3;
   min-height: 36px; padding: .35rem .65rem; border: 1px solid #dadce0;
