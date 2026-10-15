@@ -220,7 +220,7 @@ Hash tags can colocate related keys, such as `user:{42}:profile` and `user:{42}:
 
 ## Deep dives
 
-### How should keys be distributed?
+### Key distribution and migration {#how-should-keys-be-distributed}
 
 **Problem.** Modulo hashing by the current node count remaps many keys during a topology change.
 
@@ -257,7 +257,7 @@ Moving keys needs destination memory and a rate budget so migration does not exh
 
 **Tradeoffs and recovery.** For disposable cached values, migration can tolerate some misses and refill from the source under a limit. For any value used as authority, the stronger migration/durability protocol must be defined separately rather than assumed from the slot map.
 
-### Which eviction policy protects useful values?
+### Cache eviction policies {#which-eviction-policy-protects-useful-values}
 
 **Problem.** A full cache must choose what to remove while continuing to serve requests.
 
@@ -286,7 +286,7 @@ Memory pressure?  → choose a value to remove regardless of freshness
 
 **Tradeoffs and recovery.** Set limits on value size and cached collections. Keep memory headroom for replication backlog, allocator fragmentation and resharding. Monitor source cost per miss, not just hit ratio, and pin no unbounded “critical” key set outside the eviction budget.
 
-### What does replication guarantee during failover?
+### Replication and failover guarantees {#what-does-replication-guarantee-during-failover}
 
 **Problem.** A primary can acknowledge a write before its replica receives it.
 
@@ -329,7 +329,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Tradeoffs and recovery.** Cold failover sends more misses to the source. Apply a global fallback concurrency budget, prioritize necessary reads and shed optional expensive work. Test replica resynchronization and source recovery while traffic remains high, rather than testing only the healthy cache path.
 
-### How do hot keys and synchronized misses stay manageable?
+### Hot keys and coordinated cache fills {#how-do-hot-keys-and-synchronized-misses-stay-manageable}
 
 **Problem.** Adding shards spreads different keys, but a single popular key still maps to one slot.
 

@@ -263,7 +263,7 @@ Checkpoint consistency does not make arbitrary external writes exactly-once; eac
 
 ## Deep dives
 
-### How do we prevent a viral video from creating a hot partition?
+### Hot-video aggregation {#how-do-we-prevent-a-viral-video-from-creating-a-hot-partition}
 
 **Problem.** Hashing only by video ID puts all events for that video on one aggregation task.
 
@@ -287,7 +287,7 @@ If lane three advances from 100 to 125, the merger contributes an additional 25;
 
 **Tradeoffs and recovery.** A hot video's millions of raw events become bounded lane-summary updates. Increasing the number of lanes creates a new routing generation; reconcile both generations under an explicit cutover cutoff. Otherwise old and new lanes may double-count the same accepted events.
 
-### How do rolling windows expire old views?
+### Rolling-window expiry {#how-do-rolling-windows-expire-old-views}
 
 **Problem.** Recent rankings must remove views once they leave the reporting interval.
 
@@ -311,7 +311,7 @@ For an arbitrary 12:00:30 endpoint, minute buckets approximate the two boundarie
 
 **Tradeoffs and recovery.** A late event with event time 11:58 updates that bucket, not the current 12:00 bucket. The next corrected snapshot includes the new revision if the interval still covers 11:58. Data older than the online correction horizon is reconciled from the archive through a separate versioned publication.
 
-### How much approximation is acceptable?
+### Approximation error and candidate recall {#how-much-approximation-is-acceptable}
 
 **Problem.** Maintaining all video identities and every active window in memory is expensive.
 
@@ -333,7 +333,7 @@ For example, if the estimated Kth video has 10,100 ± 500 views and another has 
 
 **Tradeoffs and recovery.** Retain candidate summaries per aligned slice and combine them with a supported merge algorithm. Expiring a slice drops that summary; decrementing a standard Space-Saving summary is not equivalent. Evaluate candidate recall against complete exact samples, including concentrated regional popularity and nearly tied videos, rather than checking only average count error.
 
-### Can we merge regional top-K lists safely?
+### Regional aggregation and global top-K {#can-we-merge-regional-top-k-lists-safely}
 
 **Problem.** A globally popular video may fall below the local cutoff in every region.
 

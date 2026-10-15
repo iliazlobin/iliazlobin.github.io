@@ -280,7 +280,7 @@ Feed and leaderboard reads enforce current eligibility while their caches catch 
 
 ## Deep dives
 
-### How do uploads survive offline retries?
+### Durable activity uploads {#how-do-uploads-survive-offline-retries}
 
 **Problem.** Metadata, object storage and background jobs do not share one transaction.
 
@@ -319,7 +319,7 @@ sequenceDiagram
 
 **Tradeoffs and recovery.** If the final response is lost, the app queries the stable ID. An accepted activity is already queued, so the original trace can stay local until the app receives acceptance confirmation. Processing writes a deterministic generation of efforts and derived data before advancing its checkpoint. Abandoned uploads and unattached objects are cleaned only after a grace period that excludes active retries.
 
-### How do we match a short segment within a long activity?
+### Segment matching with GPS uncertainty {#how-do-we-match-a-short-segment-within-a-long-activity}
 
 **Problem.** GPS noise, repeated laps and parallel roads make spatial overlap insufficient.
 
@@ -341,7 +341,7 @@ Repeated laps can produce several valid start/end pairs. Evaluate each pair sepa
 
 **Tradeoffs and recovery.** Banded path alignment compares nearby positions in sequence, accommodating GPS noise while limiting work. A parallel road may pass through the same cells but fail direction or corridor coverage. Persist segment version, trace generation and match confidence with each effort so a correction can reproduce the decision.
 
-### How should filtered leaderboards store personal bests?
+### Filtered leaderboards and personal bests {#how-should-filtered-leaderboards-store-personal-bests}
 
 **Problem.** Ranking every historical effort repeatedly is costly and can show the same athlete several times.
 
@@ -363,7 +363,7 @@ Use an ordered index such as `(segment_id, view_generation, elapsed_ms, athlete_
 
 **Tradeoffs and recovery.** If the 58-second activity becomes private or is deleted, find the athlete's next eligible effort and replace the materialized best. This requires retained effort history or a replay source, not just the previous best value. Changing an age/category filter builds a separate view generation before publication. Exact deep personal rank needs an order-statistics/counting structure; a cache of the first page answers only top-page queries.
 
-### How do feeds and group cards preserve privacy?
+### Privacy-aware feeds and group cards {#how-do-feeds-and-group-cards-preserve-privacy}
 
 **Problem.** Large follower counts increase writes, and group inference can reveal hidden activity.
 

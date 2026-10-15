@@ -231,7 +231,7 @@ For a permitted download, it selects device-compatible encrypted files and issue
 
 ## Deep dives
 
-### Which content-delivery model should we use?
+### Content delivery and cache steering {#which-content-delivery-model-should-we-use}
 
 **Problem.** The same title may be watched millions of times, while long-tail titles have sparse regional demand.
 
@@ -265,7 +265,7 @@ flowchart TB
 
 **Tradeoffs and recovery.** When many users request the same missing segment, one cache-fill operation downloads it while other requests share that work. Immutable generation keys let caches retain good files without mixing encodes. Prefill predictions use regional demand and release schedules; measure the bytes transferred for files that were never played as well as miss rate. If an endpoint fails mid-playback, the player requests the same segment generation from an alternate endpoint and retains its playback buffer.
 
-### How should encoding work be scheduled?
+### Versioned encoding workflows {#how-should-encoding-work-be-scheduled}
 
 **Problem.** Codec/resolution variants consume compute and must be consistent before a title is playable.
 
@@ -285,7 +285,7 @@ Chunking creates parallelism, but boundaries must align with independently decod
 
 **Tradeoffs and recovery.** The final publisher writes a manifest containing only verified objects, then conditionally updates the title's playable-generation pointer from G41 to G42. This pointer is the publication boundary. A failed task leaves G41 playable; G42 stays unpublished for retry or investigation. Garbage collection waits until old playback sessions and rollback retention no longer need G41.
 
-### How do we keep the homepage fresh and affordable?
+### Homepage freshness and serving cost {#how-do-we-keep-the-homepage-fresh-and-affordable}
 
 **Problem.** Full model inference on every page is expensive, while cached rows can contain stale progress or unavailable titles.
 
@@ -305,7 +305,7 @@ A user finishing episode four should see episode five even if the recommendation
 
 **Tradeoffs and recovery.** Pin the candidate/model generation in a short-lived pagination token so row ordering stays coherent while prepared lists refresh. Reserve a response budget for catalog filtering and fallback rows. Monitor the percentage of cached candidates removed by current policy: a high rejection rate signals that preparation is too stale or that the candidate source ignores important constraints.
 
-### How do cross-device progress and stream limits stay correct?
+### Playback progress and stream limits {#how-do-cross-device-progress-and-stream-limits-stay-correct}
 
 **Problem.** Heartbeat retries arrive out of order, and two devices can start concurrently.
 

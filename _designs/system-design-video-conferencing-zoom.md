@@ -351,7 +351,7 @@ Transport-encrypted meetings can support a trusted cloud recorder. End-to-end en
 
 ## Deep dives
 
-### Which media topology fits group meetings?
+### Media topologies for group meetings {#which-media-topology-fits-group-meetings}
 
 **Problem.** A group call creates many subscriptions, and users have limited uplink and decoding capacity.
 
@@ -389,7 +389,7 @@ class P,S,A,B,C request;
 
 **Tradeoffs and recovery.** On a layout change, the receiver requests a new subscription. The SFU requests a keyframe when needed for the switch and drops retransmissions after their playback deadline. Measure sender upload bandwidth, SFU outbound bandwidth and receiver decoding load separately. A forwarding failure requires reassignment and republishing; retained meeting metadata cannot reconstruct media packets already lost.
 
-### How do meetings survive restrictive networks?
+### Connectivity through restrictive networks {#how-do-meetings-survive-restrictive-networks}
 
 **Problem.** A direct media path sends individual packets without waiting for transport-level retransmission, using **User Datagram Protocol (UDP)**. This suits time-sensitive audio/video. A home router may translate a device's private address to a public address; this is **network address translation (NAT)**. That translation and firewall rules can make some advertised addresses unreachable. Connectivity checks, called [Interactive Connectivity Establishment (ICE)](https://www.rfc-editor.org/rfc/rfc8445.html), find a usable device-to-server path.
 
@@ -435,7 +435,7 @@ Monitor the control connection and media path separately: either can fail while 
 
 **Tradeoffs and recovery.** Expire relay allocations and enforce per-user abuse limits. Test enterprise firewalls and Wi-Fi-to-mobile handoff with real clients. After a path changes, estimate its capacity before restoring the previous video bitrate. Relay failure starts a new connectivity check; relay capacity shortages return a visible reconnect/join failure rather than claiming all networks meet the regional latency target.
 
-### How do retries and reconnects preserve the current session?
+### Retry-safe commands and session versions {#how-do-retries-and-reconnects-preserve-the-current-session}
 
 **Problem.** A client can lose a response after a command succeeds, and messages from an old connection can arrive after a reconnect. The service must recognize a repeated request while keeping delayed messages from changing the current session.
 
@@ -469,7 +469,7 @@ For chat, a PostgreSQL transaction locks the meeting-local sequence counter, ass
 
 **Tradeoffs and recovery.** Retain command results through the supported retry window. Clients stop automatic retries once that window closes and show an unresolved outcome for recovery. Measure duplicate-result hits, rejected old-version commands and replay lag. Durable command writes can pause during database failure while an already established media session continues from its live state.
 
-### How do we keep quality consistent across receivers?
+### Per-receiver media quality {#how-do-we-keep-quality-consistent-across-receivers}
 
 **Problem.** A fast connection and a congested mobile connection can subscribe to the same publisher.
 
@@ -508,7 +508,7 @@ Require sustained spare bandwidth before upgrading quality; this **hysteresis** 
 
 **Tradeoffs and recovery.** Each receiver has its own quality selection; sender processing and upload capacity still limit the available versions. Test packet loss, bursty delay, mobile handoff and changing layouts. Measure audio interruptions and frozen-frame time alongside bitrate. When capacity estimates become uncertain, use a conservative video layer and preserve audio before probing upward again.
 
-### How do we route a meeting across regions?
+### Cross-region meeting routing {#how-do-we-route-a-meeting-across-regions}
 
 **Problem.** One region is operationally simple, but users far from that region pay extra propagation delay.
 
@@ -555,7 +555,7 @@ After a media-server failure, receivers resume restored video subscriptions from
 
 **Tradeoffs and recovery.** Reserve failover capacity before accepting meetings at the advertised target. Reassignment advances `assignment_epoch`. Once a client has received a newer assignment, it discards older assignment responses; media servers reject commands carrying old assignment or connection versions. These checks prevent delayed control messages from overriding newer session state. Data-residency constraints can override nearest-region placement; expose that policy to the participant.
 
-### How does end-to-end encryption change recording and trust?
+### Encryption, recording and trust {#how-does-end-to-end-encryption-change-recording-and-trust}
 
 **Problem.** Transport encryption secures each client/server leg. End-to-end encryption additionally protects media payloads from the forwarding service, changing which recording operations are possible.
 

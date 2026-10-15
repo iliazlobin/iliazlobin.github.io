@@ -408,7 +408,7 @@ An external check on every redirect would add scanner latency and availability t
 
 ## Deep dives
 
-### Which storage preserves link ownership at this scale?
+### Sharded storage and link ownership {#which-storage-preserves-link-ownership-at-this-scale}
 
 **Problem.** Forty billion retained mappings need distributed storage, while each domain-and-code pair has one owner and becomes readable immediately after creation. A cache or asynchronously replicated index alone cannot decide who owns an alias.
 

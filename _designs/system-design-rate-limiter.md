@@ -249,7 +249,7 @@ Gateways already forwarding admitted work do not undo it. Publication must expos
 
 ## Deep dives
 
-### How should we choose the algorithm?
+### Rate-limit algorithm selection {#how-should-we-choose-the-algorithm}
 
 **Problem.** Rate, burst, rolling-window and concurrency limits express different policies.
 
@@ -273,7 +273,7 @@ This differs from a fixed “ten per five seconds” counter, which can admit te
 
 **Tradeoffs and recovery.** Request rate and concurrency solve separate problems. If an upstream call takes 30 seconds, two admitted calls/s can create about 60 concurrent calls. Add an in-flight limit that is released on completion or timed expiry. Select cost weights for expensive endpoints before applying the bucket, and version the policy so gateways interpret cost consistently. An algorithm change publishes a new rule generation with an explicit state-migration policy rather than fresh allowance for every client. Test boundary bursts and weighted requests against a reference implementation; monitor decision P99 and admission drift alongside throughput.
 
-### How do we prevent concurrent token consumption races?
+### Atomic token consumption {#how-do-we-prevent-concurrent-token-consumption-races}
 
 **Problem.** Separate reads and writes can allow two gateways to spend the same token.
 
@@ -337,7 +337,7 @@ With one token remaining, competing scripts produce one allowed result and one r
 
 **Tradeoffs and recovery.** A lost reply is different: the script may have deducted a token even though the gateway timed out. For ordinary traffic protection, conservatively accepting that lost allowance is simpler than refunding an uncertain deduction. If decisions must be retry-idempotent, retain request identities within a bounded decision window and include their memory/latency cost.
 
-### How do local grants reduce global work?
+### Local token grants {#how-do-local-grants-reduce-global-work}
 
 **Problem.** A network check for every admitted request increases Redis load and tail latency.
 
@@ -374,7 +374,7 @@ Twenty gateways each holding 20 unused tokens can collectively emit an extra bur
 
 **Tradeoffs and recovery.** Small grants improve fairness but make more shared calls. Large grants strand allowance on idle gateways and extend the time between reservation and use. Adapt grants to measured utilization while retaining a hard size/expiry ceiling. Refunds require durable proof of unused tokens; a gateway merely reporting a crash is insufficient because its requests may already have been sent.
 
-### What happens when global state is unavailable?
+### Bounded fallback during authority outages {#what-happens-when-global-state-is-unavailable}
 
 **Problem.** Unlimited fail-open traffic can overload the application, while universal fail-closed behavior can disable it.
 

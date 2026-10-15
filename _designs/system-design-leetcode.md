@@ -254,7 +254,7 @@ History queries are limited to the authenticated user and use cursor pagination 
 
 ## Deep dives
 
-### What isolation should the judge use?
+### Code judging isolation {#what-isolation-should-the-judge-use}
 
 **Problem.** Submitted programs can exhaust resources, probe the environment or exploit runtime vulnerabilities. Compilers are also processing untrusted input.
 
@@ -306,7 +306,7 @@ Transfer only required inputs to the guest. Capture output through bounded chann
 
 **Tradeoffs and recovery.** The result identifies S, T and every bundle version. The database accepts it only if T still owns the attempt. After a crash, another host may execute S again; the fenced result commit prevents duplicate score application. Destroy per-submission disks and state instead of recycling a possibly compromised guest into the next user's execution. Isolation also requires patching and resource controls on the host, not just a VM boundary.
 
-### How can standings stay correct when results arrive out of order?
+### Ordered contest standings {#how-can-standings-stay-correct-when-results-arrive-out-of-order}
 
 **Problem.** A slow early submission can finish after a fast later one. Scoring in completion order could select the wrong solve time or penalty.
 
@@ -342,7 +342,7 @@ flowchart TB
 
 **Tradeoffs and recovery.** Publish the user's whole solved/penalty state conditionally by projection version. Replaying an older projection cannot restore the wrong score. Contest freeze and disclosure policy apply at response assembly, while the authority retains the complete underlying records.
 
-### How should capacity handle a contest burst?
+### Contest burst capacity {#how-should-capacity-handle-a-contest-burst}
 
 **Problem.** Reactive scaling can arrive after the first submission wave. A queue prevents loss but cannot guarantee a short verdict time without sufficient execution capacity.
 

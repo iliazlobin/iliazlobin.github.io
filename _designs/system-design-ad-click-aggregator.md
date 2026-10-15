@@ -270,7 +270,7 @@ A Top-N worker maintains counts for all active ad candidates in disjoint minute 
 
 ## Deep dives
 
-### How do retries avoid duplicate charges?
+### Idempotent click billing {#how-do-retries-avoid-duplicate-charges}
 
 **Problem.** A click may be retried by the browser, republished after a timeout or replayed after worker recovery. Correct operator state alone does not make an external database write idempotent.
 
@@ -388,7 +388,7 @@ flowchart TB
 
 **Tradeoffs and recovery.** Per-click state adds durable writes and row-lock work; campaign-spend updates can also serialize a hot campaign. Keep transactions short, use a consistent lock order and retry deadlocks with the same verdict identity. Retain applied-version state through the full reconciliation/replay horizon, including clicks that never generated a charge. Restore state, ledger, spend and outbox from one consistent shard snapshot. A unique-entry conflict while state claims an unapplied version is an integrity incident: roll back and reconcile instead of posting spend again. Reconcile summed signed entries against each click's net billable state and campaign spend.
 
-### How can reports be fresh while events arrive late?
+### Fresh reports and late events {#how-can-reports-be-fresh-while-events-arrive-late}
 
 **Problem.** A minute window may still receive delayed events after its first report has been published. Waiting for every possible event would delay all dashboard updates.
 
@@ -424,7 +424,7 @@ Streaming and reconciliation writers share an ordered publication-generation con
 
 **Tradeoffs and recovery.** Record expected partitions, watermark and completion state in the report metadata. An idle partition can be excluded from watermark progress under a documented idleness policy, but later events still enter correction handling. Events outside active state retention remain in the archive and generate a later corrected bucket. The UI distinguishes fresh provisional totals from reconciled totals.
 
-### How do fraud decisions affect billing and budget limits?
+### Fraud verdicts and budget limits {#how-do-fraud-decisions-affect-billing-and-budget-limits}
 
 **Problem.** A verdict may arrive after the first dashboard update or change after a model review. Meanwhile, asynchronous spend reports trail newly accepted clicks.
 

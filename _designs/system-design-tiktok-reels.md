@@ -276,7 +276,7 @@ The client can update its UI optimistically, then reconcile with the accepted se
 
 ## Deep dives
 
-### How does the feed react within the current session?
+### Same-session feed adaptation {#how-does-the-feed-react-within-the-current-session}
 
 **Problem.** Batch models provide useful long-term preferences but cannot encode actions that happened after their snapshot.
 
@@ -322,7 +322,7 @@ class R control;
 
 **Tradeoffs and recovery.** Record the history cutoff and bundle with each returned page. Older client actions arriving late update only eligible retained windows. Keep session feature age visible; when it exceeds the deadline, a long-term/context fallback is selected explicitly.
 
-### When should a video become playable?
+### Playable-first video publication {#when-should-a-video-become-playable}
 
 **Problem.** Waiting for every output makes one slow encoding job delay the whole publication.
 
@@ -364,7 +364,7 @@ A worker retry writes the same rendition/version key and verifies checksums befo
 
 **Tradeoffs and recovery.** The client chooses a compatible rendition using device/network capabilities. Publishing “720p ready” is meaningful only for clients that can decode its codec. Track required-rendition completion, quality validation, queue age and independent backfill failure. Admission limits prevent a large upload from occupying all latency-critical encoder capacity.
 
-### How much should playback prefetch?
+### Adaptive playback prefetch {#how-much-should-playback-prefetch}
 
 **Problem.** Downloading many predicted videos improves readiness but wastes mobile data when the user skips or leaves.
 
@@ -404,7 +404,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Tradeoffs and recovery.** Use a cache key based on immutable media generation and rendition. Private access tokens should not accidentally fragment a public cache or bypass authorization; the CDN contract must define that boundary. Report unused-prefetch bytes divided by prefetched bytes alongside first-frame latency, so faster starts are not evaluated without their data/egress cost.
 
-### How do updates and removals reach every serving path?
+### Versioned content updates and removals {#how-do-updates-and-removals-reach-every-serving-path}
 
 **Problem.** Feed caches, search and media edges hold different copies of publication state.
 

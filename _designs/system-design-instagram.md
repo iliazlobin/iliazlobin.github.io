@@ -250,7 +250,7 @@ Profile reads use author-time pagination and current visibility checks. Approxim
 
 ## Deep dives
 
-### How should feed distribution handle popular authors?
+### Hybrid feed distribution {#how-should-feed-distribution-handle-popular-authors}
 
 **Problem.** Writing to every follower's timeline makes a popular post expensive, while rebuilding from all followed authors on every read increases latency.
 
@@ -287,7 +287,7 @@ flowchart TB
 
 **Tradeoffs and recovery.** Choose thresholds from active followers and request cost rather than total follower count alone. A rarely viewed author with many inactive followers need not generate millions of writes. Returning inactive users rebuild a recent window, leaving older history in authoritative profile reads.
 
-### How do media variants improve delivery without excessive storage?
+### Media variant delivery and storage {#how-do-media-variants-improve-delivery-without-excessive-storage}
 
 **Problem.** Different clients need different sizes and bitrates, but preparing every possible variant multiplies processing and storage.
 
@@ -312,7 +312,7 @@ For video, align rendition segment boundaries and timestamps so adaptive bitrate
 
 **Tradeoffs and recovery.** A failed generation stays unpublished while the previous good generation remains usable. New processing settings create G+1 instead of overwriting files that clients and CDN caches may still reference. Measure variant utilization to remove formats that add storage without serving supported devices. Rare on-demand variants use single-flight generation and a queue budget, avoiding hundreds of transforms for the first burst of requests.
 
-### How do caches handle hot posts and removal?
+### Hot-post caching and removal {#how-do-caches-handle-hot-posts-and-removal}
 
 **Problem.** A popular post can receive many simultaneous cache misses, while a removal must change eligibility even if cached copies remain.
 
@@ -332,7 +332,7 @@ Persist the removal first, then invalidate feed/post caches and revoke renewed m
 
 **Tradeoffs and recovery.** Jitter expiry times across keys and keep separate memory budgets for timelines and media metadata. Cache failure triggers bounded authoritative reads or a degraded feed, rather than unconstrained refill traffic. Monitor fill concurrency, tombstone rejection and policy-propagation age so a cache hit-rate dashboard does not hide stale-content exposure.
 
-### How should replication support reads and recovery?
+### Replica freshness and recovery {#how-should-replication-support-reads-and-recovery}
 
 **Problem.** Nearby replicas improve latency, but asynchronous copies may lag both new posts and privacy changes.
 

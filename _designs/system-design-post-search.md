@@ -245,7 +245,7 @@ The service creates snippets only for final hits and returns highlight offsets o
 
 ## Deep dives
 
-### How should lexical and semantic rankings be combined?
+### Lexical and semantic rank fusion {#how-should-lexical-and-semantic-rankings-be-combined}
 
 **Problem.** BM25 and vector similarity use different score distributions.
 
@@ -290,7 +290,7 @@ flowchart TB
 
 **Tradeoffs and recovery.** Reserve a fixed part of the deadline for hydration and optional reranking. If vector retrieval times out, return the lexical result with a degraded-retrieval indicator. Measure the union's recall separately from final ranking quality: an excellent reranker can still produce poor results when its candidate set misses relevant posts.
 
-### How do we meet the indexing freshness target?
+### Independent index freshness {#how-do-we-meet-the-indexing-freshness-target}
 
 **Problem.** Embedding generation can lag while lexical indexing is ready.
 
@@ -310,7 +310,7 @@ Track the last fully applied source offset and searchable time separately. A con
 
 **Tradeoffs and recovery.** Deletes travel through both paths as versioned tombstones. Keep them long enough to cover replay and rebuild; an old embedding job must not restore a deleted post. A rebuild starts from a consistent source snapshot and its replay offset, consumes later changes, and passes completeness checks before the query alias switches. During the switch, a request uses one index generation throughout its pagination session.
 
-### How do shards control latency and partial results?
+### Bounded shard queries and partial results {#how-do-shards-control-latency-and-partial-results}
 
 **Problem.** Every additional shard adds work and another opportunity for a slow response.
 
@@ -330,7 +330,7 @@ Each shard returns its best candidates and an execution status. The coordinator 
 
 **Tradeoffs and recovery.** Track a completion bitmap alongside hits. If task 23 misses its deadline, a partial result identifies the missing partition rather than presenting a complete search. Cancel outstanding work when the request ends. A cursor pins the query, index generation and stable tie-breaker; using a new snapshot for every page can repeat or omit posts as refreshes change the ordering.
 
-### How do we preserve filters and permissions?
+### Filter-aware retrieval and permissions {#how-do-we-preserve-filters-and-permissions}
 
 **Problem.** ANN top-K may contain mostly excluded posts, and cached index visibility may be stale.
 

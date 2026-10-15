@@ -261,7 +261,7 @@ Resuming preserves each origin's delay and retry history. A replacement schedule
 
 ## Deep dives
 
-### How do we balance useful work with polite crawling?
+### Polite priority-based crawl scheduling {#how-do-we-balance-useful-work-with-polite-crawling}
 
 **Problem.** One global FIFO queue can leave many workers waiting behind URLs from the same website.
 
@@ -328,7 +328,7 @@ After owner failure, the successor restores queues, due times and outstanding re
 
 **Tradeoffs and recovery.** Robots refreshes and IP-level limits are additional eligibility checks. Store the policy generation with the dispatch decision so an operator can explain why a URL was fetched or deferred.
 
-### Which duplicate checks are safe?
+### URL and content deduplication {#which-duplicate-checks-are-safe}
 
 **Problem.** URLs and content have different forms of duplication.
 
@@ -350,7 +350,7 @@ After fetching, hash the recorded normalized text for exact duplicate content. S
 
 **Tradeoffs and recovery.** Near-duplicate candidates pass a bounded verification step. For example, two product pages differing only in boilerplate may be near-duplicates, but a changed price or safety notice can be meaningful. Record the normalization/signature version and decision so rebuilding the index reproduces it. Limit candidate work and preserve uncertain pages instead of silently equating a capped search with proof of uniqueness.
 
-### How do we avoid crawl traps and retry storms?
+### Crawl traps and retry budgets {#how-do-we-avoid-crawl-traps-and-retry-storms}
 
 **Problem.** Calendars, session identifiers and generated paths can expand faster than useful pages are collected.
 
