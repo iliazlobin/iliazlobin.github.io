@@ -242,7 +242,7 @@ Send firing and resolved state to [Alertmanager](https://prometheus.io/docs/aler
 
 ## Deep dives
 
-### Which storage model fits this workload?
+### Time-series storage {#which-storage-model-fits-this-workload}
 
 **Problem.** At 1M samples/s, a separate database row and index entry for every sample creates substantial write amplification. Queries usually read many consecutive samples from the same series, so the physical layout should make that access cheap.
 
@@ -279,7 +279,7 @@ Recent queries read the head; older queries prune immutable blocks by time and t
 
 **Tradeoffs and recovery.** A crash before manifest publication leaves an unreferenced output that can be reclaimed. A crash afterward leaves a valid replacement plus obsolete inputs. Replay resumes from a checkpoint only when the corresponding materialized data is recoverable; advancing the checkpoint first could skip accepted samples. Provision temporary disk space and background-worker limits for compaction and replay, and measure ingest lag while broad queries are running.
 
-### How do we contain label cardinality?
+### Label cardinality budgets {#how-do-we-contain-label-cardinality}
 
 **Problem.** A metric named `http_requests_total` is not one series. Each distinct combination of tenant, metric name and labels creates its own series, index entries and recent-data state. A raw URL or user ID can turn a bounded service metric into millions of identities.
 
@@ -305,7 +305,7 @@ For a rollout that suddenly adds a high-cardinality label, reject excess new ide
 
 **Tradeoffs and recovery.** Active-series budgets protect memory; new-series-rate budgets protect index churn. Expire admission state only after the agreed inactivity interval and account for historical index/storage retention separately. Monitor both the total and its largest contributors so an engineer can identify the specific metric or label responsible.
 
-### Should alerts be stream-driven or periodically evaluated?
+### Periodic alert evaluation {#should-alerts-be-stream-driven-or-periodically-evaluated}
 
 **Problem.** Consider an alert that fires when a service's error rate exceeds 5% for two minutes. Its result depends on a five-minute window, and it must preserve the same service-level grouping at every evaluation. Evaluating every rule for every arriving sample would repeat work and would still need timers for missing data.
 
@@ -358,7 +358,7 @@ Assign rule groups to evaluators with versioned ownership. Persist the rule vers
 
 **Tradeoffs and recovery.** Send alert state to [Alertmanager](https://prometheus.io/docs/alerting/latest/alertmanager/) for grouping, silences, inhibition and routing. Its notification timing is separate from expression evaluation. Reserve query capacity for alert rules and monitor overdue groups, evaluation errors and notification failures.
 
-### How do broad queries stay bounded and correct?
+### Bounded distributed queries {#how-do-broad-queries-stay-bounded-and-correct}
 
 **Problem.** A seven-day query over 10K series sampled every 15 seconds can read about 403M points. Adding workers reduces individual scan time, but every worker also consumes memory and produces results that need a correct merge.
 

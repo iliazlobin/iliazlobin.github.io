@@ -308,7 +308,7 @@ An idempotent ticket worker creates one ticket per confirmed order-seat and reco
 
 ## Deep dives
 
-### How do we reserve multiple seats consistently?
+### Atomic multi-seat reservations {#how-do-we-reserve-multiple-seats-consistently}
 
 **Problem.** Two users may choose overlapping seat sets, and a client can retry after losing the reservation response.
 
@@ -360,7 +360,7 @@ class L,C,H,F control;
 
 **Tradeoffs and recovery.** A request retry with the same key returns R1. Reusing the key for different seats is rejected by the input-hash check. Read the committed result after an ambiguous transaction response before starting a new hold.
 
-### How does the queue stay fair and protect inventory?
+### Fair queueing and controlled admission {#how-does-the-queue-stay-fair-and-protect-inventory}
 
 **Problem.** A queue can absorb arrivals while still releasing buyers faster than checkout can handle.
 
@@ -382,7 +382,7 @@ The grant contains event ID, user ID, grant ID and expiry. Store its durable lif
 
 **Tradeoffs and recovery.** A simple capacity calculation helps tune the controller: if checkout capacity is 2,000 active sessions and the average session lasts 100 seconds, a steady release rate around 20 sessions/s fills that capacity before accounting for abandonment and variation. This is a planning input, not a fixed guarantee. Queue position follows the disclosed policy even while release rate changes. Expired grants return capacity through a durable state transition and allow a documented re-entry policy.
 
-### How do payment retries preserve seat ownership?
+### Payment recovery and seat ownership {#how-do-payment-retries-preserve-seat-ownership}
 
 **Problem.** A provider may accept an operation before the response is lost. Releasing its seats immediately could leave a paid order without inventory.
 
@@ -430,7 +430,7 @@ Query the provider operation or consume its verified event before advancing. A c
 
 **Tradeoffs and recovery.** Provider events are deduplicated by event ID and mapped to the existing operation, including out-of-order authorization/capture events. Ticket delivery uses its own stable order/ticket identity. If reconciliation later finds an unmatched charge, it creates a visible recovery case with the original reservation and operation evidence rather than fabricating a new successful checkout.
 
-### How do browse views remain fast during an onsale?
+### Versioned browse availability {#how-do-browse-views-remain-fast-during-an-onsale}
 
 **Problem.** Event metadata changes slowly, while seats change on every hold and checkout.
 

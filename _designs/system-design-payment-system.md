@@ -257,7 +257,7 @@ Provider cutoffs determine the pending window. Unmatched records remain visible 
 
 ## Deep dives
 
-### How do retries avoid a second charge?
+### Idempotent charge execution {#how-do-retries-avoid-a-second-charge}
 
 **Problem.** The database and external provider have separate transactional boundaries.
 
@@ -311,7 +311,7 @@ Store a canonical request hash with the merchant-scoped key. The same key and di
 
 **Tradeoffs and recovery.** A webhook and synchronous response can race. Both converge on the same provider operation identity and conditional state transition. Duplicate evidence is idempotent; contradictory evidence is retained for investigation. Retry at another provider only after the old outcome is definitively resolved under the payment workflow.
 
-### Where does the outbox help?
+### Transactional outbox delivery {#where-does-the-outbox-help}
 
 **Problem.** A database write followed by publication can fail between steps.
 
@@ -355,7 +355,7 @@ Claim ownership uses a generation/lease version. A stale worker can record obser
 
 **Tradeoffs and recovery.** The result transaction updates business state and creates its downstream event together. Consumers deduplicate event IDs and versions. Polling recovers missed wakeups, so notification delivery is a latency optimization rather than the sole durability mechanism.
 
-### How does the ledger stay balanced?
+### Balanced double-entry postings {#how-does-the-ledger-stay-balanced}
 
 **Problem.** A payment status alone does not explain account balances.
 
@@ -393,7 +393,7 @@ Account conventions and merchant fee policy determine the exact account mapping;
 
 **Tradeoffs and recovery.** The posting interface checks source-operation uniqueness, account/currency validity and the whole batch sum, then inserts all entries atomically. A repeated capture event returns the existing posting. A refund or correction references the original operation with a new balanced reversal/adjustment; it does not mutate the historic capture entries.
 
-### What does reconciliation compare?
+### Transaction and payout reconciliation {#what-does-reconciliation-compare}
 
 **Problem.** Authorization, capture and bank payout are different stages of money movement.
 

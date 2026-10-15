@@ -301,7 +301,7 @@ Reports are retained in restricted review storage. Moderation decisions update p
 
 ## Deep dives
 
-### How do simultaneous likes create exactly one match?
+### Atomic mutual likes and match creation {#how-do-simultaneous-likes-create-exactly-one-match}
 
 **Problem.** If A's swipe and B's swipe are stored in separate user partitions, two handlers can each read an older inverse decision and miss the mutual like. Sending both operations through one stateless coordinator does not make writes to different partitions atomic.
 
@@ -357,7 +357,7 @@ sequenceDiagram
 
 **Tradeoffs and recovery.** Retrying either command reads its retained outcome. Match delivery may repeat, but the match identity remains one. Profile blocking/eligibility changes use versions checked under the selected pair policy; new consent after an unmatch requires an explicit new generation.
 
-### How do we build a nearby feed efficiently?
+### Nearby feed candidate pools {#how-do-we-build-a-nearby-feed-efficiently}
 
 **Problem.** A full radius query with preference joins and ranking for every request becomes expensive in dense areas. Precomputed pools reduce that load, but can miss eligible users near boundaries or omit lower-ranked candidates.
 
@@ -381,7 +381,7 @@ In a dense city, each cell pool is a sampled/rotating eligible set rather than a
 
 **Tradeoffs and recovery.** Batch profile and pair checks under a candidate budget, then fetch another bounded batch if many candidates were excluded. A sparse result invites an explicit distance change. Changing location immediately selects new cell coverage; stale cells do not override the user's current request or bypass safety restrictions.
 
-### How do we exclude earlier swipes without loading the entire history?
+### Candidate-scoped swipe history checks {#how-do-we-exclude-earlier-swipes-without-loading-the-entire-history}
 
 **Problem.** A heavy user's swipe history can contain many thousands of IDs. Fetching and transmitting the complete set for every feed page adds memory and network work.
 
@@ -407,7 +407,7 @@ A complete Bloom filter can skip likely repeats cheaply, but false positives can
 
 **Tradeoffs and recovery.** Build a replacement filter from a consistent pair checkpoint, replay changes after that cutoff, then atomically switch generations. Keep previous decisions as compact authoritative rows even after detailed event history expires. Cache loss falls back to bounded exact checks rather than showing repeat profiles or loading the entire history.
 
-### How should profile ranking evolve?
+### Profile ranking and exposure {#how-should-profile-ranking-evolve}
 
 **Problem.** Distance alone gives a relevant area, but users still need a useful ordering within it. Ranking solely by popularity concentrates exposure and provides weak evidence of mutual compatibility.
 

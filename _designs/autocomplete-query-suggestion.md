@@ -266,7 +266,7 @@ When the user clears or changes the input, increment the sequence immediately. T
 
 ## Deep dives
 
-### Which retrieval and ranking approach should we use?
+### Retrieval and ranking {#which-retrieval-and-ranking-approach-should-we-use}
 
 **Problem.** A high-frequency query is often a useful completion, but frequency alone misses context. Generating suggestions freely also adds latency and makes policy enforcement harder.
 
@@ -311,7 +311,7 @@ class S control;
 
 **Tradeoffs and recovery.** Fuzzy matching is an alternate bounded path: limit edit distance, prefix length and expanded candidates. Route hot short prefixes to replicated candidate caches. A rare fuzzy prefix has a strict work budget so one keystroke cannot trigger an expensive corpus scan.
 
-### How do we cache without mixing users' results?
+### Private ranking with shared candidate caches {#how-do-we-cache-without-mixing-users-results}
 
 **Problem.** The same prefix can be relevant to many users, but their history and permissions differ. Caching a personalized final list under a public prefix would share private context with other users.
 
@@ -342,7 +342,7 @@ If a suggestion becomes prohibited, a long candidate-cache TTL must not preserve
 
 **Tradeoffs and recovery.** Set limits on user-history reads and ranker batch size. If personalization misses its deadline, public ranking is a declared fallback. If the safety snapshot is beyond its permitted age, the service follows the known-safe/empty-result policy. Cache-hit rate and final-response latency should therefore be measured separately.
 
-### How do we keep suggestions fresh without rebuilding everything?
+### Incremental suggestion freshness {#how-do-we-keep-suggestions-fresh-without-rebuilding-everything}
 
 **Problem.** A stable corpus may contain hundreds of millions of queries, while a trend can emerge within minutes. Rebuilding the entire index for each trend is costly.
 
@@ -373,7 +373,7 @@ A query's historical frequency and recent-window trend are different features, s
 
 **Tradeoffs and recovery.** An event consumer checkpoints only after the overlay update is recoverable. Stable query/event IDs prevent replay from inflating trend counts. Popularity promotion also applies minimum independent activity and abuse checks. During a failed rollout, preserve the previous base and rebuild or retain an overlay compatible with its watermark; reverting only the FST pointer would otherwise leave a gap.
 
-### How do we learn from feedback without reinforcing the old list?
+### Exposure-aware feedback {#how-do-we-learn-from-feedback-without-reinforcing-the-old-list}
 
 **Problem.** A suggestion near the top gets more exposure than one below it. A missing suggestion gets no selection opportunity at all. Treating every unselected candidate as equally irrelevant would reproduce the old ranking's biases.
 

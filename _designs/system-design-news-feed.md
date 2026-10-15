@@ -297,7 +297,7 @@ Hide/mute writes a durable user preference and invalidates its cache. Reports ar
 
 ## Deep dives
 
-### How should we distribute posts from widely followed accounts?
+### Hybrid post distribution {#how-should-we-distribute-posts-from-widely-followed-accounts}
 
 **Problem.** Pure push amplifies a single post into millions of writes, while pure pull performs many author lookups for every feed request.
 
@@ -336,7 +336,7 @@ flowchart TB
 
 **Tradeoffs and recovery.** A mode-change epoch tells readers to consult both sources for a bounded transition period. Backfill and live fan-out use the same post-ID semantics, preventing gaps or duplicates during the switch.
 
-### How do we rank enough content within the feed deadline?
+### Ranking within a latency budget {#how-do-we-rank-enough-content-within-the-feed-deadline}
 
 **Problem.** Applying the largest model to every candidate increases serving cost and tail latency; over-aggressive filtering loses relevant posts.
 
@@ -373,7 +373,7 @@ The early score should prioritize recall: a high-quality post removed here canno
 
 **Tradeoffs and recovery.** Use explicit time budgets for candidate retrieval, feature hydration, inference and response assembly. A missing optional feature takes its trained default; a missing required permission check removes the candidate. If detailed inference times out, the lightweight ordering still yields an eligible page. Persist the selected IDs and model/feature generation in a short-lived ranking session so the next page continues a coherent order rather than recomputing page one with newer engagement signals.
 
-### How do we deliver timely feed updates?
+### Feed refresh delivery {#how-do-we-deliver-timely-feed-updates}
 
 **Problem.** Frequent polling wastes requests during idle periods, while persistent connections need reconnect handling and bounded server state.
 
@@ -407,7 +407,7 @@ Gateway memory remains bounded because hints replace older pending hints rather 
 
 **Tradeoffs and recovery.** On reconnect, add jitter and exponential backoff to avoid a gateway restart causing synchronized traffic. Mobile clients suspended by the operating system use the platform's permitted push/lifecycle behavior. Measure hint latency separately from publish-to-feed eligibility: a fast hint is misleading if the candidate timeline has not caught up.
 
-### How do we serve media economically without delaying publishing?
+### Media delivery and publication cost {#how-do-we-serve-media-economically-without-delaying-publishing}
 
 **Problem.** Media variants improve delivery but consume processing and storage; hot uploads can overload origin reads.
 

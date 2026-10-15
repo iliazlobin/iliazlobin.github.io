@@ -273,7 +273,7 @@ Preparing the first usable variant before publication gives the first reader a p
 
 ## Deep dives
 
-### How should we deliver timelines for popular authors?
+### Hybrid timeline delivery {#how-should-we-deliver-timelines-for-popular-authors}
 
 **Problem.** One post from an author with millions of followers can dominate the fan-out queue.
 
@@ -315,7 +315,7 @@ A post from a high-degree author can generate millions of candidate writes; repr
 
 **Tradeoffs and recovery.** When policy switches an author from push to pull, record a cutover watermark. During overlap, the read merge checks both sources and deduplicates. End overlap only after old fan-out work and the recent-author source cover the transition. The threshold depends on actual active followers and posting/read rates, not follower count alone.
 
-### How do posts become searchable quickly?
+### Incremental search indexing {#how-do-posts-become-searchable-quickly}
 
 **Problem.** New posts arrive continuously while queries compete with indexing and segment merges.
 
@@ -354,7 +354,7 @@ Measure each stage. Choose refresh frequency under combined write, search and se
 
 **Tradeoffs and recovery.** A failed shard loads a snapshot and replays events after its checkpoint, including tombstones. Publish the rebuilt generation before routing reads to it. Track searchable watermark per shard so a response can disclose lag/partial coverage instead of treating a healthy HTTP response as proof of complete fresh search.
 
-### How do we keep IDs unique and pagination stable?
+### Unique IDs and stable pagination {#how-do-we-keep-ids-unique-and-pagination-stable}
 
 **Problem.** Independent write shards need unique IDs, while timeline pages need deterministic ordering.
 
@@ -384,7 +384,7 @@ Page order: stored publication timestamp + post ID tie-breaker
 
 **Tradeoffs and recovery.** A cursor records the last ordering tuple and feed snapshot/session, not just a timestamp. Equal timestamps then paginate deterministically. Edits and deletions may change visibility, so every page still filters current state. A time-shaped ID helps locality but does not prove that two cross-shard actions occurred in causal order.
 
-### How should trending topics be counted?
+### Regional trending counts {#how-should-trending-topics-be-counted}
 
 **Problem.** Exact counters for every regional topic can consume substantial memory, while repeated posts can distort the ranking.
 
@@ -424,7 +424,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Tradeoffs and recovery.** For a popular topic, aggregate salted partials before updating its final owner. Expiration subtracts or drops the oldest bucket under the same replay-safe checkpoint. A sketch supplies frequency estimates only for known queried candidates; keep a bounded candidate tracker and measure its recall against exact retained events.
 
-### How do counts and deletions survive retries?
+### Retry-safe engagement and deletion {#how-do-counts-and-deletions-survive-retries}
 
 **Problem.** An event may be delivered more than once, and cached posts may outlive a deletion.
 

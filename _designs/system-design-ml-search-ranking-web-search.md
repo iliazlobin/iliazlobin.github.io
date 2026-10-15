@@ -240,7 +240,7 @@ Indexing follows the accepted document change, while serving checks current remo
 
 ## Deep dives
 
-### How should lexical and semantic retrieval work together?
+### Hybrid lexical and semantic retrieval {#how-should-lexical-and-semantic-retrieval-work-together}
 
 **Problem.** Exact matching is important for product names, identifiers and navigation queries. Semantic retrieval helps when the user and document express the same idea with different words.
 
@@ -275,7 +275,7 @@ A navigation query like a product serial number may rely primarily on exact term
 
 **Tradeoffs and recovery.** Current removal/access filters apply before return even if an older index still retrieves the document. Versioned IDs prevent deduplication from selecting an obsolete passage.
 
-### Where should expensive ranking happen?
+### Bounded ranking cascades {#where-should-expensive-ranking-happen}
 
 **Problem.** A cross-encoder evaluates query/document interactions directly, but doing that for every retrieved candidate makes inference dominate latency.
 
@@ -322,7 +322,7 @@ Select passages with the same versioned text pipeline used in training. Truncati
 
 **Tradeoffs and recovery.** Distill teacher scores for cheaper shortlist ranking, while retaining judged labels to avoid copying every teacher error. Plot final relevance versus neural candidate count on the actual hybrid-retrieval distribution. When inference exceeds its budget, the saved light-stage order becomes the fallback; annotate that mode for measurement and still hydrate current document eligibility.
 
-### How do clicks become useful training labels?
+### Exposure-aware training labels {#how-do-clicks-become-useful-training-labels}
 
 **Problem.** A click reflects relevance, display position, snippet quality and user behavior. Some queries are answered directly by a snippet, so a successful search may have no click.
 
@@ -367,7 +367,7 @@ Use judged query/document pairs as the stable evaluation anchor. A no-click can 
 
 **Tradeoffs and recovery.** Randomized position exposure helps estimate examination effects, but rare-query support and high-variance inverse weights still require limits. Keep snippets and document versions in historical examples so today's improved snippet is not accidentally used to explain yesterday's click. Group sessions in chronological splits and leave the final test set out of candidate selection.
 
-### How do freshness and model updates stay reliable?
+### Index freshness and compatible model updates {#how-do-freshness-and-model-updates-stay-reliable}
 
 **Problem.** A new page needs a searchable representation before its eventual popularity is known. A new encoder also changes the meaning of every vector in its index.
 

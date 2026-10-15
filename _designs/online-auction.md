@@ -262,7 +262,7 @@ The close worker rereads and locks the auction. If an extension moved the deadli
 
 ## Deep dives
 
-### Where should the bid decision be atomic?
+### Atomic bid decisions {#where-should-the-bid-decision-be-atomic}
 
 **Problem.** Updating a cache and then persisting a bid leaves a failure window. A cache-side deduplication marker can survive even when the durable outcome was never written.
 
@@ -306,7 +306,7 @@ Load the current auction and relevant maxima while holding the auction lock. App
 
 **Tradeoffs and recovery.** Ordinary manual bids stay at their submitted public amount; the proxy calculation respects that offer and the previous price. A leading bidder increasing only their maximum need not change public price. The API's initial command acknowledgement means queued, while the persisted accepted/rejected outcome means the bid decision completed. Bound queue age so users can act before the advertised deadline.
 
-### How do millions of watchers receive live state?
+### Live auction updates at scale {#how-do-millions-of-watchers-receive-live-state}
 
 **Problem.** Polling each second creates millions of repeated requests, while broadcasting every intermediate bid can overwhelm users watching a popular auction.
 
@@ -340,7 +340,7 @@ Coalescing versions 41, 42 and 43 into state 43 saves bandwidth when intermediat
 
 **Tradeoffs and recovery.** A client at version 40 that receives 43 can replace its public snapshot, or refetch if the protocol sends patches requiring intermediate versions. Reconnect supplies its last known version. Slow clients have bounded buffers and receive a snapshot instead of endless queued deltas. Measure commit-to-client age and fan-out bytes; server coalescing reduces event frequency, while total egress still grows with interested users.
 
-### How does closing survive extensions and scheduler failures?
+### Auction closing and deadline extensions {#how-does-closing-survive-extensions-and-scheduler-failures}
 
 **Problem.** Cached timers can be lost, workers can retry, and an accepted bid can extend a deadline just as a close attempt starts.
 

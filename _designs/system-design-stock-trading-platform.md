@@ -305,7 +305,7 @@ Each buy fill also records acquisition evidence for lot accounting. Tax-lot sele
 
 ## Deep dives
 
-### How do we distribute quotes without forwarding every tick?
+### Quote fan-out and display conflation {#how-do-we-distribute-quotes-without-forwarding-every-tick}
 
 **Problem.** Raw ticks can arrive much faster than a screen needs to update, and popular symbols concentrate subscribers.
 
@@ -343,7 +343,7 @@ class M,J data;
 
 **Tradeoffs and recovery.** A slow connection keeps one pending latest value per symbol, subject to a total buffer limit. If it exceeds that limit, send a resnapshot or disconnect. Quote age travels with the value; the UI can show stale data rather than presenting an old price as live.
 
-### How do retries avoid duplicate orders and lost executions?
+### Order identity and execution recovery {#how-do-retries-avoid-duplicate-orders-and-lost-executions}
 
 **Problem.** Local acceptance, venue routing and fills cross durability and network boundaries.
 
@@ -367,7 +367,7 @@ An execution report is deduplicated by the venue's documented execution identity
 
 **Tradeoffs and recovery.** For example, a 100-share order fills 40 shares while a cancel is pending. The service applies the 40-share execution, then processes the venue's confirmed cancellation of the remaining quantity. Sending a cancel request alone does not release the full reservation. The [FIX order-state specification](https://www.fixtrading.org/online-specification/order-state-changes/) documents fills during pending cancellation. Preserve original executions and append explicit corrections when venue evidence changes them.
 
-### How do risk checks remain consistent with accepted orders?
+### Atomic risk checks and reservations {#how-do-risk-checks-remain-consistent-with-accepted-orders}
 
 **Problem.** Cached balances can lag, and two simultaneous orders may each appear affordable.
 
@@ -407,7 +407,7 @@ Compute risk using a policy version, a quote-age bound and the order's limit or 
 
 **Tradeoffs and recovery.** Partial fills consume the corresponding reservation and create executed positions. A confirmed cancel releases only the remaining reserved amount. Rejections and expiry similarly use the order's authoritative state and version. Track unresolved reservations explicitly: clearing them merely because a router timed out could allow the account to spend funds already committed at the venue.
 
-### How do portfolio views and the ledger stay aligned?
+### Portfolio accounting and valuation {#how-do-portfolio-views-and-the-ledger-stay-aligned}
 
 **Problem.** Display values change with quotes, while balances change with fills, fees, transfers and corrections.
 

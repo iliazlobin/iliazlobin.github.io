@@ -260,7 +260,7 @@ Invalid configuration is rejected before publication; a stale version is rejecte
 
 ## Deep dives
 
-### How do overlapping rules produce one decision?
+### Rule precedence and fallbacks {#how-do-overlapping-rules-produce-one-decision}
 
 **Problem.** Several targeting rules may match the same customer and return conflicting values. The evaluator needs predictable precedence, including a feature-wide off switch and a caller-provided fallback.
 
@@ -317,7 +317,7 @@ All conditions within a rule must match using string equality. With “excluded 
 
 **Tradeoffs and recovery.** The first-match choice trades automatic conflict resolution for explicit authoring responsibility. Condition work grows with the rules inspected before a decision; the rollout hash runs only when targeting leaves the result undecided. Keep regression cases for overlapping rules, missing attributes, off-switch precedence and both fallback values. Validate duplicate IDs and empty rules before publication, and correct a shadowing rule by publishing a newer complete snapshot.
 
-### How do percentage rollouts preserve customer assignments?
+### Stable percentage rollouts {#how-do-percentage-rollouts-preserve-customer-assignments}
 
 **Problem.** Repeated evaluations should keep a customer in the same rollout position. Raising the percentage should add eligible customers while preserving those already included, provided the other decision inputs remain unchanged.
 
@@ -367,7 +367,7 @@ Customer 42 stays included as the threshold rises; customer 17 joins. These are 
 
 Keep cross-process and cross-language vectors for UTF-8 encoding, JSON serialization, SHA-256 truncation, byte order and scaling. Treat an algorithm change as a coordinated contract migration. Preserve the old contract until callers and configuration move together; silently changing it can move customers between experiences.
 
-### How do refreshes preserve one request's configuration?
+### Request-scoped configuration snapshots {#how-do-refreshes-preserve-one-requests-configuration}
 
 **Problem.** A checkout can check several flags while building one response. If each check uses the latest configuration, a refresh between calls can mix behaviors from different versions.
 

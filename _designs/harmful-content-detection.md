@@ -251,7 +251,7 @@ Use the last approved screening/model bundle and a bounded queue. If the service
 
 ## Deep dives
 
-### Which model captures multimodal meaning?
+### Multimodal model selection {#which-model-captures-multimodal-meaning}
 
 **Problem.** Text and images can be benign separately while conveying a violation together.
 
@@ -294,7 +294,7 @@ For example, benign text over an otherwise benign image may become a prohibited 
 
 **Tradeoffs and recovery.** Cache embeddings by content and encoder version. A new report changes behavioral context without requiring the image to be re-encoded. An edit changes content identity and invalidates the old assessment. Quality tests include the whole cascade, because a heavy model never sees content mistakenly dismissed by the screen.
 
-### How should rare violations be learned and evaluated?
+### Rare-violation training and evaluation {#how-should-rare-violations-be-learned-and-evaluated}
 
 **Problem.** Natural traffic contains many legitimate posts. Balanced training batches help the model see rare categories, but also change the apparent class prevalence.
 
@@ -327,7 +327,7 @@ Appeals → evidence about the subset that appealed
 
 **Tradeoffs and recovery.** Near-duplicate memes or copied posts must be grouped before time-based splitting; otherwise the same visual template leaks across train and test. Evaluate language/category cohorts with enough reviewed support and uncertainty intervals. A high aggregate precision can conceal poor performance in a rare category, while balanced training prevalence cannot be reported as live prevalence.
 
-### How do thresholds produce reliable actions?
+### Calibrated enforcement thresholds {#how-do-thresholds-produce-reliable-actions}
 
 **Problem.** A calibrated probability estimates risk on a particular distribution. It does not itself guarantee 95% removal precision after traffic changes.
 
@@ -369,7 +369,7 @@ Checks incomplete        → explicit incomplete-check policy
 
 **Tradeoffs and recovery.** These numbers illustrate control flow, not universal thresholds. Persist decisions transactionally with their enforcement outbox. Consumers apply only a newer decision version to the same content version. An old slow assessment arriving after a content edit or human correction must not restore an obsolete action. Review results create auditable revisions, and rollback changes future policy while retaining previous decisions.
 
-### How do we learn after enforcement suppresses feedback?
+### Feedback after enforcement {#how-do-we-learn-after-enforcement-suppresses-feedback}
 
 **Problem.** Removed posts accumulate fewer views and reports. Training only on surviving content therefore changes which examples and behaviors are observed.
 
@@ -393,7 +393,7 @@ Suppose reports fall to zero after a removal. That is censored exposure, not a c
 
 **Tradeoffs and recovery.** Representative audits estimate current missed violations and mistaken actions; targeted disagreement review supplies difficult training examples. Keep these datasets separate so a deliberately enriched violation sample does not become a prevalence claim. Weighting helps only where sampling support exists. Appeals contribute verified evidence for their reviewed cases but cannot alone describe all removed posts.
 
-### How do emerging patterns and releases stay controlled?
+### Emerging patterns and controlled releases {#how-do-emerging-patterns-and-releases-stay-controlled}
 
 **Problem.** New formats and language patterns can reduce recall before enough labels arrive.
 

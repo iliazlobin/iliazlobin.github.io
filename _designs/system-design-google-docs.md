@@ -252,7 +252,7 @@ Snapshots accelerate reconstruction; they do not create unlimited history. Keep 
 
 ## Deep dives
 
-### How should concurrent edits merge?
+### Concurrent edit merging {#how-should-concurrent-edits-merge}
 
 **Problem.** Two users can insert text at the same position while each is already showing their own local edit. Applying their original offsets in arrival order can produce different results on different clients.
 
@@ -283,7 +283,7 @@ In the “cat” example, choose a deterministic tie rule for inserts at the sam
 
 **Tradeoffs and recovery.** A delete overlapping an insert requires more than shifting an offset. The implementation needs a transformation algebra covering each supported operation pair, including structured edits and formatting. Test that concurrent permutations converge and preserve the intended editing semantics. Use an established OT implementation or formally tested operation model; the small example explains the protocol rather than specifying a complete production editor.
 
-### How can typing stay responsive over a slow connection?
+### Responsive typing and buffered operations {#how-can-typing-stay-responsive-over-a-slow-connection}
 
 **Problem.** Waiting for an acknowledgment before showing each keystroke would make editing depend on network latency. Sending unrestricted operations creates a growing transform backlog during outages.
 
@@ -319,7 +319,7 @@ When A's acknowledgement arrives, clear that outstanding operation and submit th
 
 **Tradeoffs and recovery.** Persist unacknowledged work locally when the product promises crash recovery. On reconnect, ask for committed history after the known revision, identify whether A already committed, and transform remaining work. Bound buffered bytes and history distance. If the base is no longer supported, retain unsent content for an explicit rebase or review instead of discarding it during a fresh snapshot load.
 
-### How do ownership and history survive a server failure?
+### Fenced ownership and history recovery {#how-do-ownership-and-history-survive-a-server-failure}
 
 **Problem.** Consistent hashing identifies a preferred server, but it cannot by itself prevent an old and a replacement server from committing edits concurrently.
 

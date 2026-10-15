@@ -270,7 +270,7 @@ Use a tested pairing implementation such as [bbpPairings](https://github.com/cya
 
 ## Deep dives
 
-### How does a game survive an owner failure?
+### Fenced game ownership and recovery {#how-does-a-game-survive-an-owner-failure}
 
 **Problem.** In-memory state gives fast validation, but two servers must not accept different next moves after routing or membership changes.
 
@@ -314,7 +314,7 @@ If the response is lost, retry M returns the stored move rather than playing it 
 
 **Tradeoffs and recovery.** Recovery reconstructs from durable position and moves. Process-local monotonic time cannot be transferred directly to another host, so persist the recovery timing anchor and apply the documented platform-pause policy. The UI distinguishes a reconnecting game from a player disconnect, whose clock policy may be different.
 
-### How can matchmaking balance quality and waiting time?
+### Matchmaking quality and waiting time {#how-can-matchmaking-balance-quality-and-waiting-time}
 
 **Problem.** A narrow rating band improves pairing quality but can leave very high- or low-rated users waiting. A large optimizer may consume the whole wave interval.
 
@@ -336,7 +336,7 @@ The optimizer runs within the wave budget; if it times out, retain feasible pair
 
 **Tradeoffs and recovery.** Remove successful claims from Redis after commit. A stale cache entry may be proposed again, but the authority rejects it. A failed pairing commit releases neither user's durable identity into a fabricated game. Track queue wait by rating band and compatibility group so average wait does not hide an isolated tail.
 
-### How should ratings and ranks be updated?
+### Rating and rank updates {#how-should-ratings-and-ranks-be-updated}
 
 **Problem.** New users have uncertain skill estimates, while inactive users retain old ratings with growing uncertainty.
 
@@ -371,7 +371,7 @@ flowchart TB
 
 **Tradeoffs and recovery.** Reversing a result after review needs an explicit correction/recalculation policy and retained inputs. Editing a cached rating directly would lose the audit path and diverge from durable profile records.
 
-### How should anti-cheat analysis be staged?
+### Staged anti-cheat analysis {#how-should-anti-cheat-analysis-be-staged}
 
 **Problem.** Engine agreement alone can flag strong legitimate play, and full engine analysis of every position is expensive.
 

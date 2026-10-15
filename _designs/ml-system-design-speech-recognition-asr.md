@@ -267,7 +267,7 @@ Convert segment-relative timestamps to file-relative timestamps, reconcile overl
 
 ## Deep dives
 
-### How do we balance fast partial text with accurate final text?
+### Streaming recognition and final rescoring {#how-do-we-balance-fast-partial-text-with-accurate-final-text}
 
 **Problem.** A streaming decoder has only the audio received so far. Similar-sounding words may become distinguishable later in the utterance, while waiting for the full recording makes a live interface feel unresponsive.
 
@@ -310,7 +310,7 @@ For example, the partial text may change from “send to Ann” to “send to An
 
 **Tradeoffs and recovery.** Retain enough audio and hypotheses for the final pass, with explicit duration/byte limits. When an utterance exceeds the limit, finalize at a safe segment boundary or report the configured long-utterance behavior. The rescorer chooses among retained paths; increasing its capacity cannot recover a word eliminated from all first-pass candidates. Inspect oracle error over the beam to distinguish a retrieval problem from a rescoring problem.
 
-### What does the user actually experience as latency?
+### User-visible transcription latency {#what-does-the-user-actually-experience-as-latency}
 
 **Problem.** Audio transport, model lookahead and silence detection contribute different delays. Reporting only decoder execution time can hide most of the time the user waits.
 
@@ -355,7 +355,7 @@ Test pauses inside names, hesitant speech, background conversation and long term
 
 **Tradeoffs and recovery.** Final-pass overload uses the stated streaming-result fallback and labels that result mode. Monitor its rate by language and noise cohort so capacity degradation does not silently appear as a model-quality regression.
 
-### How do we keep training and serving consistent?
+### Training and serving consistency {#how-do-we-keep-training-and-serving-consistent}
 
 **Problem.** Audio preprocessing can change recognition quality as much as model weights. A sample-rate mismatch, different normalization or inconsistent feature extraction affects every downstream token.
 
@@ -400,7 +400,7 @@ Apply training augmentation after split assignment. A noise recording, speaker s
 
 **Tradeoffs and recovery.** Keep human corrections as raw feedback with the original transcript, audio/version reference and consent. A reviewer distinguishes acoustic substitutions from preferred punctuation or formatting. The training target and evaluation normalization then use the same definition of an error. Pin the complete preprocessing/tokenizer/weights bundle at session start, including during rolling worker replacement.
 
-### How should we recognize names and domain terms?
+### Names and domain vocabulary {#how-should-we-recognize-names-and-domain-terms}
 
 **Problem.** A general recognizer may assign low probability to a product name or technical term. Increasing that term's score can help, but excessive bias can insert it when the user said something else.
 
@@ -435,7 +435,7 @@ Audio likelihood + language-model score + bounded trie-path boost
 
 **Tradeoffs and recovery.** Evaluate recordings containing the term, similar-sounding ordinary words, and silence/noise. Measure requested-term recall and false insertion rate separately. A session's vocabulary is private context, so its compiled trie is isolated or keyed by an approved tenant/vocabulary identity. Reconnect keeps the same vocabulary version; a client update takes effect at the next utterance boundary.
 
-### How do we release a model safely?
+### Model evaluation and safe releases {#how-do-we-release-a-model-safely}
 
 **Problem.** A candidate can improve aggregate recognition while regressing a language, noise cohort or live response delay. Calculate word error rate from substitutions, deletions and insertions against reviewed reference transcripts. Use character error rate where word segmentation is unsuitable, with consistent normalization in both candidate and baseline evaluation.
 

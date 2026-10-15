@@ -263,7 +263,7 @@ The durable writes add admission and settlement latency. Token-by-token budget t
 
 ## Deep dives
 
-### How do we route by price while maintaining capacity?
+### Price- and capacity-aware routing {#how-do-we-route-by-price-while-maintaining-capacity}
 
 **Problem.** Always selecting the cheapest endpoint can overload it, while round-robin ignores different costs, model capabilities and latency.
 
@@ -297,7 +297,7 @@ release_unused_capacity_reservations(available, except_provider=chosen)
 
 **Tradeoffs and recovery.** Use a measured first-token estimate to reject a provider that cannot fit the deadline. Reserve an attempt slot before dispatch and release it when that attempt terminates; a timeout with an uncertain upstream outcome still counts as exposure. Persist the catalog/price version and selection reason so operators can reconstruct the decision. Maintain separate circuit-breaker state for transport failure, capacity rejection and model capability errors; combining them would disable otherwise healthy endpoints for the wrong reason.
 
-### How do retries interact with streaming?
+### Streaming retry boundaries {#how-do-retries-interact-with-streaming}
 
 **Problem.** A fallback is straightforward before the user receives output. Once part of an answer is visible, starting another model creates a second generation with a potentially different answer.
 
@@ -349,7 +349,7 @@ Client retries same key     → return the existing request's state
 
 **Tradeoffs and recovery.** Cancellation is also an upstream operation with an outcome. Stop accepting new frames for the canceled epoch, request provider cancellation, and wait for final usage or recovery evidence before releasing its financial reservation. A disconnect alone is not proof that computation stopped.
 
-### How do we enforce budgets under concurrent requests?
+### Concurrent budget reservations {#how-do-we-enforce-budgets-under-concurrent-requests}
 
 **Problem.** Reading a balance and updating it later lets concurrent requests spend the same remaining amount. Regional counters can also diverge during failover.
 
@@ -399,7 +399,7 @@ RETURNING reserved_charge;
 
 **Tradeoffs and recovery.** The conservative bound includes potentially billable fallback attempts, fixed fees and the configured output ceiling. A recovery worker claims unresolved reservations with a fenced lease and renews them while provider evidence is pending. Expiry of the handler lease schedules recovery; it does not erase the hold.
 
-### What makes the cost ledger recoverable?
+### Recoverable cost accounting {#what-makes-the-cost-ledger-recoverable}
 
 **Problem.** A gateway crash can lose its in-memory token count and an unflushed completion event. A short batch interval limits exposure but cannot reconstruct the lost usage.
 
@@ -437,7 +437,7 @@ If the gateway crashes after the provider finishes but before settlement, recove
 
 **Tradeoffs and recovery.** The reporting consumer stores the highest applied settlement version per request. Rebuilding ClickHouse reports replays that authoritative record, including corrections, rather than recreating charges from dashboard totals. Compare provider invoices with attempt-level evidence and retain discrepancy age as an operational metric.
 
-### When should the gateway cache an answer?
+### Response cache eligibility {#when-should-the-gateway-cache-an-answer}
 
 **Problem.** Repeated prompts can reuse inference work, but request parameters, model changes and private context affect whether an old answer is eligible.
 

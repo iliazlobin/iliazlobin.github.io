@@ -23,6 +23,39 @@ function proseLines(text) {
   return lines;
 }
 
+function deepDiveHeadings(text) {
+  let inDeepDives = false;
+  const headings = [];
+  for (const line of proseLines(text)) {
+    const match = line.match(/^(#{1,6})\s+(.+)$/);
+    if (!match) continue;
+    const level = match[1].length;
+    const title = match[2].replace(/\s+\{#[^}]+\}$/, "");
+    if (level <= 2) inDeepDives = level === 2 && title === "Deep dives";
+    else if (inDeepDives) headings.push(title);
+  }
+  return headings;
+}
+
+test("deep-dive topics are declarative across the entire design corpus", () => {
+  assert.equal(articles.length, 72);
+  for (const {name, text} of articles) {
+    for (const title of deepDiveHeadings(text)) {
+      assert.doesNotMatch(title, /\?/, `${name}: ${title}`);
+      assert.doesNotMatch(title, /^(?:how|what|which|when|where|why|who|can|could|should|would|do|does|did|is|are|will)\b/i,
+        `${name}: use a topic heading, not an interview question: ${title}`);
+    }
+  }
+});
+
+test("topic checks exclude code, explanations, later sections and legacy fragments", () => {
+  const text = ["## Deep dives", "### Stable rollout assignments {#how-do-rollouts-stay-stable}",
+    "Why does this matter?", "```markdown", "### How does this example work?", "```",
+    "~~~text", "### What is this example?", "~~~", "#### Failure recovery",
+    "## Key implementation", "### How do I run the example?"].join("\n");
+  assert.deepEqual(deepDiveHeadings(text), ["Stable rollout assignments", "Failure recovery"]);
+});
+
 test("every design, infrastructure and technology article uses unnumbered headings", () => {
   assert.equal(articles.length, 72);
   for (const {name, text} of articles) {

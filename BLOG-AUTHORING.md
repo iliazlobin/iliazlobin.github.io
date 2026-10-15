@@ -273,7 +273,9 @@ Design for the other design categories. The section label is plain text, not a
 second H1 or a filter link; the primary navigation marks the parent section.
 
 Technical article headings are unnumbered; preserve existing section IDs when
-renaming them. Deep dives label alternatives **Options** and explain the chosen
+renaming them. Deep-dive headings name the topic concisely rather than asking a
+question, for example **Storage and link ownership**. Deep dives label alternatives
+**Options** and explain the chosen
 approach in ordinary prose, without a Choice and rationale label. Keep the
 mechanisms, benefits, costs, failure modes and workload-specific reasoning.
 

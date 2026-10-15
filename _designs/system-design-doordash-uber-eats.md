@@ -255,7 +255,7 @@ Checking every possible route becomes expensive as orders accumulate. Candidate 
 
 ## Deep dives
 
-### How do we assign drivers without delaying other orders?
+### Bounded driver assignment {#how-do-we-assign-drivers-without-delaying-other-orders}
 
 **Problem.** Independent nearest-driver decisions can assign a scarce driver to an easy order while leaving another order with no feasible pickup.
 
@@ -298,7 +298,7 @@ Suppose driver A can serve orders X or Y, while driver B can serve only X. Greed
 
 **Tradeoffs and recovery.** Persist offers with expiry and expected order/driver versions. Acceptance conditionally claims the actual assignment; stale optimizer output is rejected and the order re-enters dispatch. Optimizer timeout returns its best feasible solution or the bounded greedy fallback, never a partially committed set of conflicting assignments.
 
-### How do we search fresh driver positions at high write rates?
+### Fresh regional driver positions {#how-do-we-search-fresh-driver-positions-at-high-write-rates}
 
 **Problem.** Putting every GPS update in the order database would add a large write workload unrelated to checkout.
 
@@ -340,7 +340,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Tradeoffs and recovery.** Moving across cells removes the old membership with a version guard so a late removal cannot erase the new one. Cleanup removes expired members from the geo set; key TTL on a separate record does not do that automatically. Rebuild after Redis loss from fresh heartbeats/recent retained events and throttle dispatch while coverage recovers.
 
-### How do we give an ETA that reflects uncertainty?
+### Arrival estimates and uncertainty {#how-do-we-give-an-eta-that-reflects-uncertainty}
 
 **Problem.** Cooking, driver arrival and travel can overlap. Adding independent component averages can hide long waits, and adding component p90 values does not generally produce the route's p90.
 
@@ -383,7 +383,7 @@ Train the end-to-end output against completed delivery outcomes using features a
 
 **Tradeoffs and recovery.** Component distributions are correlated during demand spikes. Adding component P90s gives no general end-to-end P90 guarantee. Use joint/end-to-end quantile outputs or a validated simulation of stage dependence, then calibrate interval coverage by city/restaurant/stage. Dispatch consumes expected cost and lateness risk; the displayed window uses the product's separately chosen percentile policy.
 
-### How do combined routes remain practical?
+### Bounded multi-stop route planning {#how-do-combined-routes-remain-practical}
 
 **Problem.** Exhaustive route enumeration grows rapidly with the number of stops.
 

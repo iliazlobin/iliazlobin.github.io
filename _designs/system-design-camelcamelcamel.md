@@ -261,7 +261,7 @@ A valid available offer below the target triggers an armed watch. A transaction 
 
 ## Deep dives
 
-### How do we keep useful prices fresh within source limits?
+### Quota-aware price collection {#how-do-we-keep-useful-prices-fresh-within-source-limits}
 
 **Problem.** Checking every product frequently is expensive, and a retailer's permitted request rate may be lower than demand.
 
@@ -298,7 +298,7 @@ flowchart TB
 
 **Tradeoffs and recovery.** A lease reduces duplicate work; the observation ID and generation make a delayed completion safe after reassignment. Source-wide failures trip a circuit breaker and retain due work for recovery.
 
-### How do we retain history without storing unchanged prices repeatedly?
+### Price history and collection freshness {#how-do-we-retain-history-without-storing-unchanged-prices-repeatedly}
 
 **Problem.** Most checks may return the same offer, but users still need to know that it was checked recently.
 
@@ -318,7 +318,7 @@ Normalize currency and minor units before comparison, and distinguish a seller c
 
 **Tradeoffs and recovery.** A daily chart summary retains first/last values, min/max, successful coverage and gaps. When a user zooms into the last hour, fetch exact change points instead. A late corrected observation identifies the affected time bucket; refresh that summary and bump its generation. Simply appending a correction to the end of the chart would put the price change at the wrong time.
 
-### How do we avoid repeated or missed alerts?
+### Threshold-crossing alert delivery {#how-do-we-avoid-repeated-or-missed-alerts}
 
 **Problem.** Observation processing and notification delivery can both retry. A price can also remain below the target for days or cross it repeatedly.
 
@@ -353,7 +353,7 @@ If the next check reports \$89, the watch stays disarmed. A configured rearm mar
 
 **Tradeoffs and recovery.** The outbox worker sends N12 with a stable provider key and records the provider result. If it crashes after sending, the next worker queries status or retries the same key. Unsubscribe is checked immediately before dispatch; queued identities remain as cancelled records for replay safety rather than being forgotten.
 
-### How do charts remain useful when collection is incomplete?
+### Price charts and collection gaps {#how-do-charts-remain-useful-when-collection-is-incomplete}
 
 **Problem.** An attractive chart can mislead users if it treats a missing check as a known price.
 

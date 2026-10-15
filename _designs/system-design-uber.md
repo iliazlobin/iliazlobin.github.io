@@ -297,7 +297,7 @@ Pricing workers aggregate eligible supply and ride demand over local windows. Th
 
 ## Deep dives
 
-### How should nearby-driver search work?
+### Nearby-driver search and validation {#how-should-nearby-driver-search-work}
 
 **Problem.** Drivers cross cell boundaries constantly. An old membership entry can make one driver appear in multiple cells, and straight-line distance may differ greatly from pickup time.
 
@@ -321,7 +321,7 @@ Suppose a river separates two nearby coordinates. Straight-line distance may put
 
 **Tradeoffs and recovery.** Each location projection applies only a newer driver epoch/sequence. Movement adds the new membership and asynchronously removes the old; read validation covers that transition. Per-member timestamps and pruning handle disconnected drivers in busy cells whose keys never expire. Stop expansion after a radius/work budget and expose reduced coverage when the index is stale instead of assigning from unverified historical positions.
 
-### When should matching use a batch?
+### Bounded regional batch matching {#when-should-matching-use-a-batch}
 
 **Problem.** Assigning the nearest driver to the first request can leave a nearby second request with a much longer pickup. Waiting too long for a batch consumes the latency budget.
 
@@ -350,7 +350,7 @@ Build the graph only from fresh eligible pairs and include an unmatched option f
 
 **Tradeoffs and recovery.** The short batch's waiting cost is part of pickup latency. Use immediate matching in sparse markets where another arrival is unlikely to improve the result.
 
-### How do ETA estimates improve without replacing routing?
+### Routing-based ETA correction {#how-do-eta-estimates-improve-without-replacing-routing}
 
 **Problem.** Routing provides a plausible road path, while historical behavior reveals systematic differences between its travel-time estimate and actual arrival.
 
@@ -388,7 +388,7 @@ Version route and feature inputs with the model. Using today's traffic or final 
 
 **Tradeoffs and recovery.** Return routing ETA if the model misses its deadline, recording fallback source and prediction version. Calibrated intervals describe uncertainty separately from the point estimate. Once the trip changes state, a newer trip-version prediction supersedes the older one rather than mixing pickup and destination-arrival estimates.
 
-### How can retries avoid double assignment or charging?
+### Atomic assignment and payment recovery {#how-can-retries-avoid-double-assignment-or-charging}
 
 **Problem.** Event deduplication recognizes repeated messages, but two different ride requests can still compete for the same driver. Likewise, a database uniqueness check performed after a provider charge cannot prevent duplicate external charges.
 
