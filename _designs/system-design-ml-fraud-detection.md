@@ -247,7 +247,7 @@ A feature or inference timeout selects the merchant's versioned fallback policy:
 
 ## Deep dives
 
-### Which model belongs in the checkout path?
+### Checkout model selection {#which-model-belongs-in-the-checkout-path}
 
 **Problem.** Fraud inputs mix amounts, categorical identifiers, missing values and nonlinear behavior. Serving must also produce a reproducible decision quickly.
 
@@ -290,7 +290,7 @@ Log raw/calibrated scores, exit mode, feature/model versions and selected policy
 
 **Tradeoffs and recovery.** Measure cascade recall as a whole. A graph model that performs well on reviewed cases cannot repair fraud wrongly approved by an earlier fast exit. Deadline failure selects the merchant's explicit fallback action and records the reason.
 
-### How do we learn when fraud is rare?
+### Rare-fraud learning and calibration {#how-do-we-learn-when-fraud-is-rare}
 
 **Problem.** A model that approves almost everything can have high accuracy while missing most fraud.
 
@@ -331,7 +331,7 @@ Raw scorer → held-out calibration → amount/merchant-aware action policy
 
 **Tradeoffs and recovery.** Calibrate after training/sampling on natural-prevalence data. Record sampling weights rather than treating the balanced training set as production prevalence. Pick thresholds on validation data and report interval estimates for rare fraud slices. A high score alone does not establish review precision; the validation report needs enough independently reviewed cases above the chosen threshold.
 
-### How do delayed and selective labels affect training?
+### Delayed and selective labels {#how-do-delayed-and-selective-labels-affect-training}
 
 **Problem.** Confirmed outcomes may arrive weeks after checkout. Reviews and rules arrive sooner but reflect the current decision policy.
 
@@ -377,7 +377,7 @@ Treat this schedule as the proposed observation policy, not a universal payment-
 
 **Tradeoffs and recovery.** Declined attempts lack the same counterfactual chargeback outcome as approvals. Independent reviews can improve coverage, but do not reveal exactly what would have happened if every decline had been approved. Report evaluated population and selection method with quality estimates. Split by time and group repeated linked activity so a coordinated attack is not leaked across train and test.
 
-### How do relationships help with cold starts?
+### Relationship features for cold starts {#how-do-relationships-help-with-cold-starts}
 
 **Problem.** A new user has little history but may share a device or payment token with known activity.
 
@@ -416,7 +416,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Tradeoffs and recovery.** Cap fan-out during graph training and retain its timestamp so leakage from future relationships is prevented. New identities absent from the graph use cohort priors and current attributes. Evaluate gain and false declines by genuinely new account/card cohorts before making graph availability a required checkout dependency.
 
-### How do we adapt and recover safely?
+### Model adaptation and recovery {#how-do-we-adapt-and-recover-safely}
 
 **Problem.** Attack patterns evolve, but noisy feedback can also move the decision boundary in the wrong direction.
 

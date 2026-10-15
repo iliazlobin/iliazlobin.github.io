@@ -248,7 +248,7 @@ The application can still display an estimate, while monitoring records which pa
 
 ## Deep dives
 
-### Should the model predict the entire duration or a correction?
+### Routing baselines and learned corrections {#should-the-model-predict-the-entire-duration-or-a-correction}
 
 **Problem.** A routing engine already accounts for road topology and route length. Training a model to relearn those relationships requires substantial data and makes new-region behavior harder to control.
 
@@ -295,7 +295,7 @@ class F,T,L,V data;
 
 **Tradeoffs and recovery.** The serving bundle pins the routing-feature schema and permitted map versions. A feature-contract mismatch or stale traffic vector selects a validated routing-only fallback. Log the fallback mode so its errors can be evaluated separately. Compare absolute error and signed bias across short/long trips; an apparently good average can still systematically underestimate busy-region trips.
 
-### How do we prevent future information from entering training?
+### Availability-aware training data {#how-do-we-prevent-future-information-from-entering-training}
 
 **Problem.** A GPS observation may describe conditions at 10:00 but arrive at the feature pipeline at 10:03. A prediction made at 10:01 could not have used it, even though its observation timestamp is earlier.
 
@@ -347,7 +347,7 @@ The joined row also records feature age and missingness. Defaulting an unavailab
 
 **Tradeoffs and recovery.** Split examples chronologically and keep related predictions from the same trip together. Later updates from that trip provide labels only after they become available, never serving features for an earlier prediction. Test reconstruction by comparing historical joins against logged serving snapshots; discrepancies identify late-data or feature-version leakage.
 
-### Which traffic estimate should a long route use?
+### Traffic forecasts along a route {#which-traffic-estimate-should-a-long-route-use}
 
 **Problem.** Current traffic is relevant to the first road segment. A segment reached 30 minutes later needs a forecast for that time.
 
@@ -380,7 +380,7 @@ Interpolation must be defined for adjacent buckets; missing forecasts use histor
 
 **Tradeoffs and recovery.** A revised residual or traffic pass may shift downstream horizons. Limit iterations and stop when the change is below a configured threshold, with a hard deadline fallback to the last valid estimate. Benchmark intersections, incidents and long routes separately. A spatial traffic model may improve propagation forecasts, but the request path still uses the same versioned horizon interface.
 
-### How do we return an interval users can trust?
+### Calibrated arrival-time intervals {#how-do-we-return-an-interval-users-can-trust}
 
 **Problem.** A point estimate hides how variable a trip can be. Repeated model sampling can estimate uncertainty, but adds serving work and may still need calibration.
 
@@ -419,7 +419,7 @@ Interval width:             200s
 
 **Tradeoffs and recovery.** Constrain quantile order during training or apply a validated ordering step. Evaluate any clipping against very short trips and sparse-data regions. Log map/model/calibration versions with the output so a coverage regression can be traced to the actual serving combination.
 
-### How do we adapt to new regions and changing conditions?
+### Regional adaptation and recovery {#how-do-we-adapt-to-new-regions-and-changing-conditions}
 
 **Problem.** A new region has a road graph before it has enough completed trips to train a reliable local model. Traffic shifts also happen faster than a full training cycle.
 

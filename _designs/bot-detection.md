@@ -243,7 +243,7 @@ Use the existing enforcement state and approved fallback rules when the feature/
 
 ## Deep dives
 
-### Which signals and models should run synchronously?
+### Synchronous scoring budget {#which-signals-and-models-should-run-synchronously}
 
 **Problem.** Timing/count features detect individual bursts; graph and sequence representations detect patterns across actions and accounts.
 
@@ -287,7 +287,7 @@ A sequence includes event type and time since the preceding action, allowing rap
 
 **Tradeoffs and recovery.** Replaying an event updates counters once using its stable identity or an idempotent window computation. The offline training path reconstructs those counters at the original action time. A missing graph snapshot selects a separately evaluated fallback instead of an unexplained zero vector.
 
-### How do thresholds avoid mistaken restrictions?
+### Calibrated action thresholds {#how-do-thresholds-avoid-mistaken-restrictions}
 
 **Problem.** False-positive rate, precision and appeal-overturn rate use different denominators. A low appeal rate can coexist with many mistaken restrictions if few users appeal.
 
@@ -335,7 +335,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Tradeoffs and recovery.** Persist action duration and expiry, with a version preventing an older event from extending or undoing a newer reviewed decision. Model rollout includes its calibration; threshold-only releases remain separate policy changes. Monitor successful challenge completion and investigator backlog so a wider uncertain band does not quietly degrade the user experience.
 
-### How do we detect unfamiliar attacks?
+### Unfamiliar attack detection {#how-do-we-detect-unfamiliar-attacks}
 
 **Problem.** A supervised model recognizes patterns represented in its labels. Novel coordination may look unusual without resembling a known attack.
 
@@ -377,7 +377,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Tradeoffs and recovery.** Record baseline/feature version and launch/event context in diagnostics. Cluster similar sequences to reduce duplicate investigations and preserve representative sampling for prevalence measurement. The anomaly detector's success metric is useful confirmed investigations per review cost, not agreement with its own outlier threshold.
 
-### How do enforcement and scarce labels affect learning?
+### Enforcement-aware training data {#how-do-enforcement-and-scarce-labels-affect-learning}
 
 **Problem.** Restricted accounts have truncated future activity. Appeals and investigator queues sample selected accounts, so they cannot alone measure the whole population.
 
@@ -401,7 +401,7 @@ Draw audits across action bands with logged probabilities, and keep targeted inv
 
 **Tradeoffs and recovery.** Group connected attack accounts and near-duplicate sequences before splitting datasets to reduce leakage. Evaluate labels only after their availability/maturity cutoff. Retain human corrections through retraining and rollback; automatically regenerated labels must not overwrite their provenance.
 
-### How do model updates stay reliable?
+### Controlled model updates {#how-do-model-updates-stay-reliable}
 
 **Problem.** Monitor input distributions, missing features, scores, action rates and mature labeled quality by cohort. Distribution changes trigger investigation; they are not proof that quality has degraded.
 

@@ -247,7 +247,7 @@ If the ranker misses its deadline, order candidates using retrieval scores and l
 
 ## Deep dives
 
-### How do we narrow a billion videos to five?
+### Candidate retrieval and ranking budgets {#how-do-we-narrow-a-billion-videos-to-five}
 
 **Problem.** Scoring every video per request requires too much feature retrieval and model computation.
 
@@ -294,7 +294,7 @@ Evaluate candidate recall before adding ranker capacity. Approximate-search prob
 
 **Tradeoffs and recovery.** The final ranker needs batch hydration for video age, content and session features. Set a deadline for each source and keep a fallback order when richer scoring is unavailable. New item content is encoded with the serving bundle; a vector from another encoder version is rejected rather than silently inserted into the active index.
 
-### What should the ranker optimize?
+### Multi-objective ranking {#what-should-the-ranker-optimize}
 
 **Problem.** Clicks, watch duration and satisfaction capture different behavior. Long videos also provide more possible watch time, making unbounded duration a biased objective.
 
@@ -348,7 +348,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Tradeoffs and recovery.** Validate whole-session outcomes and return rate through a controlled experiment. Offline teacher agreement or an increase in average seconds alone cannot establish that recommendations improved for users. Record head calibration and feature missingness; a guardrail regression rolls back the scoring policy with its compatible model bundle, not just one weight.
 
-### How do new users and videos receive useful recommendations?
+### New-user and video recommendations {#how-do-new-users-and-videos-receive-useful-recommendations}
 
 **Problem.** New users have little history, and new videos have no interaction aggregates.
 
@@ -376,7 +376,7 @@ A skip updates recent session features for the next request; it is interpreted w
 
 **Tradeoffs and recovery.** Track quality and exposure by true item age and new-user cohort. Mature outcomes—not just initial clicks—determine whether to increase the exploration share or promote a content-based feature. Restore the previous exploration cap if cohort quality or safety guardrails regress; continue serving eligible baseline candidates while the experiment is reviewed.
 
-### How do we prevent biased or mismatched training data?
+### Exposure bias and feature consistency {#how-do-we-prevent-biased-or-mismatched-training-data}
 
 **Problem.** Only displayed videos can receive watch feedback. Position, UI layout and the previous model influence exposure, so passive logs reflect those choices.
 
@@ -404,7 +404,7 @@ Sampling metadata records negative selection and randomized slot assignment. Wei
 
 **Tradeoffs and recovery.** Run fixture tests that send the same historical request through offline feature extraction and serving encoding. Compare masks, age calculations and categorical mappings, then inspect drift by schema version. A user vector built with one tokenizer/encoder must query item vectors from its compatible bundle. A parity or compatibility failure blocks promotion; retain the prior bundle and regenerate affected examples before reevaluation.
 
-### How do releases and adaptation remain stable?
+### Stable releases and session adaptation {#how-do-releases-and-adaptation-remain-stable}
 
 **Problem.** Daily retraining captures gradual changes; breaking-news or seasonal shifts can move faster.
 

@@ -234,7 +234,7 @@ If the deep ranker times out, return eligible light-ranked candidates. If person
 
 ## Deep dives
 
-### How much ranking work should each stage receive?
+### Ranking-stage budgets {#how-much-ranking-work-should-each-stage-receive}
 
 **Problem.** A richer model can capture user–item interactions that a retrieval vector misses, but its cost grows with candidates per request.
 
@@ -271,7 +271,7 @@ Measure recall at each ranking stage alongside end-to-end latency.
 
 **Tradeoffs and recovery.** Train the light model to retain promising deep-model candidates, then verify against mature user outcomes. Its teacher distribution must match the current retrieval sources. Keep a fallback score for every candidate so deep-stage timeout leaves a usable order. Deadline budgets cover feature retrieval and final eligibility, not only GPU execution.
 
-### What should the model optimize?
+### Multi-task ranking objectives {#what-should-the-model-optimize}
 
 **Problem.** Click probability favors attractive items, while dwell and meaningful interactions often reflect a different outcome.
 
@@ -323,7 +323,7 @@ Calibrate the heads used as probabilities on representative held-out traffic. Th
 
 **Tradeoffs and recovery.** Apply safety removals as eligibility constraints, not merely as a small score penalty. Otherwise a highly engaging prohibited item could remain near the top despite its negative term. Log component scores and policy versions to explain a ranking change.
 
-### How do we learn from biased, delayed feedback?
+### Exposure bias and delayed feedback {#how-do-we-learn-from-biased-delayed-feedback}
 
 **Problem.** High positions receive more exposure, and items excluded by the old policy have no observed outcome.
 
@@ -347,7 +347,7 @@ Suppose an exploration item has assignment probability 0.02. Its inverse-propens
 
 **Tradeoffs and recovery.** Position correction and candidate selection correction are different problems. A position model estimates examination among shown items; controlled retrieval/slot exploration supplies support for items that the earlier model rarely showed. Use representative, unweighted evaluation data and a chronological final test set to measure the actual result.
 
-### How do fresh and unfamiliar items enter the feed?
+### Fresh content and cold starts {#how-do-fresh-and-unfamiliar-items-enter-the-feed}
 
 **Problem.** New content has text, media and creator context before it has engagement history. New users have session context before a reliable long-term profile.
 
@@ -392,7 +392,7 @@ classDef danger fill:#fce8e6,stroke:#9aa0a6,color:#202124;
 
 **Tradeoffs and recovery.** Measure discovery quality by item age and creator cohort, not just total impressions. An exploration item still follows current blocking and safety rules. The allocation can borrow unused slots only under a declared policy; it does not guarantee traffic to every submitted item.
 
-### How do model releases remain consistent?
+### Compatible model releases {#how-do-model-releases-remain-consistent}
 
 **Problem.** Updating an item encoder changes the vector space; combining it with an older query/user encoder or index can reduce retrieval quality.
 

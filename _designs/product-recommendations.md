@@ -258,7 +258,7 @@ An inventory outage has a different consequence: serve only entries covered by a
 
 ## Deep dives
 
-### How much ranking work can each stage afford?
+### Ranking budgets and candidate retention {#how-much-ranking-work-can-each-stage-afford}
 
 **Problem.** A model that captures detailed user-product interactions may be too expensive to apply to thousands of candidates at peak traffic. Candidate retrieval also determines which products the ranker ever gets to consider.
 
@@ -307,7 +307,7 @@ Final selection   current eligibility and diversity      remove invalid items
 
 **Tradeoffs and recovery.** Measure how many relevant products survive each cutoff. A fast light ranker that drops most eventual purchases saves compute by destroying recall. Use a teacher-ranked evaluation set and mature purchase outcomes to plot retained quality against candidate count. Reserve a deadline slice for final catalog hydration so a timely model response does not become a late API response.
 
-### How do we keep features and indexes compatible?
+### Feature and index compatibility {#how-do-we-keep-features-and-indexes-compatible}
 
 **Problem.** A user's current-session vector changes frequently, while an index containing the full catalog is rebuilt less often. Updating only one tower can make user and item vectors incompatible.
 
@@ -346,7 +346,7 @@ Store each product's content version in the index record. A replayed older catal
 
 **Tradeoffs and recovery.** For historical training, reconstruct item availability and inventory signals at impression time. Today's inventory is not a valid feature for last week's displayed product. Missing features carry masks; feature-schema or embedding-dimension mismatches block release instead of producing a superficially valid vector.
 
-### How do we recommend new users and products?
+### New-user and product recommendations {#how-do-we-recommend-new-users-and-products}
 
 **Problem.** A new user has no reliable interaction history. A new product has content but little evidence about clicks or purchases.
 
@@ -372,7 +372,7 @@ Evaluate new users and products separately using time-based “first seen” def
 
 **Tradeoffs and recovery.** An exploration purchase becomes an attributed outcome only after joining the request ID, item ID and label window. Record whether a product was later unavailable so zero conversion can be distinguished from a failed purchase opportunity.
 
-### What outcome should the model learn?
+### Purchase-oriented learning objectives {#what-outcome-should-the-model-learn}
 
 **Problem.** Clicks arrive quickly, but a product that attracts clicks may produce few purchases. Purchase labels arrive later and are influenced by whether the product was shown.
 
@@ -412,7 +412,7 @@ The proposed purchase-oriented ranker scores relevance using calibrated purchase
 
 **Tradeoffs and recovery.** Fit calibration on natural-prevalence held-out data. If serving multiplies probability by expected value, separately validate order value and returns; a click-trained score is not automatically a purchase probability. Keep a protected chronological test period and allow the label window to mature before comparing candidates.
 
-### How do we improve the set without distorting relevance?
+### Diversity-aware reranking {#how-do-we-improve-the-set-without-distorting-relevance}
 
 **Problem.** Repeatedly showing near-identical products limits discovery. Business constraints such as category diversity or margin also change which items a user sees.
 

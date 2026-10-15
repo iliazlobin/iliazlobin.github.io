@@ -243,7 +243,7 @@ Synthetic examples from back-translation retain their provenance so evaluation c
 
 ## Deep dives
 
-### How should we share a model across languages?
+### Shared multilingual models {#how-should-we-share-a-model-across-languages}
 
 **Problem.** Training data is uneven. A high-resource language pair can dominate a shared model, while maintaining a separate model for every pair creates a large serving and release burden.
 
@@ -285,7 +285,7 @@ class E control;
 
 **Tradeoffs and recovery.** The bundle includes tokenizer vocabulary, language mapping, weights and decoding defaults. A request pins that bundle for its entire generation. Adding a new direction requires evidence on that pair even when both languages already appear elsewhere in training; transfer is useful, but coverage in the language list alone does not establish translation quality.
 
-### How do we fit translation into the latency budget?
+### Translation latency and serving efficiency {#how-do-we-fit-translation-into-the-latency-budget}
 
 **Problem.** The decoder performs one step per generated token. Longer outputs and larger beams increase the work even when the input is short.
 
@@ -328,7 +328,7 @@ Beam hypotheses can change order as later tokens arrive, so the optional quality
 
 **Tradeoffs and recovery.** Batch only requests with compatible bundle and decoding settings. Apply length buckets to reduce padding, while keeping a maximum queue age so a rare bucket still runs. Count active hypotheses and total decoder tokens against memory capacity. Cancellation removes the request at an iteration boundary and reclaims its state. Compare quantized and baseline bundles on the same pair/length cohorts; a faster average can still hide worse tail latency on long outputs.
 
-### How do we adapt to a new domain?
+### Domain adaptation {#how-do-we-adapt-to-a-new-domain}
 
 **Problem.** A general model may translate everyday text well but mishandle legal, medical or product-specific terminology. Fine-tuning only on the new domain can also reduce quality elsewhere.
 
@@ -352,7 +352,7 @@ Store dataset lineage and permitted uses in the manifest. Deduplicate pairs befo
 
 **Tradeoffs and recovery.** Adapters become useful when two customers require incompatible terminology or independent rollout. Route an adapter by an explicit approved domain ID, load it with its base-model revision, and cap the number held on each worker. An adapter cache miss adds loading delay, so warm the expected active set rather than treating adapter routing as free.
 
-### How do we decide whether a candidate is better?
+### Candidate evaluation and release gates {#how-do-we-decide-whether-a-candidate-is-better}
 
 **Problem.** Text similarity metrics provide useful feedback, but users care about accurate meaning. Fluent output can still reverse a negation or mistranslate a name.
 
