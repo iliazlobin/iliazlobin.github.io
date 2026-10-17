@@ -28,14 +28,6 @@
   white-space: nowrap;
 }
 
-.resume-email .resume-download {
-  justify-content: center;
-  flex: 0 0 1.75rem;
-  width: 1.75rem;
-  height: 1.75rem;
-  padding: 0;
-}
-
 .resume-updated {
   margin: 0;
   margin-inline-start: auto;

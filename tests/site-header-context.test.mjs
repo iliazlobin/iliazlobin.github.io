@@ -23,3 +23,12 @@ test('exact pages and owning article sections have distinct current-navigation s
   const css = read('assets/css/site.css');
   assert.match(css, /\.site-nav \.page-link\[aria-current="page"\],\s*\.site-nav \.page-link\[aria-current="location"\] \{ color: var\(--accent\); font-weight: 600; \}/);
 });
+
+test('the Resume PDF icon sits beside the page title, only on Resume', () => {
+  const heading = header.split('<div class="site-page-heading">')[1].split('</div>')[0];
+  assert.match(heading, /<h1 class="site-page-title">[^]*<\/h1>[^]*if page.url == '\/resume\/'[^]*include resume-download.html icon_only=true/);
+  assert.doesNotMatch(heading.match(/<h1\b[^]*?<\/h1>/)[0], /include resume-download/);
+  assert.equal((header.match(/include resume-download/g) || []).length, 1);
+  assert.match(read('assets/css/site.css'), /\.site-page-heading \.resume-download\s*\{\s*align-self:\s*center;/);
+  assert.doesNotMatch(read('assets/css/resume.css'), /\.resume-email \.resume-download/);
+});

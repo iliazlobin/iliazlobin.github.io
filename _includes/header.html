@@ -28,6 +28,9 @@
           {%- else -%}
           <h1 class="site-page-title">{{ section_title | escape }}</h1>
           {%- endif -%}
+          {%- if page.url == '/resume/' -%}
+          {% include resume-download.html icon_only=true %}
+          {%- endif -%}
         </div>
         {%- endif -%}
       </div>

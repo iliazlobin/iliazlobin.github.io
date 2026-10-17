@@ -50,6 +50,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: .25rem;
   margin: 0 0 1rem;
   overflow-wrap: anywhere;
@@ -61,13 +62,12 @@
   border: 0;
   background: none;
   font: inherit;
-  text-align: left;
+  text-align: center;
   overflow-wrap: anywhere;
   cursor: pointer;
   user-select: text;
 }
-.resume-email-copy,
-.resume-gmail { color: var(--ink-soft); text-decoration: none; }
+.resume-email-copy { color: var(--ink-soft); text-decoration: none; }
 .resume-email-copy:hover { color: var(--accent); text-decoration: underline; }
 .resume-email-copy::before {
   content: "";
@@ -84,19 +84,8 @@
 .resume-email-copy:is(:hover, :focus-visible)::before { opacity: .7; }
 .resume-email-copy.copied { color: var(--accent); }
 .resume-email-copy.copied::before { opacity: 1; }
-.resume-gmail {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 1.75rem;
-  width: 1.75rem;
-  height: 1.75rem;
-  border-radius: var(--radius-sm);
-}
-.resume-gmail:hover { background: var(--accent-soft); color: var(--accent-dark); }
 .resume-email-status.copy-error { flex-basis: 100%; }
-.resume-email-copy:focus-visible,
-.resume-gmail:focus-visible {
+.resume-email-copy:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }

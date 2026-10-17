@@ -85,8 +85,8 @@ test("Resume qualifications stay on the left and searchable, while only the outl
   assert.match(rail, /<summary>Contact and qualifications<\/summary>/);
   assert.match(rail, /<h2 id="education">Education<\/h2>/);
   assert.match(rail, /<h2 id="professional-certifications">Certifications<\/h2>/);
-  assert.match(rail, /include profile-contact\.html work_status=true resume_download=true/);
-  assert.match(read("_includes/profile-contact.html"), /if include\.resume_download[\s\S]*include resume-download\.html/);
+  assert.match(rail, /include profile-contact\.html work_status=true %}/);
+  assert.doesNotMatch(read("_includes/profile-contact.html"), /include resume-download|resume_download/);
   assert.doesNotMatch(read("resume.md"), /<aside class="resume-sidebar"/);
   const search = read("search-index.json");
   assert.match(search, /if entry\.left_rail[\s\S]*include \{\{ entry\.left_rail \}\}[\s\S]*search_html = search_html \| append: search_rail/);

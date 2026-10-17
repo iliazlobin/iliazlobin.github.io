@@ -60,6 +60,8 @@ class Page(HTMLParser):
         self.outlines = 0
         self.outline_panels = []
         self.resume_downloads = []
+        self.header_resume_downloads = []
+        self._site_page_heading_depth = 0
         self.library_links = []
         self.current_articles = []
         self.article_skip_links = []
@@ -82,6 +84,8 @@ class Page(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         classes = attrs.get("class", "").split()
+        if tag == "div" and (self._site_page_heading_depth or "site-page-heading" in classes):
+            self._site_page_heading_depth += 1
         if tag == "aside":
             if self._profile_depth or "page-profile-rail" in classes:
                 self._profile_depth += 1
@@ -130,9 +134,11 @@ class Page(HTMLParser):
         if tag == "details" and "article-toc-panel" in classes:
             self.outline_panels.append("open" in attrs)
         if tag == "a" and "resume-download" in classes:
-            self.resume_downloads.append((attrs.get("href"), attrs.get("type"),
-                                          attrs.get("download"), attrs.get("aria-label"),
-                                          attrs.get("title")))
+            download = (attrs.get("href"), attrs.get("type"), attrs.get("download"),
+                        attrs.get("aria-label"), attrs.get("title"))
+            self.resume_downloads.append(download)
+            if self._site_page_heading_depth:
+                self.header_resume_downloads.append(download)
         if tag == "a" and self._profile_depth:
             self.profile_links.append((attrs.get("aria-label"), attrs.get("href")))
         if tag == "nav" and attrs.get("aria-label") == "Article navigation":
@@ -176,6 +182,8 @@ class Page(HTMLParser):
             self._cell_text.append(data)
 
     def handle_endtag(self, tag):
+        if tag == "div" and self._site_page_heading_depth:
+            self._site_page_heading_depth -= 1
         if tag == "aside":
             if self._profile_depth:
                 self._profile_depth -= 1
@@ -356,8 +364,12 @@ def check_personal_page_layout(root, errors):
         if route == "/resume/":
             expected_download = ("/assets/documents/ilia-zlobin-resume.pdf", "application/pdf",
                                  "Ilia-Zlobin-Resume.pdf", "Download Resume PDF", "Download Resume PDF")
-            if page.resume_downloads != [expected_download]:
-                errors.append(f"{route}: retain the named native Resume PDF download")
+            if page.resume_downloads != [expected_download] or page.header_resume_downloads != [expected_download]:
+                errors.append(f"{route}: keep the single native PDF download beside the header page title")
+            expected_labels = ["Compose an email to Ilia in Gmail", "LinkedIn", "GitHub",
+                               "LeetCode", "YouTube", "Instagram", "X"]
+            if [label for label, _ in page.profile_links if label] != expected_labels:
+                errors.append(f"{route}: Gmail must join the existing social profiles, with no sidebar download")
             qualification_ids = {"contact", "education", "professional-certifications"}
             if not qualification_ids.issubset(page.profile_ids) or qualification_ids & page.page_rail_ids:
                 errors.append(f"{route}: contact and qualifications must stay in the left rail, not the right outline")

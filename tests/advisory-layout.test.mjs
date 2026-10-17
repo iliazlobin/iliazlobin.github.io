@@ -75,18 +75,26 @@ test('one contact component preserves the native copy, Gmail, booking and profil
   assert.match(contact, /San Francisco Bay Area, CA/);
   assert.match(contact, /<button type="button"[^>]*data-copy-email="\{\{ site.email \| escape \}\}"/);
   assert.match(contact, /role="status"/);
-  assert.match(contact, /site.email \| uri_escape/);
-  assert.match(contact, /if include.gmail_subject.*&amp;su=\{\{ include.gmail_subject \| uri_escape \}\}/);
   assert.match(contact, /if include.work_status[\s\S]*Green Card[\s\S]*endif/);
-  assert.match(contact, /if include.resume_download[\s\S]*include resume-download.html icon_only=true[\s\S]*endif/);
-  assert.match(contact, /unless include.compact_links.*<a class="resume-gmail"/);
-  assert.match(contact, /include social-links.html booking=include.booking gmail=include.compact_links gmail_subject=include.gmail_subject compact=include.compact_links/);
+  assert.doesNotMatch(contact, /resume-gmail|resume_download|include resume-download/);
+  assert.match(contact, /include social-links.html booking=include.booking gmail=true gmail_subject=include.gmail_subject compact=include.compact_links/);
   const socials = read('_includes/social-links.html');
   assert.match(socials, /if include.booking and site.advisory_booking_url/);
   assert.match(socials, /aria-label="Schedule a call"/);
   for (const label of ['LinkedIn', 'GitHub', 'LeetCode', 'YouTube', 'Instagram', 'X']) {
     assert.ok(socials.includes(`aria-label="${label}"`));
   }
+});
+
+test('all contact addresses are centered and Gmail remains in the shared icon row', () => {
+  const css = read('assets/css/profile-contact.css');
+  assert.match(css, /\.resume-email\s*\{[^}]*justify-content:\s*center;/);
+  assert.match(css, /\.resume-email-copy\s*\{[^}]*text-align:\s*center;/);
+  assert.doesNotMatch(css, /\.resume-gmail/);
+  const contact = read('_includes/profile-contact.html');
+  const email = contact.split('<div class="resume-email">')[1].split('</div>')[0];
+  assert.doesNotMatch(email, /<a\b|include gmail-icon|include resume-download/);
+  assert.match(contact, /include social-links.html[^%]*gmail=true/);
 });
 
 test('Advisory keeps its four contact icons together without changing default profile links', () => {
