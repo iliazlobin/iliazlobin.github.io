@@ -25,7 +25,12 @@
   line-height: 1.5;
 }
 .profile-card ul { margin: 0; padding: 0; list-style: none; }
-.profile-card .social-links { justify-content: center; }
+.profile-card .social-links {
+  width: fit-content;
+  max-width: 100%;
+  margin-inline: auto;
+  justify-content: center;
+}
 .profile-panel--compact .social-links { flex-wrap: nowrap; }
 
 .resume-profile { display: grid; gap: .7rem; margin-bottom: 1.25rem; }

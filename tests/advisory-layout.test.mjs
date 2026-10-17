@@ -99,7 +99,11 @@ test('all contact addresses are centered and Gmail remains in the shared icon ro
 
 test('contact icon rows are centered while Resume can still wrap each row', () => {
   const css = read('assets/css/profile-contact.css');
-  assert.match(css, /\.profile-card \.social-links\s*\{\s*justify-content:\s*center;\s*\}/);
+  const icons = css.match(/\.profile-card \.social-links\s*\{([^}]*)\}/)[1];
+  assert.match(icons, /justify-content:\s*center;/);
+  assert.match(icons, /width:\s*fit-content;/);
+  assert.match(icons, /max-width:\s*100%;/);
+  assert.match(icons, /margin-inline:\s*auto;/);
   assert.match(read('assets/css/site.css'), /\.social-links\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;/);
   assert.match(css, /\.profile-panel--compact \.social-links\s*\{\s*flex-wrap:\s*nowrap;/);
 });
