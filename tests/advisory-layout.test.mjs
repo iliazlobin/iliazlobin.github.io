@@ -97,6 +97,13 @@ test('all contact addresses are centered and Gmail remains in the shared icon ro
   assert.match(contact, /include social-links.html[^%]*gmail=true/);
 });
 
+test('contact icon rows are centered while Resume can still wrap each row', () => {
+  const css = read('assets/css/profile-contact.css');
+  assert.match(css, /\.profile-card \.social-links\s*\{\s*justify-content:\s*center;\s*\}/);
+  assert.match(read('assets/css/site.css'), /\.social-links\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;/);
+  assert.match(css, /\.profile-panel--compact \.social-links\s*\{\s*flex-wrap:\s*nowrap;/);
+});
+
 test('Advisory keeps its four contact icons together without changing default profile links', () => {
   const socials = read('_includes/social-links.html');
   const optional = socials.split('{% unless include.compact %}')[1].split('{% endunless %}')[0];
