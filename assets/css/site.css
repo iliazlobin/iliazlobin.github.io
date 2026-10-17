@@ -94,7 +94,7 @@ a:hover { color: var(--accent-dark); text-decoration: underline; }
 .resume-download:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .site-role, .site-location { margin: 0; font-size: .7rem; line-height: 1.4; }
 .site-role { color: var(--ink-soft); }
-.site-location { color: var(--ink-faint); }
+.site-location { color: var(--ink-faint); white-space: nowrap; }
 .site-header .site-nav { float: none; position: static; padding-top: 0; line-height: 1.5; font-size: .9rem; }
 .site-nav .page-link { color: var(--ink-soft); font-weight: 500; }
 .site-nav .page-link:hover { color: var(--accent); text-decoration: none; }

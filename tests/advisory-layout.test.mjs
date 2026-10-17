@@ -114,3 +114,15 @@ test('contact cards share styles and responsive disclosure behavior, not Resume-
   assert.doesNotMatch(css, /grid-template-columns|max-height|position:\s*sticky/);
   assert.doesNotMatch(read('assets/css/resume.css'), /\.resume-email-copy\s*\{|\.resume-profile\s*\{/);
 });
+
+test('the complete location stays on one line in shared contact cards and page headers', () => {
+  const css = read('assets/css/profile-contact.css');
+  const location = css.match(/\.resume-location\s*\{([^}]*)\}/)[1];
+  assert.match(location, /white-space:\s*nowrap/);
+  assert.match(location, /font-size:\s*\.75rem/);
+  assert.match(location, /gap:\s*\.375rem/);
+  assert.doesNotMatch(location, /(?:^|;)\s*(?:text-overflow|overflow|width):/);
+  assert.match(read('assets/css/site.css'), /\.site-location\s*\{[^}]*white-space:\s*nowrap/);
+  assert.match(read('_includes/profile-contact.html'), /<span>San Francisco Bay Area, CA<\/span>/);
+  assert.match(read('_includes/header.html'), /<p class="site-location">San Francisco Bay Area, CA<\/p>/);
+});
