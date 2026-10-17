@@ -363,6 +363,13 @@ def check_personal_page_layout(root, errors):
             if any(item["id"] in ("education", "professional-certifications") for item in outline.links):
                 errors.append(f"{route}: body outline must not misclassify left-rail qualifications as body sections")
         if route == "/advisory/":
+            subject_ids = ["systems-cloud-architecture", "ai-ml-engineering",
+                           "technical-strategy", "technical-leadership-growth"]
+            if [(heading["id"], heading["level"]) for heading in outline.headings] != [
+                    (anchor, 2) for anchor in ["advisory-focus", *subject_ids]]:
+                errors.append(f"{route}: keep Overview and four subject sections as peer headings without Expertise")
+            if any(item["id"] == "expertise" or item["parent"] is not None for item in outline.links):
+                errors.append(f"{route}: outline must list the four subjects directly, without Expertise")
             if "contact" not in page.profile_ids or "contact" in page.page_rail_ids or html.count('id="contact"') != 1:
                 errors.append(f"{route}: preserve one contact fragment in the left card")
             if any(item["id"] == "contact" for item in outline.links) or re.search(r'<h[1-6]\b[^>]*>\s*Contact\s*</h[1-6]>', html):

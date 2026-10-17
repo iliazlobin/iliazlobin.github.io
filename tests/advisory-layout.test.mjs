@@ -28,6 +28,19 @@ test('Advisory headline is compact, naturally wrapping and untruncated', () => {
   assert.doesNotMatch(css, /(?:^|[;{])\s*(?:height|white-space|overflow|line-clamp)\s*:/m);
 });
 
+test('Advisory subjects are compact peer sections without an Expertise heading', () => {
+  const page = read('advisory.md');
+  assert.doesNotMatch(page, /<h[1-6][^>]*>\s*Expertise\s*<\/h[1-6]>/);
+  assert.match(page, /<div class="advisory-areas" id="expertise">/);
+  const areas = page.split('<div class="advisory-areas" id="expertise">')[1];
+  assert.deepEqual([...areas.matchAll(/<h2 id="([^"]+)">/g)].map(([, id]) => id), [
+    'systems-cloud-architecture', 'ai-ml-engineering',
+    'technical-strategy', 'technical-leadership-growth'
+  ]);
+  assert.doesNotMatch(areas, /<h[3-6]\b/);
+  assert.match(read('assets/css/advisory.css'), /\.advisory-areas h2\s*\{\s*margin: 1rem 0 \.3rem;\s*font-size: 1rem;/);
+});
+
 test('Advisory inherits the shared reading width and owns only its top gap and stylesheet', () => {
   const css = read('assets/css/advisory.css');
   assert.match(css, /\.page-content:has\(\.advisory\)\s*\{\s*padding-top:\s*clamp\(1\.5rem, 3vw, 2rem\);\s*\}/);
