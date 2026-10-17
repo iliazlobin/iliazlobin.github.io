@@ -665,22 +665,11 @@
     renderTokens(); applyFilter();
   }
 
-  // The email stays plain text visually; clicking it copies the address.
-  function setupEmailCopy() {
-    var button = document.querySelector("[data-copy-email]");
-    if (!button) return;
-    var status = button.parentElement.querySelector("[role='status']");
-    var timer;
-
-    function report(copied) {
-      clearTimeout(timer);
-      status.textContent = copied ? "Copied" : "Couldn't copy. Select the address to copy it.";
-      timer = setTimeout(function () { status.textContent = ""; }, copied ? 2500 : 6000);
-    }
-
-    function copyFallback(address) {
+  // Both copy controls use the same fallback and only confirm actual success.
+  function copyText(text, trigger, report) {
+    function fallback() {
       var field = document.createElement("textarea");
-      field.value = address;
+      field.value = text;
       field.readOnly = true;
       field.style.position = "fixed";
       field.style.opacity = "0";
@@ -689,17 +678,38 @@
       var copied = false;
       try { copied = document.execCommand("copy"); } catch (e) { /* Show manual-copy help. */ }
       field.remove();
-      button.focus({ preventScroll: true });
+      trigger.focus({ preventScroll: true });
       report(copied);
     }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try { navigator.clipboard.writeText(text).then(function () { report(true); }, fallback); }
+      catch (e) { fallback(); }
+    } else { fallback(); }
+  }
 
+  function copyFeedback(trigger, status, success, failure) {
+    var timer;
+    return function (copied) {
+      clearTimeout(timer);
+      trigger.classList.toggle("copied", copied);
+      status.classList.toggle("copy-error", !copied);
+      status.textContent = copied ? success : failure;
+      timer = setTimeout(function () {
+        trigger.classList.remove("copied");
+        status.classList.remove("copy-error");
+        status.textContent = "";
+      }, copied ? 2500 : 6000);
+    };
+  }
+
+  // The address stays plain text; its link icon confirms a successful copy.
+  function setupEmailCopy() {
+    var button = document.querySelector("[data-copy-email]");
+    if (!button) return;
+    var status = button.parentElement.querySelector("[role='status']");
+    var report = copyFeedback(button, status, "Email address copied", "Couldn't copy. Select the address to copy it.");
     button.addEventListener("click", function () {
-      var address = button.getAttribute("data-copy-email");
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(address).then(function () { report(true); }, function () { copyFallback(address); });
-      } else {
-        copyFallback(address);
-      }
+      copyText(button.getAttribute("data-copy-email"), button, report);
     });
   }
 
@@ -714,13 +724,16 @@
     heads.forEach(function (h) {
       h.classList.add("anchored-heading");
       h.setAttribute("title", "Click to copy link to this section");
+      var status = document.createElement("span");
+      status.className = "copy-status";
+      status.setAttribute("role", "status");
+      status.setAttribute("aria-atomic", "true");
+      h.after(status);
+      var report = copyFeedback(h, status, "Section link copied", "Couldn't copy this link. Use the address bar to copy it.");
       h.addEventListener("click", function () {
         var url = window.location.origin + window.location.pathname + "#" + h.id;
         if (history.replaceState) history.replaceState(null, "", "#" + h.id);
-        var done = function () { h.classList.add("copied"); setTimeout(function () { h.classList.remove("copied"); }, 1300); };
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(url).then(done, done);
-        } else { done(); }
+        copyText(url, h, report);
       });
     });
   }

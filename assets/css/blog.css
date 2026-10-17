@@ -173,15 +173,11 @@
 .post-content .anchored-heading::before {
   content: ""; position: absolute; left: -1.55rem; top: 0; bottom: 0; margin: auto 0;
   width: 1.05rem; height: 1.05rem; opacity: 0; transition: opacity .15s ease;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/%3E%3Cpath d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/%3E%3C/svg%3E") no-repeat center / contain;
+  background: var(--copy-link-icon) no-repeat center / contain;
 }
 .post-content .anchored-heading:hover::before { opacity: .7; }
 .post-content .anchored-heading.copied { color: var(--accent); }
-.post-content .anchored-heading.copied::after {
-  content: "Link copied"; position: absolute; left: -.15rem; top: -1.5rem; white-space: nowrap;
-  font-size: .66rem; font-weight: 700; letter-spacing: .02em; color: var(--accent); background: var(--accent-soft);
-  padding: .12rem .5rem; border-radius: 999px; border: 1px solid #dbe4ff;
-}
+.post-content .anchored-heading.copied::before { opacity: 1; }
 @media (max-width: 600px) { .post-content .anchored-heading::before { left: -1.3rem; } }
 .post-content p { margin: 0 0 1.1rem; }
 .post-content ul, .post-content ol { margin: 0 0 1.1rem; padding-left: 1.4rem; }
