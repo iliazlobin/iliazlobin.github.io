@@ -5,7 +5,7 @@ import re
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import unquote, urljoin, urlsplit
+from urllib.parse import parse_qs, unquote, urljoin, urlsplit
 
 from check_article_outline import ArticleOutline
 
@@ -303,7 +303,9 @@ def check_personal_page_layout(root, errors):
         "/resume/": ("summary", "professional-experience", "education",
                      "professional-certifications", "talks",
                      "top-personal-projects-aiml-engineer--architect"),
-        "/advisory/": ("advisory-focus",),
+        "/advisory/": ("advisory-focus", "expertise", "systems-cloud-architecture",
+                       "ai-ml-engineering", "technical-strategy",
+                       "technical-leadership-growth", "contact"),
     }
     for route in PERSONAL_PAGE_ROUTES:
         source = route_file(root, route)
@@ -316,9 +318,12 @@ def check_personal_page_layout(root, errors):
             errors.append(f"{route}: expected one scoped personal-page document shell")
         if page.personal_page_rails != [(True, "Page navigation and details")]:
             errors.append(f"{route}: expected one named shared scrolling page rail")
-        expected_profile = [(True, "Contact and qualifications")] if route == "/resume/" else []
+        expected_profile = {
+            "/resume/": [(True, "Contact and qualifications")],
+            "/advisory/": [(True, "Connect with Ilia")],
+        }.get(route, [])
         if page.personal_profile_rails != expected_profile:
-            errors.append(f"{route}: only Resume must retain its separate left qualifications rail")
+            errors.append(f"{route}: left profile rail must match the page's own contact/qualification scope")
         posts = [classes for classes in page.articles if "post" in classes]
         if len(posts) != 1 or not {"post--page", "post--document"}.issubset(posts[0]):
             errors.append(f"{route}: personal content must use the shared main document column")
@@ -331,6 +336,8 @@ def check_personal_page_layout(root, errors):
         styles = [urlsplit(resource).path for resource in page.resources if ".css" in resource]
         if styles.count("/assets/css/article-toc.css") != 1:
             errors.append(f"{route}: expected one shared document outline stylesheet")
+        if styles.count("/assets/css/profile-contact.css") != bool(expected_profile):
+            errors.append(f"{route}: profile cards must load their shared stylesheet exactly once")
         if len(re.findall(r"setupArticleToc\(", html)) != 1 or not re.search(r"document\.querySelector\([\"']\[data-document-shell\][\"']\)", html):
             errors.append(f"{route}: expected the shared outline enhancement once")
         if not re.search(r"/assets/js/article-toc\.mjs\?v=\d+", html):
@@ -352,6 +359,28 @@ def check_personal_page_layout(root, errors):
                 errors.append(f"{route}: contact and qualifications must stay in the left rail, not the right outline")
             if any(item["id"] in ("education", "professional-certifications") for item in outline.links):
                 errors.append(f"{route}: body outline must not misclassify left-rail qualifications as body sections")
+        if route == "/advisory/":
+            if "contact" not in page.profile_ids or "contact" in page.page_rail_ids or html.count('id="contact"') != 1:
+                errors.append(f"{route}: preserve one contact fragment in the left card")
+            if any(item["id"] == "contact" for item in outline.links) or re.search(r'<h[1-6]\b[^>]*>\s*Contact\s*</h[1-6]>', html):
+                errors.append(f"{route}: remove the visible Contact heading and outline entry")
+            if page.resume_downloads or {"education", "professional-certifications"} & page.profile_ids or "Green Card" in html:
+                errors.append(f"{route}: contact-only card must omit work status, download and qualifications")
+            if "/assets/css/resume.css" in styles:
+                errors.append(f"{route}: contact-only card must not inherit Resume-only layouts")
+            expected_profiles = ("https://www.linkedin.com/in/iliazlobin", "https://github.com/iliazlobin",
+                                 "https://leetcode.com/u/iliazlobin/", "https://www.youtube.com/@iliazlobin",
+                                 "https://www.instagram.com/iliazlobin91", "https://x.com/iliazlobin")
+            if any(url not in page.resources for url in expected_profiles):
+                errors.append(f"{route}: retain all shared social profile links")
+            gmail = [parse_qs(urlsplit(url).query) for url in page.resources
+                     if urlsplit(url).netloc == "mail.google.com"]
+            if not any(query.get("to") == ["iliazlobin91@gmail.com"] and query.get("su") == ["Technical advisory"] for query in gmail):
+                errors.append(f"{route}: retain the advisory Gmail recipient and subject")
+            if not any(urlsplit(url).netloc == "calendar.app.google" for url in page.resources):
+                errors.append(f"{route}: retain the call-booking link")
+            if len(re.findall(r'<button\b[^>]*data-copy-email="iliazlobin91@gmail.com"', html)) != 1:
+                errors.append(f"{route}: retain one working email-copy button")
 
 
 def check_search_index(root, errors):

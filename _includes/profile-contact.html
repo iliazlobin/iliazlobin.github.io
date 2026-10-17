@@ -1,0 +1,21 @@
+<section class="resume-section" id="contact" aria-label="Contact details">
+  <div class="resume-profile">
+    <p class="resume-location">
+      <svg class="resume-profile-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/></svg>
+      <span>San Francisco Bay Area, CA</span>
+    </p>
+    {% if include.work_status %}
+    <p class="resume-work-status">
+      <svg class="resume-profile-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 10h3M7 14h2m5-1 2 2 3-4"/></svg>
+      <span class="resume-work-status-badge">Green Card</span>
+    </p>
+    {% endif %}
+  </div>
+  <div class="resume-email">
+    <button type="button" class="resume-email-copy" data-copy-email="{{ site.email | escape }}" aria-label="Copy email address" title="Copy email address">{{ site.email | escape }}</button>
+    <a class="resume-gmail" href="https://mail.google.com/mail/?view=cm&amp;fs=1&amp;to={{ site.email | uri_escape }}{% if include.gmail_subject %}&amp;su={{ include.gmail_subject | uri_escape }}{% endif %}" target="_blank" rel="noopener" aria-label="Compose an email to Ilia in Gmail" title="Compose in Gmail">{% include gmail-icon.html %}</a>
+    {% if include.resume_download %}{% include resume-download.html icon_only=true %}{% endif %}
+    <span class="resume-email-status" role="status"></span>
+  </div>
+  {% include social-links.html booking=include.booking %}
+</section>

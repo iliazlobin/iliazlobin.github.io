@@ -2,10 +2,11 @@
 layout: default
 ---
 {%- if page.toc %}
+{% if page.left_rail %}<link rel="stylesheet" href="{{ '/assets/css/profile-contact.css' | relative_url }}?v={{ site.time | date: '%s' }}">{% endif %}
 <link rel="stylesheet" href="{{ '/assets/css/article-toc.css' | relative_url }}?v={{ site.time | date: '%s' }}">
 <div class="document-shell document-shell--page{% if page.left_rail %} document-shell--profile{% endif %}" data-document-shell>
   {% if page.left_rail %}
-  <aside class="page-profile-rail" data-page-profile aria-label="Contact and qualifications">
+  <aside class="page-profile-rail" data-page-profile aria-label="{{ page.left_rail_label | default: 'Contact and qualifications' | escape }}">
     {% include {{ page.left_rail }} %}
   </aside>
   {% endif %}

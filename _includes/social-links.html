@@ -2,6 +2,9 @@
   {% if include.gmail %}
   <li><a href="https://mail.google.com/mail/?view=cm&amp;fs=1&amp;to=iliazlobin91%40gmail.com" target="_blank" rel="noopener" aria-label="Compose an email to Ilia in Gmail" title="Compose in Gmail">{% include gmail-icon.html %}</a></li>
   {% endif %}
+  {% if include.booking and site.advisory_booking_url and site.advisory_booking_url != "" %}
+  <li><a href="{{ site.advisory_booking_url }}" target="_blank" rel="noopener" aria-label="Schedule a call" title="Schedule a call"><svg class="social-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill-rule="evenodd" d="M5 4h1V2h2v2h8V2h2v2h1a3 3 0 0 1 3 3v13a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3Zm-1 6v10h16V10H4Zm3 3h3v3H7v-3Zm7 0h3v3h-3v-3Z"></path></svg></a></li>
+  {% endif %}
   <li><a href="https://www.linkedin.com/in/iliazlobin" aria-label="LinkedIn" title="LinkedIn"><svg class="social-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="{{ '/assets/minima-social-icons.svg' | relative_url }}#linkedin"></use></svg></a></li>
   <li><a href="https://github.com/iliazlobin" aria-label="GitHub" title="GitHub"><svg class="social-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="{{ '/assets/minima-social-icons.svg' | relative_url }}#github"></use></svg></a></li>
   <!-- LeetCode and X SVG paths: https://github.com/simple-icons/simple-icons -->
