@@ -57,14 +57,15 @@ test('Advisory inherits the shared reading width and owns only its top gap and s
 
 test('Advisory uses the shared left contact card without a Contact heading or duplicated footer actions', () => {
   const page = read('advisory.md');
-  assert.match(page, /^left_rail: advisory-contact\.html$/m);
+  assert.match(page, /^left_rail: contact-card\.html$/m);
   assert.match(page, /^left_rail_label: Connect with Ilia$/m);
+  assert.match(page, /^contact_subject: Technical advisory$/m);
   assert.doesNotMatch(page, /<h[1-6][^>]*>Contact<\/h[1-6]>|class="[^"]*\badvisory-contact\b|include social-links|include resume-download/);
-  const card = read('_includes/advisory-contact.html');
-  assert.match(card, /<details class="profile-panel advisory-contact-panel" data-side-panel open>/);
+  const card = read('_includes/contact-card.html');
+  assert.match(card, /<details class="profile-panel profile-panel--compact" data-side-panel open>/);
   assert.match(card, /<summary>Connect<\/summary>/);
   assert.match(card, /class="profile-card"/);
-  assert.match(card, /include profile-contact\.html booking=true gmail_subject="Technical advisory" compact_links=true/);
+  assert.match(card, /include profile-contact\.html booking=true gmail_subject=page.contact_subject compact_links=true/);
   assert.doesNotMatch(card, /work_status=|resume_download=|qualifications|education|certifications|resume\.css/);
 });
 
@@ -96,9 +97,21 @@ test('Advisory keeps its four contact icons together without changing default pr
   const compact = socials.replace(optional, '');
   assert.deepEqual([...compact.matchAll(/aria-label="([^"]+)"/g)].map(([, label]) => label),
     ['Social profiles', 'Compose an email to Ilia in Gmail', 'Schedule a call', 'LinkedIn', 'X']);
-  assert.match(read('assets/css/advisory.css'), /\.advisory-contact-panel \.social-links\s*\{\s*flex-wrap: nowrap;/);
+  assert.match(read('assets/css/profile-contact.css'), /\.profile-panel--compact \.social-links\s*\{\s*flex-wrap: nowrap;/);
   assert.doesNotMatch(read('_includes/resume-qualifications.html'), /compact_links|compact=/);
   assert.doesNotMatch(read('index.md'), /compact_links|compact=/);
+});
+
+test('About reuses the compact contact rail without duplicate inline social links', () => {
+  const page = read('index.md');
+  assert.match(page, /^left_rail: contact-card\.html$/m);
+  assert.match(page, /^left_rail_label: Connect with Ilia$/m);
+  assert.match(page, /^toc: true$/m);
+  assert.doesNotMatch(page, /include social-links|contact_subject:|<h[1-6][^>]*>Contact<\/h[1-6]>/);
+  assert.match(page, /<img class="about-photo"[^>]*profile-photo\.jpg/);
+  for (const id of ['about-overview', 'career-focus', 'professional-interests', 'outside-of-work']) {
+    assert.ok(page.includes(`id="${id}"`));
+  }
 });
 
 test('contact cards share styles and responsive disclosure behavior, not Resume-only layout', () => {

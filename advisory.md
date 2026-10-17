@@ -2,8 +2,9 @@
 layout: page
 title: Advisory
 toc: true
-left_rail: advisory-contact.html
+left_rail: contact-card.html
 left_rail_label: Connect with Ilia
+contact_subject: Technical advisory
 permalink: /advisory/
 description: "Systems and cloud architecture, AI/ML engineering, technical leadership and professional growth for founders, engineering teams and individual engineers."
 ---

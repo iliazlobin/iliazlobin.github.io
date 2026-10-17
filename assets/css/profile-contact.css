@@ -1,4 +1,4 @@
-/* Resume and Advisory share the same contact card and native mobile disclosure. */
+/* Personal pages share contact cards and native mobile disclosure. */
 .profile-panel { margin-top: 1rem; }
 .profile-panel > summary {
   padding: .65rem .85rem;
@@ -25,6 +25,7 @@
   line-height: 1.5;
 }
 .profile-card ul { margin: 0; padding: 0; list-style: none; }
+.profile-panel--compact .social-links { flex-wrap: nowrap; }
 
 .resume-profile { display: grid; gap: .7rem; margin-bottom: 1.25rem; }
 .resume-location {

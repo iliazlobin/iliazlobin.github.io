@@ -302,7 +302,7 @@ def check_document_layout(root, errors):
 def check_personal_page_layout(root, errors):
     """Personal pages share the native outline without becoming design articles."""
     preserved_ids = {
-        "/": ("career-focus", "professional-interests", "outside-of-work"),
+        "/": ("about-overview", "career-focus", "professional-interests", "outside-of-work", "contact"),
         "/resume/": ("summary", "professional-experience", "education",
                      "professional-certifications", "talks",
                      "top-personal-projects-aiml-engineer--architect"),
@@ -322,6 +322,7 @@ def check_personal_page_layout(root, errors):
         if page.personal_page_rails != [(True, "Page navigation and details")]:
             errors.append(f"{route}: expected one named shared scrolling page rail")
         expected_profile = {
+            "/": [(True, "Connect with Ilia")],
             "/resume/": [(True, "Contact and qualifications")],
             "/advisory/": [(True, "Connect with Ilia")],
         }.get(route, [])
@@ -370,6 +371,7 @@ def check_personal_page_layout(root, errors):
                 errors.append(f"{route}: keep Overview and four subject sections as peer headings without Expertise")
             if any(item["id"] == "expertise" or item["parent"] is not None for item in outline.links):
                 errors.append(f"{route}: outline must list the four subjects directly, without Expertise")
+        if route in ("/", "/advisory/"):
             if "contact" not in page.profile_ids or "contact" in page.page_rail_ids or html.count('id="contact"') != 1:
                 errors.append(f"{route}: preserve one contact fragment in the left card")
             if any(item["id"] == "contact" for item in outline.links) or re.search(r'<h[1-6]\b[^>]*>\s*Contact\s*</h[1-6]>', html):
@@ -386,12 +388,15 @@ def check_personal_page_layout(root, errors):
                 errors.append(f"{route}: retain the selected LinkedIn and X destinations")
             gmail = [parse_qs(urlsplit(url).query) for url in profile_urls
                      if urlsplit(url).netloc == "mail.google.com"]
-            if not any(query.get("to") == ["iliazlobin91@gmail.com"] and query.get("su") == ["Technical advisory"] for query in gmail):
-                errors.append(f"{route}: retain the advisory Gmail recipient and subject")
+            expected_subject = ["Technical advisory"] if route == "/advisory/" else None
+            if not any(query.get("to") == ["iliazlobin91@gmail.com"] and query.get("su") == expected_subject for query in gmail):
+                errors.append(f"{route}: retain the page's Gmail recipient and optional subject")
             if not any(urlsplit(url).netloc == "calendar.app.google" for url in profile_urls):
                 errors.append(f"{route}: retain the call-booking link")
             if len(re.findall(r'<button\b[^>]*data-copy-email="iliazlobin91@gmail.com"', html)) != 1:
                 errors.append(f"{route}: retain one working email-copy button")
+            if html.count('<ul class="social-links"') != 1:
+                errors.append(f"{route}: keep one contact icon row, not a duplicate in the main body")
 
 
 def check_search_index(root, errors):
