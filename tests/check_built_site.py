@@ -52,6 +52,7 @@ class Page(HTMLParser):
         self.personal_page_rails = []
         self.personal_profile_rails = []
         self.profile_ids = set()
+        self.profile_links = []
         self.page_rail_ids = set()
         self._profile_depth = 0
         self._page_rail_depth = 0
@@ -132,6 +133,8 @@ class Page(HTMLParser):
             self.resume_downloads.append((attrs.get("href"), attrs.get("type"),
                                           attrs.get("download"), attrs.get("aria-label"),
                                           attrs.get("title")))
+        if tag == "a" and self._profile_depth:
+            self.profile_links.append((attrs.get("aria-label"), attrs.get("href")))
         if tag == "nav" and attrs.get("aria-label") == "Article navigation":
             self.article_navigations += 1
         if tag == "a" and "data-article-link" in attrs:
@@ -368,16 +371,17 @@ def check_personal_page_layout(root, errors):
                 errors.append(f"{route}: contact-only card must omit work status, download and qualifications")
             if "/assets/css/resume.css" in styles:
                 errors.append(f"{route}: contact-only card must not inherit Resume-only layouts")
-            expected_profiles = ("https://www.linkedin.com/in/iliazlobin", "https://github.com/iliazlobin",
-                                 "https://leetcode.com/u/iliazlobin/", "https://www.youtube.com/@iliazlobin",
-                                 "https://www.instagram.com/iliazlobin91", "https://x.com/iliazlobin")
-            if any(url not in page.resources for url in expected_profiles):
-                errors.append(f"{route}: retain all shared social profile links")
-            gmail = [parse_qs(urlsplit(url).query) for url in page.resources
+            expected_labels = ["Compose an email to Ilia in Gmail", "Schedule a call", "LinkedIn", "X"]
+            if [label for label, _ in page.profile_links] != expected_labels:
+                errors.append(f"{route}: keep exactly Gmail, Calendar, LinkedIn and X in the contact card")
+            profile_urls = [url for _, url in page.profile_links]
+            if "https://www.linkedin.com/in/iliazlobin" not in profile_urls or "https://x.com/iliazlobin" not in profile_urls:
+                errors.append(f"{route}: retain the selected LinkedIn and X destinations")
+            gmail = [parse_qs(urlsplit(url).query) for url in profile_urls
                      if urlsplit(url).netloc == "mail.google.com"]
             if not any(query.get("to") == ["iliazlobin91@gmail.com"] and query.get("su") == ["Technical advisory"] for query in gmail):
                 errors.append(f"{route}: retain the advisory Gmail recipient and subject")
-            if not any(urlsplit(url).netloc == "calendar.app.google" for url in page.resources):
+            if not any(urlsplit(url).netloc == "calendar.app.google" for url in profile_urls):
                 errors.append(f"{route}: retain the call-booking link")
             if len(re.findall(r'<button\b[^>]*data-copy-email="iliazlobin91@gmail.com"', html)) != 1:
                 errors.append(f"{route}: retain one working email-copy button")

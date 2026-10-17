@@ -51,7 +51,7 @@ test('Advisory uses the shared left contact card without a Contact heading or du
   assert.match(card, /<details class="profile-panel advisory-contact-panel" data-side-panel open>/);
   assert.match(card, /<summary>Connect<\/summary>/);
   assert.match(card, /class="profile-card"/);
-  assert.match(card, /include profile-contact\.html booking=true gmail_subject="Technical advisory"/);
+  assert.match(card, /include profile-contact\.html booking=true gmail_subject="Technical advisory" compact_links=true/);
   assert.doesNotMatch(card, /work_status=|resume_download=|qualifications|education|certifications|resume\.css/);
 });
 
@@ -65,13 +65,27 @@ test('one contact component preserves the native copy, Gmail, booking and profil
   assert.match(contact, /if include.gmail_subject.*&amp;su=\{\{ include.gmail_subject \| uri_escape \}\}/);
   assert.match(contact, /if include.work_status[\s\S]*Green Card[\s\S]*endif/);
   assert.match(contact, /if include.resume_download[\s\S]*include resume-download.html icon_only=true[\s\S]*endif/);
-  assert.match(contact, /include social-links.html booking=include.booking/);
+  assert.match(contact, /unless include.compact_links.*<a class="resume-gmail"/);
+  assert.match(contact, /include social-links.html booking=include.booking gmail=include.compact_links gmail_subject=include.gmail_subject compact=include.compact_links/);
   const socials = read('_includes/social-links.html');
   assert.match(socials, /if include.booking and site.advisory_booking_url/);
   assert.match(socials, /aria-label="Schedule a call"/);
   for (const label of ['LinkedIn', 'GitHub', 'LeetCode', 'YouTube', 'Instagram', 'X']) {
     assert.ok(socials.includes(`aria-label="${label}"`));
   }
+});
+
+test('Advisory keeps its four contact icons together without changing default profile links', () => {
+  const socials = read('_includes/social-links.html');
+  const optional = socials.split('{% unless include.compact %}')[1].split('{% endunless %}')[0];
+  assert.deepEqual([...optional.matchAll(/aria-label="([^"]+)"/g)].map(([, label]) => label),
+    ['GitHub', 'LeetCode', 'YouTube', 'Instagram']);
+  const compact = socials.replace(optional, '');
+  assert.deepEqual([...compact.matchAll(/aria-label="([^"]+)"/g)].map(([, label]) => label),
+    ['Social profiles', 'Compose an email to Ilia in Gmail', 'Schedule a call', 'LinkedIn', 'X']);
+  assert.match(read('assets/css/advisory.css'), /\.advisory-contact-panel \.social-links\s*\{\s*flex-wrap: nowrap;/);
+  assert.doesNotMatch(read('_includes/resume-qualifications.html'), /compact_links|compact=/);
+  assert.doesNotMatch(read('index.md'), /compact_links|compact=/);
 });
 
 test('contact cards share styles and responsive disclosure behavior, not Resume-only layout', () => {

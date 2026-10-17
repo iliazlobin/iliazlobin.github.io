@@ -13,9 +13,9 @@
   </div>
   <div class="resume-email">
     <button type="button" class="resume-email-copy" data-copy-email="{{ site.email | escape }}" aria-label="Copy email address" title="Copy email address">{{ site.email | escape }}</button>
-    <a class="resume-gmail" href="https://mail.google.com/mail/?view=cm&amp;fs=1&amp;to={{ site.email | uri_escape }}{% if include.gmail_subject %}&amp;su={{ include.gmail_subject | uri_escape }}{% endif %}" target="_blank" rel="noopener" aria-label="Compose an email to Ilia in Gmail" title="Compose in Gmail">{% include gmail-icon.html %}</a>
+    {% unless include.compact_links %}<a class="resume-gmail" href="https://mail.google.com/mail/?view=cm&amp;fs=1&amp;to={{ site.email | uri_escape }}{% if include.gmail_subject %}&amp;su={{ include.gmail_subject | uri_escape }}{% endif %}" target="_blank" rel="noopener" aria-label="Compose an email to Ilia in Gmail" title="Compose in Gmail">{% include gmail-icon.html %}</a>{% endunless %}
     {% if include.resume_download %}{% include resume-download.html icon_only=true %}{% endif %}
     <span class="resume-email-status" role="status"></span>
   </div>
-  {% include social-links.html booking=include.booking %}
+  {% include social-links.html booking=include.booking gmail=include.compact_links gmail_subject=include.gmail_subject compact=include.compact_links %}
 </section>

@@ -25,6 +25,7 @@
 .advisory > h2:not(.advisory-headline) { margin: 1.4rem 0 .75rem; font-size: 1.2rem; }
 .advisory-areas h3 { margin: 1rem 0 .3rem; font-size: 1rem; }
 .advisory-areas p { margin: 0; }
+.advisory-contact-panel .social-links { flex-wrap: nowrap; }
 .advisory a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
