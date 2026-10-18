@@ -71,7 +71,11 @@ defaults:
   - scope:
       path: ""
     values:
-      image: /images/og-default.png
+      image:
+        path: /images/og-ilia-zlobin-staff-portrait-v1.png
+        width: 1730
+        height: 909
+        alt: "Ilia Zlobin — Staff Software Engineer"
 
 
 # Exclude from processing.
