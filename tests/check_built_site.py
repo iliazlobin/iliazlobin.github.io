@@ -39,6 +39,7 @@ class Page(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.resources = []
+        self.metadata = {}
         self.navigation = []
         self.current_navigation = []
         self.section_titles = []
@@ -84,6 +85,10 @@ class Page(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         classes = attrs.get("class", "").split()
+        if tag == "meta":
+            name = attrs.get("property", attrs.get("name"))
+            if name:
+                self.metadata.setdefault(name, []).append(attrs.get("content"))
         if tag == "div" and (self._site_page_heading_depth or "site-page-heading" in classes):
             self._site_page_heading_depth += 1
         if tag == "aside":
@@ -498,6 +503,18 @@ def check_site(root):
             errors.append(f"{route}: missing or duplicate universal search UI")
         if heading not in page.headings:
             errors.append(f"{route}: missing heading {heading!r}")
+        social_image = SITE_ORIGIN + "/images/og-ilia-zlobin-staff-portrait-v1.png"
+        expected_social = {
+            "og:image": social_image,
+            "twitter:image": social_image,
+            "twitter:card": "summary_large_image",
+            "og:image:width": "1730",
+            "og:image:height": "909",
+            "og:image:alt": "Ilia Zlobin — Staff Software Engineer",
+        }
+        for key, value in expected_social.items():
+            if page.metadata.get(key) != [value]:
+                errors.append(f"{route}: expected one {key} tag for the approved social portrait")
         for resource in page.resources:
             parsed = urlsplit(urljoin(SITE_ORIGIN + route, resource))
             if parsed.scheme not in ("http", "https") or parsed.netloc != "iliazlobin.com":
@@ -515,6 +532,17 @@ def check_site(root):
     pdf = root / "assets/documents/ilia-zlobin-resume.pdf"
     if not pdf.is_file() or not pdf.read_bytes().startswith(b"%PDF-"):
         errors.append("Missing or invalid resume PDF")
+
+    social_image = root / "images/og-ilia-zlobin-staff-portrait-v1.png"
+    if not social_image.is_file():
+        errors.append("Missing approved social portrait image")
+    else:
+        with social_image.open("rb") as image:
+            header = image.read(24)
+        if (header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR"
+                or int.from_bytes(header[16:20], "big") != 1730
+                or int.from_bytes(header[20:24], "big") != 909):
+            errors.append("Social portrait PNG dimensions must match published metadata")
 
     document_count = check_document_layout(root, errors)
     check_personal_page_layout(root, errors)

@@ -4,6 +4,16 @@ from check_built_site import Page
 
 
 class DocumentMarkupTests(unittest.TestCase):
+    def test_social_metadata_reads_both_meta_attribute_forms_and_detects_duplicates(self):
+        page = Page()
+        page.feed('<meta property="og:image" content="https://example.com/card.png">'
+                  '<meta name="twitter:image" content="https://example.com/card.png">'
+                  '<meta property="og:image:alt" content="Ilia Zlobin — Staff Software Engineer">'
+                  '<meta property="og:image" content="https://example.com/old.png">')
+        self.assertEqual(page.metadata["og:image"], ["https://example.com/card.png", "https://example.com/old.png"])
+        self.assertEqual(page.metadata["twitter:image"], ["https://example.com/card.png"])
+        self.assertEqual(page.metadata["og:image:alt"], ["Ilia Zlobin — Staff Software Engineer"])
+
     def test_resume_download_is_tracked_beside_header_title_not_inside_profile(self):
         page = Page()
         link = '<a class="resume-download" href="/resume.pdf" download="resume.pdf" type="application/pdf" aria-label="Download Resume PDF" title="Download Resume PDF"></a>'
