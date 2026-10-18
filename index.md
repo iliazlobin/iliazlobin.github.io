@@ -2,6 +2,8 @@
 layout: page
 title: About
 toc: true
+left_rail: contact-card.html
+left_rail_label: Connect with Ilia
 permalink: /
 description: "Ilia Zlobin — Staff Software Engineer with 14+ years of experience across distributed systems, cloud infrastructure, platform engineering, SRE, and agentic AI."
 ---
@@ -14,7 +16,6 @@ description: "Ilia Zlobin — Staff Software Engineer with 14+ years of experien
     <p class="about-lead">I’m a <strong><a class="about-inline-link" href="{{ '/resume/' | relative_url }}">Staff Software Engineer</a></strong> with 14+ years of experience building and evolving large-scale software systems, infrastructure platforms, developer products, and applied AI systems. My work spans distributed systems, cloud infrastructure, platform engineering, SRE, and agentic AI.</p>
     <p class="about-lead">I set technical direction for complex initiatives, define architecture and execution strategy, and stay hands-on through implementation, testing, production rollout, and operations. Recent work includes infrastructure capacity modeling, internal developer platforms, and orchestration systems for AI coding agents.</p>
     <p class="about-lead">I also work on <strong><a class="about-inline-link" href="{{ '/advisory/' | relative_url }}">technical consulting and startup GTM advisory</a></strong>, helping teams make architecture and platform decisions, prepare products for enterprise adoption, shape technical positioning, and connect engineering capabilities with customer and market needs.</p>
-    {% include social-links.html gmail=true %}
   </div>
   <img class="about-photo" src="{{ '/images/profile-photo.jpg' | relative_url }}" alt="Ilia Zlobin" width="128" height="128">
 </div>

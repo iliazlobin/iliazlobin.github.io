@@ -28,6 +28,19 @@ test('Advisory headline is compact, naturally wrapping and untruncated', () => {
   assert.doesNotMatch(css, /(?:^|[;{])\s*(?:height|white-space|overflow|line-clamp)\s*:/m);
 });
 
+test('Advisory subjects are compact peer sections without an Expertise heading', () => {
+  const page = read('advisory.md');
+  assert.doesNotMatch(page, /<h[1-6][^>]*>\s*Expertise\s*<\/h[1-6]>/);
+  assert.match(page, /<div class="advisory-areas" id="expertise">/);
+  const areas = page.split('<div class="advisory-areas" id="expertise">')[1];
+  assert.deepEqual([...areas.matchAll(/<h2 id="([^"]+)">/g)].map(([, id]) => id), [
+    'systems-cloud-architecture', 'ai-ml-engineering',
+    'technical-strategy', 'technical-leadership-growth'
+  ]);
+  assert.doesNotMatch(areas, /<h[3-6]\b/);
+  assert.match(read('assets/css/advisory.css'), /\.advisory-areas h2\s*\{\s*margin: 1rem 0 \.3rem;\s*font-size: 1rem;/);
+});
+
 test('Advisory inherits the shared reading width and owns only its top gap and stylesheet', () => {
   const css = read('assets/css/advisory.css');
   assert.match(css, /\.page-content:has\(\.advisory\)\s*\{\s*padding-top:\s*clamp\(1\.5rem, 3vw, 2rem\);\s*\}/);
@@ -40,4 +53,108 @@ test('Advisory inherits the shared reading width and owns only its top gap and s
     assert.doesNotMatch(read(page), /assets\/css\/advisory\.css/);
   }
   assert.doesNotMatch(css, /\.wrapper|\.site-header|\.site-nav/);
+});
+
+test('Advisory uses the shared left contact card without a Contact heading or duplicated footer actions', () => {
+  const page = read('advisory.md');
+  assert.match(page, /^left_rail: contact-card\.html$/m);
+  assert.match(page, /^left_rail_label: Connect with Ilia$/m);
+  assert.match(page, /^contact_subject: Technical advisory$/m);
+  assert.doesNotMatch(page, /<h[1-6][^>]*>Contact<\/h[1-6]>|class="[^"]*\badvisory-contact\b|include social-links|include resume-download/);
+  const card = read('_includes/contact-card.html');
+  assert.match(card, /<details class="profile-panel profile-panel--compact" data-side-panel open>/);
+  assert.match(card, /<summary>Connect<\/summary>/);
+  assert.match(card, /class="profile-card"/);
+  assert.match(card, /include profile-contact\.html booking=true gmail_subject=page.contact_subject compact_links=true/);
+  assert.doesNotMatch(card, /work_status=|resume_download=|qualifications|education|certifications|resume\.css/);
+});
+
+test('one contact component preserves the native copy, Gmail, booking and profile actions', () => {
+  const contact = read('_includes/profile-contact.html');
+  assert.match(contact, /<section class="resume-section" id="contact" aria-label="Contact details">/);
+  assert.match(contact, /San Francisco Bay Area, CA/);
+  assert.match(contact, /<button type="button"[^>]*data-copy-email="\{\{ site.email \| escape \}\}"/);
+  assert.match(contact, /role="status"/);
+  assert.match(contact, /if include.work_status[\s\S]*Green Card[\s\S]*endif/);
+  assert.doesNotMatch(contact, /resume-gmail|resume_download|include resume-download/);
+  assert.match(contact, /include social-links.html booking=include.booking gmail=true gmail_subject=include.gmail_subject compact=include.compact_links/);
+  const socials = read('_includes/social-links.html');
+  assert.match(socials, /if include.booking and site.advisory_booking_url/);
+  assert.match(socials, /aria-label="Schedule a call"/);
+  for (const label of ['LinkedIn', 'GitHub', 'LeetCode', 'YouTube', 'Instagram', 'X']) {
+    assert.ok(socials.includes(`aria-label="${label}"`));
+  }
+});
+
+test('all contact addresses are centered and Gmail remains in the shared icon row', () => {
+  const css = read('assets/css/profile-contact.css');
+  assert.match(css, /\.resume-email\s*\{[^}]*justify-content:\s*center;/);
+  assert.match(css, /\.resume-email-copy\s*\{[^}]*text-align:\s*center;/);
+  assert.doesNotMatch(css, /\.resume-gmail/);
+  const contact = read('_includes/profile-contact.html');
+  const email = contact.split('<div class="resume-email">')[1].split('</div>')[0];
+  assert.doesNotMatch(email, /<a\b|include gmail-icon|include resume-download/);
+  assert.match(contact, /include social-links.html[^%]*gmail=true/);
+});
+
+test('contact icon rows are centered while Resume can still wrap each row', () => {
+  const css = read('assets/css/profile-contact.css');
+  const icons = css.match(/\.profile-card \.social-links\s*\{([^}]*)\}/)[1];
+  assert.match(icons, /justify-content:\s*center;/);
+  assert.match(icons, /width:\s*fit-content;/);
+  assert.match(icons, /max-width:\s*100%;/);
+  assert.match(icons, /margin-inline:\s*auto;/);
+  assert.match(read('assets/css/site.css'), /\.social-links\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;/);
+  assert.match(css, /\.profile-panel--compact \.social-links\s*\{\s*flex-wrap:\s*nowrap;/);
+});
+
+test('Advisory keeps its four contact icons together without changing default profile links', () => {
+  const socials = read('_includes/social-links.html');
+  const optional = socials.split('{% unless include.compact %}')[1].split('{% endunless %}')[0];
+  assert.deepEqual([...optional.matchAll(/aria-label="([^"]+)"/g)].map(([, label]) => label),
+    ['GitHub', 'LeetCode', 'YouTube', 'Instagram']);
+  const compact = socials.replace(optional, '');
+  assert.deepEqual([...compact.matchAll(/aria-label="([^"]+)"/g)].map(([, label]) => label),
+    ['Social profiles', 'Compose an email to Ilia in Gmail', 'Schedule a call', 'LinkedIn', 'X']);
+  assert.match(read('assets/css/profile-contact.css'), /\.profile-panel--compact \.social-links\s*\{\s*flex-wrap: nowrap;/);
+  assert.doesNotMatch(read('_includes/resume-qualifications.html'), /compact_links|compact=/);
+  assert.doesNotMatch(read('index.md'), /compact_links|compact=/);
+});
+
+test('About reuses the compact contact rail without duplicate inline social links', () => {
+  const page = read('index.md');
+  assert.match(page, /^left_rail: contact-card\.html$/m);
+  assert.match(page, /^left_rail_label: Connect with Ilia$/m);
+  assert.match(page, /^toc: true$/m);
+  assert.doesNotMatch(page, /include social-links|contact_subject:|<h[1-6][^>]*>Contact<\/h[1-6]>/);
+  assert.match(page, /<img class="about-photo"[^>]*profile-photo\.jpg/);
+  for (const id of ['about-overview', 'career-focus', 'professional-interests', 'outside-of-work']) {
+    assert.ok(page.includes(`id="${id}"`));
+  }
+});
+
+test('contact cards share styles and responsive disclosure behavior, not Resume-only layout', () => {
+  const layout = read('_layouts/page.html');
+  assert.match(layout, /if page.left_rail.*profile-contact.css/);
+  const css = read('assets/css/profile-contact.css');
+  assert.match(css, /\.profile-card\s*\{[^}]*border: 1px solid var\(--line\);[^}]*border-radius: var\(--radius\);/);
+  assert.match(css, /\.resume-email\s*\{[^}]*flex-wrap: wrap/);
+  assert.match(css, /\.resume-email-copy\s*\{[^}]*overflow-wrap: anywhere/);
+  assert.match(css, /\.resume-email-copy:focus-visible/);
+  assert.match(css, /@media \(min-width: 1240px\)\s*\{\s*\.profile-panel > summary \{ display: none; \}/);
+  assert.match(css, /@media print\s*\{\s*\.profile-panel > summary \{ display: none; \}/);
+  assert.doesNotMatch(css, /grid-template-columns|max-height|position:\s*sticky/);
+  assert.doesNotMatch(read('assets/css/resume.css'), /\.resume-email-copy\s*\{|\.resume-profile\s*\{/);
+});
+
+test('the complete location stays on one line in shared contact cards and page headers', () => {
+  const css = read('assets/css/profile-contact.css');
+  const location = css.match(/\.resume-location\s*\{([^}]*)\}/)[1];
+  assert.match(location, /white-space:\s*nowrap/);
+  assert.match(location, /font-size:\s*\.75rem/);
+  assert.match(location, /gap:\s*\.375rem/);
+  assert.doesNotMatch(location, /(?:^|;)\s*(?:text-overflow|overflow|width):/);
+  assert.match(read('assets/css/site.css'), /\.site-location\s*\{[^}]*white-space:\s*nowrap/);
+  assert.match(read('_includes/profile-contact.html'), /<span>San Francisco Bay Area, CA<\/span>/);
+  assert.match(read('_includes/header.html'), /<p class="site-location">San Francisco Bay Area, CA<\/p>/);
 });

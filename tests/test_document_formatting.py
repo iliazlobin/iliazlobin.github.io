@@ -4,6 +4,17 @@ from check_built_site import Page
 
 
 class DocumentMarkupTests(unittest.TestCase):
+    def test_resume_download_is_tracked_beside_header_title_not_inside_profile(self):
+        page = Page()
+        link = '<a class="resume-download" href="/resume.pdf" download="resume.pdf" type="application/pdf" aria-label="Download Resume PDF" title="Download Resume PDF"></a>'
+        page.feed('<div class="site-page-heading"><h1 class="site-page-title">Resume</h1>'
+                  + link + '</div><aside class="page-profile-rail">' + link + '</aside>')
+        self.assertEqual(page.headings, ["Resume"])
+        self.assertEqual(page.section_titles, [("h1", "Resume")])
+        self.assertEqual(len(page.resume_downloads), 2)
+        self.assertEqual(len(page.header_resume_downloads), 1)
+        self.assertEqual(page.profile_links, [("Download Resume PDF", "/resume.pdf")])
+
     def test_article_section_label_is_not_a_second_heading_or_current_page(self):
         page = Page()
         page.feed('<header><span class="site-page-title">Infrastructure</span>'

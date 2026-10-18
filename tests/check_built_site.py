@@ -5,7 +5,7 @@ import re
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import unquote, urljoin, urlsplit
+from urllib.parse import parse_qs, unquote, urljoin, urlsplit
 
 from check_article_outline import ArticleOutline
 
@@ -52,6 +52,7 @@ class Page(HTMLParser):
         self.personal_page_rails = []
         self.personal_profile_rails = []
         self.profile_ids = set()
+        self.profile_links = []
         self.page_rail_ids = set()
         self._profile_depth = 0
         self._page_rail_depth = 0
@@ -59,6 +60,8 @@ class Page(HTMLParser):
         self.outlines = 0
         self.outline_panels = []
         self.resume_downloads = []
+        self.header_resume_downloads = []
+        self._site_page_heading_depth = 0
         self.library_links = []
         self.current_articles = []
         self.article_skip_links = []
@@ -81,6 +84,8 @@ class Page(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         classes = attrs.get("class", "").split()
+        if tag == "div" and (self._site_page_heading_depth or "site-page-heading" in classes):
+            self._site_page_heading_depth += 1
         if tag == "aside":
             if self._profile_depth or "page-profile-rail" in classes:
                 self._profile_depth += 1
@@ -129,9 +134,13 @@ class Page(HTMLParser):
         if tag == "details" and "article-toc-panel" in classes:
             self.outline_panels.append("open" in attrs)
         if tag == "a" and "resume-download" in classes:
-            self.resume_downloads.append((attrs.get("href"), attrs.get("type"),
-                                          attrs.get("download"), attrs.get("aria-label"),
-                                          attrs.get("title")))
+            download = (attrs.get("href"), attrs.get("type"), attrs.get("download"),
+                        attrs.get("aria-label"), attrs.get("title"))
+            self.resume_downloads.append(download)
+            if self._site_page_heading_depth:
+                self.header_resume_downloads.append(download)
+        if tag == "a" and self._profile_depth:
+            self.profile_links.append((attrs.get("aria-label"), attrs.get("href")))
         if tag == "nav" and attrs.get("aria-label") == "Article navigation":
             self.article_navigations += 1
         if tag == "a" and "data-article-link" in attrs:
@@ -173,6 +182,8 @@ class Page(HTMLParser):
             self._cell_text.append(data)
 
     def handle_endtag(self, tag):
+        if tag == "div" and self._site_page_heading_depth:
+            self._site_page_heading_depth -= 1
         if tag == "aside":
             if self._profile_depth:
                 self._profile_depth -= 1
@@ -299,11 +310,13 @@ def check_document_layout(root, errors):
 def check_personal_page_layout(root, errors):
     """Personal pages share the native outline without becoming design articles."""
     preserved_ids = {
-        "/": ("career-focus", "professional-interests", "outside-of-work"),
+        "/": ("about-overview", "career-focus", "professional-interests", "outside-of-work", "contact"),
         "/resume/": ("summary", "professional-experience", "education",
                      "professional-certifications", "talks",
                      "top-personal-projects-aiml-engineer--architect"),
-        "/advisory/": ("advisory-focus",),
+        "/advisory/": ("advisory-focus", "expertise", "systems-cloud-architecture",
+                       "ai-ml-engineering", "technical-strategy",
+                       "technical-leadership-growth", "contact"),
     }
     for route in PERSONAL_PAGE_ROUTES:
         source = route_file(root, route)
@@ -316,9 +329,13 @@ def check_personal_page_layout(root, errors):
             errors.append(f"{route}: expected one scoped personal-page document shell")
         if page.personal_page_rails != [(True, "Page navigation and details")]:
             errors.append(f"{route}: expected one named shared scrolling page rail")
-        expected_profile = [(True, "Contact and qualifications")] if route == "/resume/" else []
+        expected_profile = {
+            "/": [(True, "Connect with Ilia")],
+            "/resume/": [(True, "Contact and qualifications")],
+            "/advisory/": [(True, "Connect with Ilia")],
+        }.get(route, [])
         if page.personal_profile_rails != expected_profile:
-            errors.append(f"{route}: only Resume must retain its separate left qualifications rail")
+            errors.append(f"{route}: left profile rail must match the page's own contact/qualification scope")
         posts = [classes for classes in page.articles if "post" in classes]
         if len(posts) != 1 or not {"post--page", "post--document"}.issubset(posts[0]):
             errors.append(f"{route}: personal content must use the shared main document column")
@@ -331,6 +348,8 @@ def check_personal_page_layout(root, errors):
         styles = [urlsplit(resource).path for resource in page.resources if ".css" in resource]
         if styles.count("/assets/css/article-toc.css") != 1:
             errors.append(f"{route}: expected one shared document outline stylesheet")
+        if styles.count("/assets/css/profile-contact.css") != bool(expected_profile):
+            errors.append(f"{route}: profile cards must load their shared stylesheet exactly once")
         if len(re.findall(r"setupArticleToc\(", html)) != 1 or not re.search(r"document\.querySelector\([\"']\[data-document-shell\][\"']\)", html):
             errors.append(f"{route}: expected the shared outline enhancement once")
         if not re.search(r"/assets/js/article-toc\.mjs\?v=\d+", html):
@@ -345,13 +364,51 @@ def check_personal_page_layout(root, errors):
         if route == "/resume/":
             expected_download = ("/assets/documents/ilia-zlobin-resume.pdf", "application/pdf",
                                  "Ilia-Zlobin-Resume.pdf", "Download Resume PDF", "Download Resume PDF")
-            if page.resume_downloads != [expected_download]:
-                errors.append(f"{route}: retain the named native Resume PDF download")
+            if page.resume_downloads != [expected_download] or page.header_resume_downloads != [expected_download]:
+                errors.append(f"{route}: keep the single native PDF download beside the header page title")
+            expected_labels = ["Compose an email to Ilia in Gmail", "LinkedIn", "GitHub",
+                               "LeetCode", "YouTube", "Instagram", "X"]
+            if [label for label, _ in page.profile_links if label] != expected_labels:
+                errors.append(f"{route}: Gmail must join the existing social profiles, with no sidebar download")
             qualification_ids = {"contact", "education", "professional-certifications"}
             if not qualification_ids.issubset(page.profile_ids) or qualification_ids & page.page_rail_ids:
                 errors.append(f"{route}: contact and qualifications must stay in the left rail, not the right outline")
             if any(item["id"] in ("education", "professional-certifications") for item in outline.links):
                 errors.append(f"{route}: body outline must not misclassify left-rail qualifications as body sections")
+        if route == "/advisory/":
+            subject_ids = ["systems-cloud-architecture", "ai-ml-engineering",
+                           "technical-strategy", "technical-leadership-growth"]
+            if [(heading["id"], heading["level"]) for heading in outline.headings] != [
+                    (anchor, 2) for anchor in ["advisory-focus", *subject_ids]]:
+                errors.append(f"{route}: keep Overview and four subject sections as peer headings without Expertise")
+            if any(item["id"] == "expertise" or item["parent"] is not None for item in outline.links):
+                errors.append(f"{route}: outline must list the four subjects directly, without Expertise")
+        if route in ("/", "/advisory/"):
+            if "contact" not in page.profile_ids or "contact" in page.page_rail_ids or html.count('id="contact"') != 1:
+                errors.append(f"{route}: preserve one contact fragment in the left card")
+            if any(item["id"] == "contact" for item in outline.links) or re.search(r'<h[1-6]\b[^>]*>\s*Contact\s*</h[1-6]>', html):
+                errors.append(f"{route}: remove the visible Contact heading and outline entry")
+            if page.resume_downloads or {"education", "professional-certifications"} & page.profile_ids or "Green Card" in html:
+                errors.append(f"{route}: contact-only card must omit work status, download and qualifications")
+            if "/assets/css/resume.css" in styles:
+                errors.append(f"{route}: contact-only card must not inherit Resume-only layouts")
+            expected_labels = ["Compose an email to Ilia in Gmail", "Schedule a call", "LinkedIn", "X"]
+            if [label for label, _ in page.profile_links] != expected_labels:
+                errors.append(f"{route}: keep exactly Gmail, Calendar, LinkedIn and X in the contact card")
+            profile_urls = [url for _, url in page.profile_links]
+            if "https://www.linkedin.com/in/iliazlobin" not in profile_urls or "https://x.com/iliazlobin" not in profile_urls:
+                errors.append(f"{route}: retain the selected LinkedIn and X destinations")
+            gmail = [parse_qs(urlsplit(url).query) for url in profile_urls
+                     if urlsplit(url).netloc == "mail.google.com"]
+            expected_subject = ["Technical advisory"] if route == "/advisory/" else None
+            if not any(query.get("to") == ["iliazlobin91@gmail.com"] and query.get("su") == expected_subject for query in gmail):
+                errors.append(f"{route}: retain the page's Gmail recipient and optional subject")
+            if not any(urlsplit(url).netloc == "calendar.app.google" for url in profile_urls):
+                errors.append(f"{route}: retain the call-booking link")
+            if len(re.findall(r'<button\b[^>]*data-copy-email="iliazlobin91@gmail.com"', html)) != 1:
+                errors.append(f"{route}: retain one working email-copy button")
+            if html.count('<ul class="social-links"') != 1:
+                errors.append(f"{route}: keep one contact icon row, not a duplicate in the main body")
 
 
 def check_search_index(root, errors):

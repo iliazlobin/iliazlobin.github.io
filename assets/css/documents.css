@@ -14,6 +14,7 @@
 .post--document .post-content h3 { margin: 1.3rem 0 .5rem; }
 .post--document .post-content h4 { margin: 1rem 0 .4rem; }
 .post--document .post-content :is(h2, h3, h4) + :is(h3, h4) { margin-top: .75rem; }
+.post--document .post-content :is(h2, h3, h4) + .copy-status:not(.copy-error) + :is(h3, h4) { margin-top: .75rem; }
 
 /* Select prose containers, not Mermaid's HTML labels inside SVGs. */
 .post--document .post-content > p,
