@@ -32,6 +32,7 @@ My experience spans platform engineering, cloud infrastructure, developer produc
   <div>
     <h3 id="google--forward-deployed-engineer">Google</h3>
     <p class="resume-role-title">Forward Deployed Engineer</p>
+    <p class="resume-role-location">Bay Area, CA</p>
   </div>
   <p class="resume-role-period"><time datetime="2026-10" title="October 2026">Oct 2026</time> <span aria-hidden="true">–</span> Present</p>
 </header>
