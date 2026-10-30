@@ -42,7 +42,7 @@ My experience spans platform engineering, cloud infrastructure, developer produc
 <header class="resume-role-header">
   <div>
     <h3 id="meta--bay-area-ca-staff-software-engineer">Meta</h3>
-    <p class="resume-role-title">Staff Software Engineer</p>
+    <p class="resume-role-title">Software Engineer</p>
     <p class="resume-role-location">Bay Area, CA</p>
   </div>
   <p class="resume-role-period"><time datetime="2026-03" title="March 2026">Mar 2026</time> <span aria-hidden="true">–</span> <time datetime="2026-09" title="September 2026">Sep 2026</time></p>
