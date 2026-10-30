@@ -503,14 +503,14 @@ def check_site(root):
             errors.append(f"{route}: missing or duplicate universal search UI")
         if heading not in page.headings:
             errors.append(f"{route}: missing heading {heading!r}")
-        social_image = SITE_ORIGIN + "/images/og-ilia-zlobin-staff-portrait-v1.png"
+        social_image = SITE_ORIGIN + "/images/og-ilia-zlobin-google-forward-deployed-v1.png"
         expected_social = {
             "og:image": social_image,
             "twitter:image": social_image,
             "twitter:card": "summary_large_image",
             "og:image:width": "1730",
             "og:image:height": "909",
-            "og:image:alt": "Ilia Zlobin — Staff Software Engineer",
+            "og:image:alt": "Ilia Zlobin — Forward Deployed Engineer at Google",
         }
         for key, value in expected_social.items():
             if page.metadata.get(key) != [value]:
@@ -533,7 +533,7 @@ def check_site(root):
     if not pdf.is_file() or not pdf.read_bytes().startswith(b"%PDF-"):
         errors.append("Missing or invalid resume PDF")
 
-    social_image = root / "images/og-ilia-zlobin-staff-portrait-v1.png"
+    social_image = root / "images/og-ilia-zlobin-google-forward-deployed-v1.png"
     if not social_image.is_file():
         errors.append("Missing approved social portrait image")
     else:

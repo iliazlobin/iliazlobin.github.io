@@ -92,7 +92,7 @@ test('cleanup restores prior inline configuration and ignores late font completi
 test('compact identity, normal-flow sticky header and one fragment offset are shared', () => {
   const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
   const header = read('_includes/header.html'), css = read('assets/css/site.css');
-  assert.match(header, /<div class="site-details">\s*<p class="site-role">Staff Software Engineer · Generalist/);
+  assert.match(header, /<div class="site-details">\s*<p class="site-role">Forward Deployed Engineer · Google/);
   assert.match(css, /\.site-header \{ position: sticky; top: 0; z-index: 100;/);
   assert.match(css, /\.site-identity \{[^}]*display: flex;[^}]*flex-wrap: wrap;/);
   assert.match(css, /scroll-padding-top: var\(--site-header-height\)/);

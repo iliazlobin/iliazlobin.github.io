@@ -20,7 +20,7 @@
 
 title: Ilia Zlobin
 email: iliazlobin91@gmail.com
-description: Professional portfolio and resume of Ilia Zlobin, Staff Software Engineer.
+description: Professional portfolio and resume of Ilia Zlobin, Forward Deployed Engineer at Google.
 domain: iliazlobin.com
 url: https://iliazlobin.com
 baseurl: ""
@@ -72,10 +72,10 @@ defaults:
       path: ""
     values:
       image:
-        path: /images/og-ilia-zlobin-staff-portrait-v1.png
+        path: /images/og-ilia-zlobin-google-forward-deployed-v1.png
         width: 1730
         height: 909
-        alt: "Ilia Zlobin — Staff Software Engineer"
+        alt: "Ilia Zlobin — Forward Deployed Engineer at Google"
 
 
 # Exclude from processing.
