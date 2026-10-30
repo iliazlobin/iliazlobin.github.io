@@ -4,8 +4,8 @@ title: Resume
 permalink: /resume/
 toc: true
 left_rail: resume-qualifications.html
-resume_updated: "2026-10-05"
-description: "Ilia Zlobin — Staff Software Engineer with 14+ years of experience designing and building large-scale distributed systems, infrastructure platforms, developer tooling, and AI/ML systems."
+resume_updated: "2026-10-29"
+description: "Ilia Zlobin — Forward Deployed Engineer at Google with 14+ years of experience designing and building large-scale distributed systems, infrastructure platforms, developer tooling, and AI/ML systems."
 ---
 
 <link rel="stylesheet" href="{{ '/assets/css/resume.css' | relative_url }}?v={{ site.time | date: '%s' }}">
@@ -17,7 +17,7 @@ description: "Ilia Zlobin — Staff Software Engineer with 14+ years of experien
   <p class="resume-updated">Updated <time datetime="{{ page.resume_updated }}">{{ page.resume_updated | date: '%b %-d, %Y' }}</time></p>
 </header>
 
-**Staff Software Engineer** with **14+ years of experience** designing and building large-scale distributed systems, infrastructure platforms, and developer tooling. I specialize in turning ambiguous, high-impact problems into scalable technical solutions—setting architecture and technical direction while staying deeply hands-on through prototyping, implementation, and production rollout.
+**Forward Deployed Engineer at Google** with **14+ years of experience** designing and building large-scale distributed systems, infrastructure platforms, and developer tooling. I specialize in turning ambiguous, high-impact problems into scalable technical solutions—setting architecture and technical direction while staying deeply hands-on through prototyping, implementation, and production rollout.
 
 My experience spans platform engineering, cloud infrastructure, developer productivity, and AI/ML systems, with a strong track record of leading multi-team initiatives, simplifying complex environments, and delivering measurable improvements in reliability, engineering velocity, and operational efficiency. Increasingly focused on applied AI and agentic systems, where I combine systems engineering, rapid technical discovery, and cross-functional collaboration to move ideas from early prototypes to production-scale solutions.
 
@@ -26,6 +26,17 @@ My experience spans platform engineering, cloud infrastructure, developer produc
 ## Professional Experience
 
 <ol class="resume-timeline" role="list" aria-label="Professional experience, most recent first">
+<li class="resume-timeline-entry">
+<article class="resume-role" aria-labelledby="google--forward-deployed-engineer" markdown="1">
+<header class="resume-role-header">
+  <div>
+    <h3 id="google--forward-deployed-engineer">Google</h3>
+    <p class="resume-role-title">Forward Deployed Engineer</p>
+  </div>
+  <p class="resume-role-period"><time datetime="2026-10" title="October 2026">Oct 2026</time> <span aria-hidden="true">–</span> Present</p>
+</header>
+</article>
+</li>
 <li class="resume-timeline-entry">
 <article class="resume-role" aria-labelledby="meta--bay-area-ca-staff-software-engineer" markdown="1">
 <header class="resume-role-header">
