@@ -1,6 +1,7 @@
 """Check the published-site contract without third-party dependencies."""
 
 import json
+from hashlib import sha256
 import re
 import sys
 from html.parser import HTMLParser
@@ -367,7 +368,9 @@ def check_personal_page_layout(root, errors):
         if any(anchor not in page.ids for anchor in preserved_ids[route]):
             errors.append(f"{route}: existing section fragment IDs were removed")
         if route == "/resume/":
-            expected_download = ("/assets/documents/ilia-zlobin-resume.pdf", "application/pdf",
+            pdf_path = root / "assets/documents/ilia-zlobin-resume.pdf"
+            pdf_version = sha256(pdf_path.read_bytes()).hexdigest()[:12] if pdf_path.is_file() else ""
+            expected_download = (f"/assets/documents/ilia-zlobin-resume.pdf?v={pdf_version}", "application/pdf",
                                  "Ilia-Zlobin-Resume.pdf", "Download Resume PDF", "Download Resume PDF")
             if page.resume_downloads != [expected_download] or page.header_resume_downloads != [expected_download]:
                 errors.append(f"{route}: keep the single native PDF download beside the header page title")

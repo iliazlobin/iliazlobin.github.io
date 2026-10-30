@@ -91,6 +91,6 @@ test("Resume qualifications stay on the left and searchable, while only the outl
   const search = read("search-index.json");
   assert.match(search, /if entry\.left_rail[\s\S]*include \{\{ entry\.left_rail \}\}[\s\S]*search_html = search_html \| append: search_rail/);
   const download = read("_includes/resume-download.html");
-  assert.match(download, /href="\{\{ '\/assets\/documents\/ilia-zlobin-resume\.pdf' \| relative_url \}\}"/);
+  assert.match(download, /href="\{\{ '\/assets\/documents\/ilia-zlobin-resume\.pdf' \| relative_url \}\}\?v=\{\{ site\.resume_pdf_version \}\}"/);
   assert.match(download, /download="Ilia-Zlobin-Resume\.pdf" type="application\/pdf" aria-label="Download Resume PDF"/);
 });

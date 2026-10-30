@@ -16,9 +16,9 @@ test('Google is the latest role, with a month-only start and no responsibilities
   assert.equal(google.split('</header>')[1].trim(), '');
 });
 
-test('Meta retains its historical role and September end month', () => {
+test('Meta matches the approved résumé title and September end month', () => {
   const meta = resume.match(/aria-labelledby="meta--bay-area-ca-staff-software-engineer"[^>]*>([^]*?)<\/article>/)[1];
-  assert.match(meta, /<p class="resume-role-title">Staff Software Engineer<\/p>/);
+  assert.match(meta, /<p class="resume-role-title">Software Engineer<\/p>/);
   assert.match(meta, /<time datetime="2026-09" title="September 2026">Sep 2026<\/time>/);
   assert.doesNotMatch(meta, /Present/);
   assert.match(resume, /<p class="resume-role-title">Principal Software Engineer<\/p>/);
