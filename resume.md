@@ -30,7 +30,7 @@ My experience spans platform engineering, cloud infrastructure, developer produc
 <article class="resume-role" aria-labelledby="google--forward-deployed-engineer" markdown="1">
 <header class="resume-role-header">
   <div>
-    <h3 id="google--forward-deployed-engineer">Google</h3>
+    <h3 id="google--forward-deployed-engineer" data-toc-label="Google, FDE">Google</h3>
     <p class="resume-role-title">Forward Deployed Engineer</p>
     <p class="resume-role-location">Bay Area, CA</p>
   </div>
@@ -42,7 +42,7 @@ My experience spans platform engineering, cloud infrastructure, developer produc
 <article class="resume-role" aria-labelledby="meta--bay-area-ca-staff-software-engineer" markdown="1">
 <header class="resume-role-header">
   <div>
-    <h3 id="meta--bay-area-ca-staff-software-engineer">Meta</h3>
+    <h3 id="meta--bay-area-ca-staff-software-engineer" data-toc-label="Meta, SWE">Meta</h3>
     <p class="resume-role-title">Software Engineer</p>
     <p class="resume-role-location">Bay Area, CA</p>
   </div>
@@ -59,7 +59,7 @@ My experience spans platform engineering, cloud infrastructure, developer produc
 <article class="resume-role" aria-labelledby="mastercard--new-york-ny-principal-software-engineer" markdown="1">
 <header class="resume-role-header">
   <div>
-    <h3 id="mastercard--new-york-ny-principal-software-engineer">Mastercard</h3>
+    <h3 id="mastercard--new-york-ny-principal-software-engineer" data-toc-label="Mastercard, SWE">Mastercard</h3>
     <p class="resume-role-title">Principal Software Engineer</p>
     <p class="resume-role-location">New York, NY</p>
   </div>
@@ -77,7 +77,7 @@ My experience spans platform engineering, cloud infrastructure, developer produc
 <article class="resume-role" aria-labelledby="epam-systems--jersey-city-nj-systems-architect" markdown="1">
 <header class="resume-role-header">
   <div>
-    <h3 id="epam-systems--jersey-city-nj-systems-architect">EPAM Systems</h3>
+    <h3 id="epam-systems--jersey-city-nj-systems-architect" data-toc-label="EPAM Systems, SA">EPAM Systems</h3>
     <p class="resume-role-title">Systems Architect</p>
     <p class="resume-role-location">Jersey City, NJ</p>
   </div>
@@ -99,7 +99,7 @@ My experience spans platform engineering, cloud infrastructure, developer produc
 <article class="resume-role" aria-labelledby="epam-systems--minsk-belarus-lead-devops-engineer" markdown="1">
 <header class="resume-role-header">
   <div>
-    <h3 id="epam-systems--minsk-belarus-lead-devops-engineer">EPAM Systems</h3>
+    <h3 id="epam-systems--minsk-belarus-lead-devops-engineer" data-toc-label="EPAM Systems, DevOps">EPAM Systems</h3>
     <p class="resume-role-title">Lead DevOps Engineer</p>
     <p class="resume-role-location">Minsk, Belarus</p>
   </div>
@@ -120,7 +120,7 @@ My experience spans platform engineering, cloud infrastructure, developer produc
 <article class="resume-role" aria-labelledby="niias--saint-petersburg-russia-software-developer" markdown="1">
 <header class="resume-role-header">
   <div>
-    <h3 id="niias--saint-petersburg-russia-software-developer">NIIAS</h3>
+    <h3 id="niias--saint-petersburg-russia-software-developer" data-toc-label="NIIAS, SWE">NIIAS</h3>
     <p class="resume-role-title">Software Developer</p>
     <p class="resume-role-location">Saint Petersburg, Russia</p>
   </div>
