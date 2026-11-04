@@ -9,7 +9,7 @@ test('Google is the latest role, with a month-only start and no responsibilities
   const entries = [...resume.matchAll(/<article class="resume-role"[^>]*>([^]*?)<\/article>/g)];
   assert.equal(entries.length, 6);
   const google = entries[0][1];
-  assert.match(google, /<h3 id="google--forward-deployed-engineer">Google<\/h3>/);
+  assert.match(google, /<h3 id="google--forward-deployed-engineer"[^>]*>Google<\/h3>/);
   assert.match(google, /<p class="resume-role-title">Forward Deployed Engineer<\/p>/);
   assert.match(google, /<p class="resume-role-location">Bay Area, CA<\/p>/);
   assert.match(google, /<time datetime="2026-10" title="October 2026">Oct 2026<\/time> <span aria-hidden="true">–<\/span> Present/);
