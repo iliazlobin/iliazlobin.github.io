@@ -2,7 +2,7 @@
 layout: post
 title: "ML: Autocomplete / Query Suggestion"
 category: system-design-ml
-date: 2026-07-09
+date: 2026-07-18
 tags: [Machine-Learning, Retrieval, Search, NLP]
 thumbnail: /images/posts/autocomplete-query-suggestion.svg
 last_modified_at: 2026-10-12

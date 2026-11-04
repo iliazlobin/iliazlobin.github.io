@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: Apache Cassandra"
 category: tech
-date: 2026-07-15
+date: 2026-07-24
 tags: [Deep-Dive, Databases, NoSQL, Distributed-Systems, Open-Source]
 description: "Apache Cassandra is the default AP (availability + partition-tolerant), masterless wide-column store for write-heavy, always-on workloads. The one big design choice: availability and partition-tolerance are non-negotiable; consistency comes from tunable quorums on a per-operation basis."
 thumbnail: /images/posts/tech-apache-cassandra.svg

@@ -2,7 +2,7 @@
 layout: post
 title: "ML: Video Recommendations"
 category: system-design-ml
-date: 2026-07-08
+date: 2026-07-17
 tags: [Machine-Learning, Video-Recommendation, Recommendation, Ranking]
 thumbnail: /images/posts/video-recommendations.svg
 last_modified_at: 2026-10-12

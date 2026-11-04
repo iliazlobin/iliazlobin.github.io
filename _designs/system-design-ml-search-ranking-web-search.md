@@ -4,7 +4,7 @@ title: "ML: Search Ranking / Web Search"
 category: system-design-ml
 redirect_from:
   - /designs/ml-system-design-search-ranking-web-search/
-date: 2026-07-08
+date: 2026-07-16
 tags: [Machine-Learning, Search-Ranking, Ranking, Retrieval, Web-Search]
 thumbnail: /images/posts/system-design-ml-search-ranking-web-search.svg
 last_modified_at: 2026-10-12

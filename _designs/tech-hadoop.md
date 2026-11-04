@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: Hadoop"
 category: tech
-date: 2026-07-15
+date: 2026-07-30
 tags: [Deep-Dive, Data-Platforms, Distributed-Systems, Distributed-Storage, Open-Source]
 description: "Hadoop is the distributed storage and batch compute framework that made big-data processing accessible and industry-standard."
 thumbnail: /images/posts/tech-hadoop.svg

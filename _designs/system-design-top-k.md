@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Top-K"
 category: system-design
-date: 2026-06-30
+date: 2026-06-07
 tags: [Real-Time, Write-Heavy, Streaming, Data-Structures]
 thumbnail: /images/posts/2026-06-30-system-design-top-k.svg
 redirect_from:

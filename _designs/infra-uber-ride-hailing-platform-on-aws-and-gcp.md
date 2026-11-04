@@ -2,7 +2,7 @@
 layout: post
 title: "INFRA: Uber Ride-Hailing Platform on AWS and GCP"
 category: infra
-date: 2026-07-18
+date: 2026-08-23
 tags: [AWS, GCP, Multi-Cloud, Kubernetes, Istio, ScyllaDB, Apache Flink, Kafka, Redis, H3, Terraform, Prometheus]
 description: "Uber operates a real-time ride-hailing matching platform at planetary scale: 170M monthly active riders, 5M drivers, across 10,000+ cities in 70+ countries."
 thumbnail: /images/posts/infra-uber-ride-hailing-platform-on-aws-and-gcp.svg

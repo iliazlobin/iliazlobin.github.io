@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Web Crawler"
 category: system-design
-date: 2026-07-02
+date: 2026-07-07
 tags: [Distributed-Systems, Write-Heavy, Interview-Prep]
 thumbnail: /images/posts/2026-07-02-system-design-web-crawler.svg
 redirect_from:

@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Online Chess"
 category: system-design
-date: 2026-07-01
+date: 2026-06-19
 tags: [Real-Time, WebSocket, Game]
 thumbnail: /images/posts/2026-07-01-system-design-online-chess.svg
 redirect_from:

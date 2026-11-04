@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Job Scheduler"
 category: system-design
-date: 2026-06-29
+date: 2026-06-02
 tags: [Distributed-Systems, Interview-Prep, Scheduling]
 thumbnail: /images/posts/2026-06-29-system-design-job-scheduler.svg
 redirect_from:

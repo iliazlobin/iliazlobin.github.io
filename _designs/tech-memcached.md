@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: Memcached"
 category: tech
-date: 2026-07-27
+date: 2026-08-30
 tags: [Deep-Dive, Caching, Databases]
 description: "Memcached is a high-performance, distributed memory object caching system. It keeps your dataset entirely in RAM and serves cache lookups in under a millisecond. You treat it as a giant, shared hash table that a fleet of backend servers can all reach across the network."
 thumbnail: /images/posts/tech-memcached.svg

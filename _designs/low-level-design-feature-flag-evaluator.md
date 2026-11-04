@@ -2,7 +2,7 @@
 layout: post
 title: "LD: Feature Flag Evaluator"
 category: low-level-design
-date: 2026-10-04
+date: 2026-08-31
 last_modified_at: 2026-10-12
 tags: [Feature Flags, SDK Design, Object Design, Concurrency]
 description: "Build a local feature-flag evaluator with ordered rules, stable rollouts and request-consistent configuration."

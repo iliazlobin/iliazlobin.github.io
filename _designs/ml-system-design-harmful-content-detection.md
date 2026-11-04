@@ -2,7 +2,7 @@
 layout: post
 title: "ML: Harmful-Content Detection"
 category: system-design-ml
-date: 2026-07-16
+date: 2026-08-08
 tags: [Machine-Learning, Classification, Content-Moderation]
 thumbnail: /images/posts/ml-system-design-harmful-content-detection.svg
 last_modified_at: 2026-10-12

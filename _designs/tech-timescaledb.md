@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: TimescaleDB"
 category: tech
-date: 2026-07-15
+date: 2026-08-05
 tags: [Deep-Dive, Databases]
 description: "TimescaleDB turns PostgreSQL into a time-series database - not by forking it, but by extending it. You install it as a PG extension, get a hypertable you INSERT time-series data into, and every PG tool you already know (pg_dump, logical replication, PostGIS, pg_stat_statements) keeps working."
 thumbnail: /images/posts/tech-timescaledb.svg

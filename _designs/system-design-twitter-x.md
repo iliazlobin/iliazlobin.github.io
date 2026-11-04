@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Twitter/X"
 category: system-design
-date: 2026-07-02
+date: 2026-07-06
 tags: [Distributed-Systems, Social-Media, Caching, Fan-Out, Real-Time, Timeline, Search]
 thumbnail: /images/posts/2026-07-02-system-design-twitter-x.svg
 redirect_from:

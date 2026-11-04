@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: Flink"
 category: tech
-date: 2026-07-15
+date: 2026-07-29
 tags: [Deep-Dive, Streaming, Open-Source]
 description: "Apache Flink is a stream processor that treats every computation as a continuous flow of events, whether the data is bounded (a batch file) or unbounded (a Kafka topic)."
 thumbnail: /images/posts/tech-flink.svg

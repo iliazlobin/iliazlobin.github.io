@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Google Docs"
 category: system-design
-date: 2026-07-01
+date: 2026-06-18
 tags: [Real-Time, Distributed-Systems, Interview-Prep]
 thumbnail: /images/posts/2026-07-01-system-design-google-docs.svg
 redirect_from:

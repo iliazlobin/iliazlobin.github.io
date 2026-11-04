@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Online Auction"
 category: system-design
-date: 2026-07-01
+date: 2026-06-14
 tags: [Real-Time, Distributed-Systems, Event-Driven, Interview-Prep]
 thumbnail: /images/posts/2026-07-01-online-auction.svg
 redirect_from:

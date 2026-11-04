@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Distributed Cache"
 category: system-design
-date: 2026-07-02
+date: 2026-06-22
 tags: [Caching, Distributed-Systems, Redis, Consistent-Hashing]
 thumbnail: /images/posts/system-design-distributed-cache.svg
 redirect_from:

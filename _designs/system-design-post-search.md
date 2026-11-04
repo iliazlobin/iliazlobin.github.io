@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Post Search"
 category: system-design
-date: 2026-07-02
+date: 2026-06-30
 tags: [Search, Indexing, Social]
 thumbnail: /images/posts/2026-07-02-system-design-post-search.svg
 redirect_from:

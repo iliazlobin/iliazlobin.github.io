@@ -2,7 +2,7 @@
 layout: post
 title: "AI: Hermes - A High-Level Overview"
 category: ai
-date: 2026-07-23
+date: 2026-08-26
 tags: [Case-Study, Own-System, Cognitive-Architecture, Multi-Agent, Orchestration, Autonomy]
 description: "Hermes Agent (Nous Research, MIT license) is an open-source AI agent framework that runs on the CLI, across messaging platforms, and in IDEs. It is not a single-agent chatbot. It is a router with a dispatch engine that spawns multiple isolated agent instances, called profiles, to handle work."
 thumbnail: /images/posts/agents-hermes-a-high-level-overview.svg

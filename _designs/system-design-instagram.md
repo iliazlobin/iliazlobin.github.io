@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Instagram"
 category: system-design
-date: 2026-07-02
+date: 2026-06-24
 tags: [Social-Media, Read-Heavy, Media, Interview-Prep]
 thumbnail: /images/posts/2026-07-02-system-design-instagram.svg
 redirect_from:

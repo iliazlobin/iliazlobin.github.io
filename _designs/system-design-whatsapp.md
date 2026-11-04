@@ -2,7 +2,7 @@
 layout: post
 title: "SD: WhatsApp"
 category: system-design
-date: 2026-06-30
+date: 2026-06-10
 tags: [Distributed-Systems, Real-Time, Event-Driven, Write-Heavy]
 thumbnail: /images/posts/2026-06-30-system-design-whatsapp.svg
 redirect_from:

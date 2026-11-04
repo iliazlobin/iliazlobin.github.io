@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: RabbitMQ"
 category: tech
-date: 2026-07-15
+date: 2026-08-03
 tags: [Deep-Dive, Messaging, Queue]
 description: "RabbitMQ is a message broker implementing the AMQP 0-9-1 protocol. Think of it as an in-memory forwarding engine with optional persistence: producers publish messages to exchanges, exchanges use bindings to route messages to queues, and consumers pull or get pushed messages from those queues."
 thumbnail: /images/posts/tech-rabbitmq.svg

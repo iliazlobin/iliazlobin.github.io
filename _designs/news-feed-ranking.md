@@ -2,7 +2,7 @@
 layout: post
 title: "ML: News Feed Ranking"
 category: system-design-ml
-date: 2026-07-09
+date: 2026-07-20
 tags: [Machine-Learning, Ranking, Recommendation, Personalization]
 thumbnail: /images/posts/news-feed-ranking.svg
 last_modified_at: 2026-10-12

@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: ZooKeeper"
 category: tech
-date: 2026-07-15
+date: 2026-08-07
 tags: [Deep-Dive, Distributed-Systems]
 description: "ZooKeeper is a reliable coordination service for distributed systems - the infrastructure that keeps configuration, service discovery, leader election, and distributed locks working across a cluster of machines."
 thumbnail: /images/posts/tech-zookeeper.svg

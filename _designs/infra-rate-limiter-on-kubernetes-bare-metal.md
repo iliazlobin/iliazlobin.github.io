@@ -2,7 +2,7 @@
 layout: post
 title: "INFRA: Rate Limiter on Kubernetes Bare Metal"
 category: infra
-date: 2026-07-17
+date: 2026-08-19
 tags: [Kubernetes, On-Prem, Compute, Redis, GitOps, Prometheus, Nginx, Grafana, Helm, Loki]
 description: "We are deploying a production rate limiter on a self-managed bare metal Kubernetes cluster inside an on-premises data center. The rate limiter itself handles 1M+ requests per second with a sub-10ms p99 added latency per request, serving a user base of 100M+ daily active users."
 thumbnail: /images/posts/infra-rate-limiter-on-kubernetes-bare-metal.svg
