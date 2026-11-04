@@ -9,7 +9,7 @@ test('Google is the latest role, with a month-only start and no responsibilities
   const entries = [...resume.matchAll(/<article class="resume-role"[^>]*>([^]*?)<\/article>/g)];
   assert.equal(entries.length, 6);
   const google = entries[0][1];
-  assert.match(google, /<h3 id="google--forward-deployed-engineer"[^>]*>Google<\/h3>/);
+  assert.match(google, /<h3\b[^>]*\bid="google--forward-deployed-engineer"[^>]*>Google<\/h3>/);
   assert.match(google, /<p class="resume-role-title">Forward Deployed Engineer<\/p>/);
   assert.match(google, /<p class="resume-role-location">Bay Area, CA<\/p>/);
   assert.match(google, /<time datetime="2026-10" title="October 2026">Oct 2026<\/time> <span aria-hidden="true">–<\/span> Present/);
@@ -32,4 +32,17 @@ test('current-role copy is consistent across About, Resume and shared metadata',
   assert.match(read('index.md'), />Forward Deployed Engineer at Google<\/a>/);
   assert.match(resume, /\*\*Forward Deployed Engineer at Google\*\* with \*\*14\+ years of experience\*\*/);
   assert.match(read('_includes/header.html'), /class="site-role">Forward Deployed Engineer · Google<\/p>/);
+});
+
+test('experience navigation distinguishes each company and role', () => {
+  const labels = [...resume.matchAll(/<h3\b[^>]*\bdata-toc-label="([^"]*)"[^>]*>/g)]
+    .map(match => match[1]);
+  assert.deepEqual(labels, [
+    'Google, FDE',
+    'Meta, SWE',
+    'Mastercard, SWE',
+    'EPAM Systems, SA',
+    'EPAM Systems, DevOps',
+    'NIIAS, SWE',
+  ]);
 });
