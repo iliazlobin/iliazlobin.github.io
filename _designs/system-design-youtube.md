@@ -2,7 +2,7 @@
 layout: post
 title: "SD: YouTube"
 category: system-design
-date: 2026-06-30
+date: 2026-06-11
 tags: [Streaming, Leaderboard, Real-Time, Video, Approximate-Algorithms, Distributed-Systems, Kafka, Flink]
 thumbnail: /images/posts/2026-06-30-system-design-youtube.svg
 redirect_from:

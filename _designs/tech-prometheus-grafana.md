@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: Prometheus / Grafana"
 category: tech
-date: 2026-07-16
+date: 2026-08-16
 tags: [Deep-Dive, Observability, Monitoring]
 description: "Prometheus is a pull-based monitoring system that scrapes HTTP metrics endpoints on a schedule, stores the data in its own time-series database, and evaluates PromQL queries for dashboards and alerts."
 thumbnail: /images/posts/tech-prometheus-grafana.svg

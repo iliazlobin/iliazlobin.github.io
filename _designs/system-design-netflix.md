@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Netflix"
 category: system-design
-date: 2026-07-02
+date: 2026-06-27
 tags: [Interview-Prep, Distributed-Systems, Streaming, Video, CDR, Personalization, Recommendation]
 thumbnail: /images/posts/2026-07-02-system-design-netflix.svg
 redirect_from:

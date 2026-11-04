@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: ClickHouse"
 category: tech
-date: 2026-07-16
+date: 2026-08-12
 tags: [Deep-Dive, Databases, Analytics, Open-Source]
 description: "ClickHouse is a column-oriented OLAP database that turns analytical queries over billions of rows into sub-second responses."
 thumbnail: /images/posts/tech-clickhouse.svg

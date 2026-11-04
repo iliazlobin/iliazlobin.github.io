@@ -4,7 +4,7 @@ title: "ML: Fraud Detection"
 category: system-design-ml
 redirect_from:
   - /designs/ml-system-design-fraud-detection/
-date: 2026-07-08
+date: 2026-07-15
 tags: [Machine-Learning, Fraud-Detection, Classification, Real-Time, Anomaly-Detection]
 thumbnail: /images/posts/system-design-ml-fraud-detection.svg
 last_modified_at: 2026-10-12

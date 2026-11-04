@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Ticketmaster"
 category: system-design
-date: 2026-06-30
+date: 2026-06-05
 tags: [Interview-Prep, Distributed-Systems, Concurrency, Booking, Re-Design]
 thumbnail: /images/posts/2026-06-30-system-design-ticketmaster.svg
 redirect_from:

@@ -2,7 +2,7 @@
 layout: post
 title: "ML: Machine Translation"
 category: system-design-ml
-date: 2026-07-16
+date: 2026-08-09
 tags: [Machine-Learning, NLP, Translation]
 thumbnail: /images/posts/ml-system-design-machine-translation.svg
 last_modified_at: 2026-10-12

@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: Kafka"
 category: tech
-date: 2026-07-15
+date: 2026-07-31
 tags: [Deep-Dive, Messaging, Streaming, Distributed-Systems, Open-Source, Data-Platforms]
 description: "Apache Kafka is a distributed commit log that acts as the central nervous system for event-driven systems. It is not a traditional message queue (though you can use it as one)."
 thumbnail: /images/posts/tech-kafka.svg

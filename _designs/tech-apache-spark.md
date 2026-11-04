@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: Apache Spark"
 category: tech
-date: 2026-07-15
+date: 2026-07-26
 tags: [Deep-Dive, Big-Data, Data-Platforms, Open-Source]
 description: "Apache Spark is a unified distributed computing engine for batch, streaming, SQL, ML, and graph processing - one API surface over all of them."
 thumbnail: /images/posts/tech-apache-spark.svg

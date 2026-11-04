@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: PostgreSQL"
 category: tech
-date: 2026-07-15
+date: 2026-08-02
 tags: [Deep-Dive, Databases, PostgreSQL]
 description: "PostgreSQL is a single-node relational database that wins on correctness, extensibility, and community trust."
 thumbnail: /images/posts/tech-postgresql.svg

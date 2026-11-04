@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Tinder"
 category: system-design
-date: 2026-06-30
+date: 2026-06-06
 tags: [Interview-Prep, Geospatial, Distributed-Systems, Real-Time]
 thumbnail: /images/posts/2026-06-30-system-design-tinder.svg
 redirect_from:

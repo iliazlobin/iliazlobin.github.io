@@ -2,7 +2,7 @@
 layout: post
 title: "INFRA: Google Docs on GCP"
 category: infra
-date: 2026-07-17
+date: 2026-08-17
 tags: [GCP, Cloudflare, Compute, Kubernetes, GitOps, Terraform, Prometheus, Redis]
 description: "We are building a real-time collaborative document editing platform at global scale. The product serves over 100 million monthly active users with millions of concurrent editors operating simultaneously across every region."
 thumbnail: /images/posts/infra-google-docs-on-gcp.svg

@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: DynamoDB"
 category: tech
-date: 2026-07-16
+date: 2026-08-13
 tags: [Deep-Dive, Databases, Cloud, NoSQL]
 description: "DynamoDB is a fully managed NoSQL key-value and document database built by AWS."
 thumbnail: /images/posts/tech-dynamodb.svg

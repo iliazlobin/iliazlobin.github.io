@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: etcd"
 category: tech
-date: 2026-07-16
+date: 2026-08-14
 tags: [Deep-Dive, Distributed-Systems, Infrastructure]
 description: "etcd is a strongly consistent, highly available distributed key-value store that solves the hardest problem in distributed systems - getting every node to agree on the same facts[1]."
 thumbnail: /images/posts/tech-etcd.svg

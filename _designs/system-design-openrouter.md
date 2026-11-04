@@ -2,7 +2,7 @@
 layout: post
 title: "SD: OpenRouter"
 category: system-design
-date: 2026-07-23
+date: 2026-08-28
 tags: [Interview-Prep, Distributed-Systems, API-Gateway, LLM-Infra]
 thumbnail: /images/posts/system-design-openrouter.svg
 last_modified_at: 2026-10-12

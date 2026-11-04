@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Strava"
 category: system-design
-date: 2026-07-02
+date: 2026-07-03
 tags: [Interview-Prep, Distributed-Systems, Mobile, Geospatial, Re-Design]
 thumbnail: /images/posts/2026-07-02-system-design-strava.svg
 redirect_from:

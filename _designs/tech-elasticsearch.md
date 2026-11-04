@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: Elasticsearch"
 category: tech
-date: 2026-07-15
+date: 2026-07-27
 tags: [Deep-Dive, Search, Databases]
 description: "Elasticsearch is a distributed search and analytics engine built on Apache Lucene. You send JSON documents to a REST API, and within one second they become searchable across any field with ranking, aggregations, and geospatial queries."
 thumbnail: /images/posts/tech-elasticsearch.svg

@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Local Delivery"
 category: system-design
-date: 2026-06-29
+date: 2026-06-04
 tags: [Distributed-Systems, Geospatial, Real-Time, Event-Driven, Interview-Prep]
 thumbnail: /images/posts/2026-06-29-system-design-local-delivery.svg
 redirect_from:

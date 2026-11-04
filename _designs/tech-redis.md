@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: Redis"
 category: tech
-date: 2026-07-15
+date: 2026-08-04
 tags: [Deep-Dive, Databases, Caching]
 description: "Redis is an in-memory key-value store where every command runs on a single thread and the entire server is a hash table of keys mapped to data structures. There is no query optimizer, no transaction manager, no buffer pool. A command is a direct function call against the structure in memory."
 thumbnail: /images/posts/tech-redis.svg

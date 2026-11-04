@@ -2,7 +2,7 @@
 layout: post
 title: "SD: ChatGPT"
 category: system-design
-date: 2026-07-22
+date: 2026-08-25
 tags: [LLM, Streaming, GPU, Conversation]
 thumbnail: /images/posts/system-design-chatgpt.svg
 last_modified_at: 2026-10-12

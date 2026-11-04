@@ -2,7 +2,7 @@
 layout: post
 title: "TECH: Apache Iceberg"
 category: tech
-date: 2026-07-15
+date: 2026-07-25
 tags: [Deep-Dive, Data-Platforms, Open-Source, Databases, Lakehouse]
 description: "Apache Iceberg is an open table format for analytic data lakes that brings relational-database ACID guarantees to object storage (S3, ADLS, GCS). Before Iceberg, data lakes built on Hive-style partitioning faced a familiar set of pains: a `CREATE TABLE ..."
 thumbnail: /images/posts/tech-apache-iceberg.svg

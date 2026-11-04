@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Bitly / URL Shortener"
 category: system-design
-date: 2026-07-23
+date: 2026-08-27
 tags: [System Design, URL Shortener]
 thumbnail: /images/posts/system-design-bitly-url-shortener.svg
 last_modified_at: 2026-10-12

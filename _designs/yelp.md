@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Yelp"
 category: system-design
-date: 2026-06-30
+date: 2026-06-13
 tags: [Search, Geospatial, Read-Heavy, Real-Time, Advertising, Interview-Prep]
 thumbnail: /images/posts/2026-06-30-yelp.svg
 redirect_from:

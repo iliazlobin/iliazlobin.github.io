@@ -2,7 +2,7 @@
 layout: post
 title: "ML: Speech Recognition / ASR"
 category: system-design-ml
-date: 2026-07-15
+date: 2026-07-22
 tags: [Machine-Learning, NLP, ASR, Audio]
 thumbnail: /images/posts/ml-system-design-speech-recognition-asr.svg
 last_modified_at: 2026-10-12

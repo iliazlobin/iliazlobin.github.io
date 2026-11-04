@@ -2,7 +2,7 @@
 layout: post
 title: "INFRA: News Feed Multi Cloud"
 category: infra
-date: 2026-07-17
+date: 2026-08-18
 tags: [Multi-Cloud, Data-Platform, Redis, MySQL, Kafka, Kubernetes, Terraform, GitOps, Prometheus, CDN]
 description: "A News Feed serves personalized, ranked streams of posts from friends, followed Pages, and Groups to over 2 billion registered users, with 1.5 billion daily active users generating roughly 1 billion posts per day."
 thumbnail: /images/posts/infra-news-feed.svg

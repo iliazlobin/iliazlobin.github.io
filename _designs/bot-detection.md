@@ -2,7 +2,7 @@
 layout: post
 title: "ML: Bot Detection"
 category: system-design-ml
-date: 2026-07-08
+date: 2026-07-09
 tags: [Machine-Learning, Bot-Detection, Classification]
 thumbnail: /images/posts/bot-detection.svg
 last_modified_at: 2026-10-12

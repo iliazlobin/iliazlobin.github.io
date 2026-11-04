@@ -2,7 +2,7 @@
 layout: post
 title: "SD: News Feed"
 category: system-design
-date: 2026-07-02
+date: 2026-06-28
 tags: [Interview-Prep, Distributed-Systems, Social-Media, Caching, Fan-Out, Re-Design]
 thumbnail: /images/posts/2026-07-02-system-design-news-feed.svg
 redirect_from:

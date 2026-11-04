@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Ad Click Aggregator"
 category: system-design
-date: 2026-07-01
+date: 2026-06-15
 tags: [Stream-Processing, Ad-Tech, Aggregation, Kafka, Flink, Fraud-Detection]
 thumbnail: /images/posts/2026-07-01-system-design-ad-click-aggregator.svg
 redirect_from:

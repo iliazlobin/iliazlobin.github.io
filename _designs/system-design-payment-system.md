@@ -2,7 +2,7 @@
 layout: post
 title: "SD: Payment System"
 category: system-design
-date: 2026-07-02
+date: 2026-06-29
 tags: [Interview-Prep, Distributed-Systems, Fintech]
 thumbnail: /images/posts/2026-07-02-system-design-payment-system.svg
 redirect_from:

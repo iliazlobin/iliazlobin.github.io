@@ -2,7 +2,7 @@
 layout: post
 title: "ML: ETA / Arrival Time Prediction"
 category: system-design-ml
-date: 2026-07-15
+date: 2026-07-21
 tags: [Machine-Learning, Regression, Forecasting]
 thumbnail: /images/posts/ml-system-design-eta-arrival-time-prediction.svg
 last_modified_at: 2026-10-12
