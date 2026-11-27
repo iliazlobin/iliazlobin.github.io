@@ -468,8 +468,9 @@ def check_search_index(root, errors):
             if any(anchor not in indexed.ids for anchor in qualification_ids):
                 errors.append("Universal search must retain Resume qualification section targets")
             qualification_terms = ("Bachelor's degree", "St. Petersburg State Transport University",
-                                   "Cloud Architect", "Solutions Architect", "DevOps Engineer",
-                                   "Certified Kubernetes Administrator")
+                                   "Professional Agentic Architect", "Professional Machine Learning Engineer",
+                                   "Professional Cloud Architect", "Generative AI Leader",
+                                   "Solutions Architect", "DevOps Engineer", "Certified Kubernetes Administrator")
             if any(term not in entry["html"] for term in qualification_terms):
                 errors.append("Universal search lost Resume education or certification content")
         for anchor in re.findall(r'<h[1-6]\b[^>]*\bid=["\']([^"\']+)', entry["html"], re.I):
